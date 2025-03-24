@@ -22,3 +22,19 @@ exports.addCategory = async (req, res) => {
         res.status(500).json({ error: 'Database error' });
     }
 };
+
+//delete category
+exports.deleteCategory = async (req, res) => {
+    try {
+        const { category_id } = req.body;
+        if (!category_id) return res.status(400).json({ error: "Category ID is required" });
+
+        const [result] = await pool.query('DELETE FROM `categories` WHERE `category_id`= ?', [category_id]);
+        if (result.affectedRows === 0) return res.status(400).json({ error: 'Category not found' });
+
+        res.json({ message: 'Category deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: 'Database error' });
+    }
+}
+
