@@ -10,6 +10,19 @@ exports.getBrands = async (req, res) => {
     }
 };
 
+// Search New Brand
+exports.searchBrand = async (req, res) => {
+    try {
+        const { brand_name } = req.body;
+        if (!brand_name) return res.status(400).json({ error: "Brand name is required" });
+
+        const [result] = await pool.query('SELECT `brand_id`, `brand_name` FROM `brands` WHERE `brand_name`=?', [brand_name]);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: 'Database error' });
+    }
+};
+
 // Add New Brand
 exports.addBrand = async (req, res) => {
     try {
