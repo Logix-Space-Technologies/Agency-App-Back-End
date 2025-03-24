@@ -35,3 +35,16 @@ exports.addBrand = async (req, res) => {
         res.status(500).json({ error: 'Database error' });
     }
 };
+
+// Delete Brand
+exports.deleteBrand = async (req, res) => {
+    try {
+        const { brand_id } = req.body;
+        if (!brand_id) return res.status(400).json({ error: "Brand Id is required" });
+
+        const [result] = await pool.query('DELETE FROM `brands` WHERE `brand_id`=?', [brand_id]);
+        res.json({ message: 'Brand deleted successfully', brand_id: result.insertId });
+    } catch (error) {
+        res.status(500).json({ error: 'Database error' });
+    }
+};
