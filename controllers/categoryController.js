@@ -13,8 +13,8 @@ exports.getCategories = async (req, res) => {
 // Add New Category
 exports.addCategory = async (req, res) => {
     try {
-        const { category_name } = req.body;
-        if (!category_name) return res.status(400).json({ error: "Category name is required" });
+        const {category_name} = req.body;
+        if (!category_name) return res.status(400).json({ error: "Category_name required" });
 
         const [result] = await pool.query('INSERT INTO categories (category_name) VALUES (?)', [category_name]);
         res.json({ message: 'Category added successfully', category_id: result.insertId });
