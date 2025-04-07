@@ -16,13 +16,13 @@ exports.getProduct = async (req, res) => {
 //add
 exports.addProduct = async (req, res) => {
     try {
-        const { product_name,category_id,
+        const { product_name, category_id,
             brand_id,
             mrp,
             description,
             expiry_date,
             product_image } = req.body;
-        if (!product_name ) return res.status(400).json({ error: "product_name required" });
+        if (!product_name) return res.status(400).json({ error: "product_name required" });
         const [result] = await pool.query(`INSERT INTO products  (product_name, category_id, brand_id, mrp, description, expiry_date, product_image) VALUES (?, ?, ?, ?, ?, ?, ?) `, [product_name, category_id, brand_id, mrp, description, expiry_date, product_image]);
 
         res.json({ message: 'Product added successfully', product_id: result.insertId });
@@ -34,16 +34,16 @@ exports.addProduct = async (req, res) => {
 }
 
 // delete
-exports.delProducts= async(req,res)=>{
-    try{
-        const {product_id}=req.body;
-        if(!product_id)return res.status(400).json({error:"product id required"});
+exports.delProducts = async (req, res) => {
+    try {
+        const { product_id } = req.body;
+        if (!product_id) return res.status(400).json({ error: "product id required" });
 
-        const [result]=await pool.query('DELETE FROM `products` WHERE `product_id`= ?',[product_id]);
-        if (result.affectedRows===0)return res.status(400).json({error:"product not found"});
+        const [result] = await pool.query('DELETE FROM `products` WHERE `product_id`= ?', [product_id]);
+        if (result.affectedRows === 0) return res.status(400).json({ error: "product not found" });
         res.json({ message: 'product deleted successfully' });
 
-    }catch(error){
+    } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Database error' });
 
@@ -51,13 +51,13 @@ exports.delProducts= async(req,res)=>{
 }
 
 //search
-exports.searchProduct = async(req,res)=>{
-    try{
-       const {product_name}=req.body;
-       if(!product_name)return res.query(400).json({error:"product name required"}); 
-               const [result] = await pool.query('SELECT `product_id`, `product_name` FROM `products` WHERE `product_name`=?', [product_name]);
-       res.json(result);
-    }catch(error){
+exports.searchProduct = async (req, res) => {
+    try {
+        const { product_name } = req.body;
+        if (!product_name) return res.query(400).json({ error: "product name required" });
+        const [result] = await pool.query('SELECT `product_id`, `product_name` FROM `products` WHERE `product_name`=?', [product_name]);
+        res.json(result);
+    } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Database error' });
     }
