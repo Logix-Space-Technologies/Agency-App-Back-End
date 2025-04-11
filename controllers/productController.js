@@ -54,11 +54,23 @@ exports.delProducts = async (req, res) => {
 exports.searchProduct = async (req, res) => {
     try {
         const { product_name } = req.body;
-        if (!product_name) return res.query(400).json({ error: "product name required" });
-        const [result] = await pool.query('SELECT `product_id`, `product_name` FROM `products` WHERE `product_name`=?', [product_name]);
+
+        if (!product_name) {
+            return res.status(400).json({ error: "Product name is required" });
+        }
+
+        const [result] = await pool.query(
+            `SELECT p.product_id, p.product_name, c.category_name, b.brand_name, p.mrp, p.description, p.expiry_date, p.product_image, p.created_at
+            FROM products p
+            JOIN categories c ON c.category_id = p.category_id
+            JOIN brands b ON b.brand_id = p.brand_id
+            WHERE p.product_name = ?`,
+            [product_name]
+        );
+
         res.json(result);
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Database error' });
     }
-}
+};
