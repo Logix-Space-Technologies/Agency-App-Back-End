@@ -4,7 +4,7 @@ const pool = require('../config/db');
 //get all products
 exports.getProduct = async (req, res) => {
     try {
-        const [products] = await pool.query('SELECT product_id, product_name, category_id, brand_id, mrp, description, expiry_date, product_image, created_at FROM products');
+        const [products] = await pool.query('SELECT product_id, product_name, c.category_name, b.brand_name, mrp, description, expiry_date, product_image, created_at FROM products p join categories c on c.category_id=p.category_id join brands b on b.brand_id=p.brand_id ');
         res.json(products);
 
 
