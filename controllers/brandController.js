@@ -10,6 +10,19 @@ exports.getBrands = async (req, res) => {
     }
 };
 
+// Search New Brand
+exports.searchBrand = async (req, res) => {
+    try {
+        const { brand_name } = req.body;
+        if (!brand_name) return res.status(400).json({ error: "Brand name is required" });
+
+        const [result] = await pool.query('SELECT `brand_id`, `brand_name` FROM `brands` WHERE `brand_name`=?', [brand_name]);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: 'Database error' });
+    }
+};
+
 // Add New Brand
 exports.addBrand = async (req, res) => {
     try {
@@ -18,6 +31,19 @@ exports.addBrand = async (req, res) => {
 
         const [result] = await pool.query('INSERT INTO brands (brand_name) VALUES (?)', [brand_name]);
         res.json({ message: 'Brand added successfully', brand_id: result.insertId });
+    } catch (error) {
+        res.status(500).json({ error: 'Database error' });
+    }
+};
+
+// Delete Brand
+exports.deleteBrand = async (req, res) => {
+    try {
+        const { brand_id } = req.body;
+        if (!brand_id) return res.status(400).json({ error: "Brand Id is required" });
+
+        const [result] = await pool.query('DELETE FROM `brands` WHERE `brand_id`=?', [brand_id]);
+        res.json({ message: 'Brand deleted successfully', brand_id: result.insertId });
     } catch (error) {
         res.status(500).json({ error: 'Database error' });
     }
