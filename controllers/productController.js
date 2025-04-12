@@ -13,25 +13,45 @@ exports.getProduct = async (req, res) => {
     }
 }
 
-//add
 exports.addProduct = async (req, res) => {
     try {
-        const { product_name, category_id,
+        const {
+            product_name,
+            category_id,
             brand_id,
             mrp,
             description,
             expiry_date,
-            product_image } = req.body;
-        if (!product_name) return res.status(400).json({ error: "product_name required" });
-        const [result] = await pool.query(`INSERT INTO products  (product_name, category_id, brand_id, mrp, description, expiry_date, product_image) VALUES (?, ?, ?, ?, ?, ?, ?) `, [product_name, category_id, brand_id, mrp, description, expiry_date, product_image]);
+            product_image
+        } = req.body;
 
-        res.json({ message: 'Product added successfully', product_id: result.insertId });
+        if (!product_name) {
+            return res.status(400).json({ error: "product_name required" });
+        }
+
+        // Insert into products
+        const [result] = await pool.query(
+            `INSERT INTO products (product_name, category_id, brand_id, mrp, description, expiry_date, product_image)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [product_name, category_id, brand_id, mrp, description, expiry_date, product_image]
+        );
+
+        const product_id = result.insertId;
+
+        // Insert into product_prices
+        await pool.query(
+            `INSERT INTO product_prices (product_id, purchase_price, marketing_selling_price, direct_selling_price, effective_date)
+             VALUES (?, 0, ?, ?, NOW())`,
+            [product_id, mrp,mrp]
+        );
+
+        res.json({ message: 'Product added successfully', product_id });
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Database error' });
-
     }
-}
+};
+
 
 // delete
 exports.delProducts = async (req, res) => {
