@@ -50,7 +50,8 @@ exports.delProducts = async (req, res) => {
     }
 }
 
-//search
+// Search
+
 exports.searchProduct = async (req, res) => {
     try {
         const { product_name } = req.body;
@@ -59,13 +60,15 @@ exports.searchProduct = async (req, res) => {
             return res.status(400).json({ error: "Product name is required" });
         }
 
+        const searchTerm = `%${product_name}%`;
+
         const [result] = await pool.query(
             `SELECT p.product_id, p.product_name, c.category_name, b.brand_name, p.mrp, p.description, p.expiry_date, p.product_image, p.created_at
             FROM products p
             JOIN categories c ON c.category_id = p.category_id
             JOIN brands b ON b.brand_id = p.brand_id
-            WHERE p.product_name = ?`,
-            [product_name]
+            WHERE p.product_name LIKE ? OR b.brand_name LIKE ? OR c.category_name LIKE ?`,
+            [searchTerm, searchTerm, searchTerm]
         );
 
         res.json(result);
