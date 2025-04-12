@@ -93,11 +93,21 @@ exports.addProductPrice = async (req, res) => {
 
 exports.searchProductPrice = async (req, res) => {
     try {
-        const { product_id } = req.body;
-        if (!product_id) return res.status(400).json({ error: "product id is required" });
+        const { product_name } = req.body;
+        console.log(product_name)
+        if (!product_name) return res.status(400).json({ error: "product name is required" });
 
-        const [result] = await pool.query('SELECT * FROM product_prices WHERE product_id = ?', [product_id]);
-        res.json(result);
+        const [result] = await pool.query(
+            `SELECT pp.price_id, b.brand_name, p.product_id, product_name, c.category_name, mrp, description, expiry_date, product_image, created_at, pp.purchase_price, pp.marketing_selling_price, pp.direct_selling_price, pp.effective_date
+             FROM products p
+             JOIN product_prices pp ON p.product_id = pp.product_id
+             JOIN brands b ON b.brand_id = p.brand_id
+             JOIN categories c ON c.category_id = p.category_id
+             WHERE product_name LIKE ?`,
+            [`%${product_name}%`]
+          );
+
+          res.json(result);
     } catch (error) {
         res.status(500).json({ error: 'Database error' });
     }
