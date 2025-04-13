@@ -10,6 +10,7 @@ const productPriceRoutes = require("./routes/productPriceRoures");
 const userRoutes = require("./routes/userRoutes");
 const supplierRoutes =require("./routes/supplierRoutes");
 const salesRoutes  =require("./routes/salesRoutes");
+const dailyStockAllocationRoutes =require("./routes/dailyStockAllocationRoutes")
 
 
 const app = express();
@@ -23,6 +24,7 @@ app.use('/api/productprice',productPriceRoutes)
 app.use('/api/users',userRoutes)
 app.use('/api/suppliers',supplierRoutes)
 app.use('/api/sales',salesRoutes)
+app.use('/api/dsa',dailyStockAllocationRoutes)
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port http://localhost:${PORT}`));
