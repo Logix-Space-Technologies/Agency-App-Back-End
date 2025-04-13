@@ -11,23 +11,27 @@ exports.viewAllSuppliers = async (req, res) => {
     }
 }
 
-//add suppliers
+/// Add Supplier
 exports.addSuppliers = async (req, res) => {
     try {
-        const { supplier_name, contact_number, email_Id, Address } = req.body;
-        if (!supplier_name) return res.status(400).json({ error: "supplier name required" });
-        const added_Date = new Date();
-        
-        const [result] = await pool.query('INSERT INTO suppliers(supplier_name, added_Date, contact_number, email_Id, Address) VALUES(?,now(),?,?,?)',
-            [supplier_name, added_Date, contact_number, email_Id, Address]);
-        res.json({ message: 'supplier added successfully', supplier_id: result.insertId });
+        const { supplier_name, contact_number, email_Id, address } = req.body;
+        console.log(req.body);
+
+        if (!supplier_name) return res.status(400).json({ error: "Supplier name is required" });
+
+        const [result] = await pool.query(
+            'INSERT INTO suppliers(supplier_name, added_Date, contact_number, email_Id, Address) VALUES(?, NOW(), ?, ?, ?)',
+            [supplier_name, contact_number, email_Id, address]
+        );
+
+        res.json({ message: 'Supplier added successfully', supplier_id: result.insertId });
 
     } catch (error) {
         console.error(error);
-
         res.status(500).json({ error: 'Database error' });
     }
-}
+};
+
 
 // search
 exports.searchSuppliers = async (req, res) => {
