@@ -17,7 +17,7 @@ exports.addSuppliers = async (req, res) => {
         const { supplier_name, contact_number, email_Id, Address } = req.body;
         if (!supplier_name) return res.status(400).json({ error: "supplier name required" });
         const added_Date = new Date();
-        const [result] = await pool.query('INSERT INTO suppliers(supplier_name, added_Date, contact_number, email_Id, Address) VALUES(?,?,?,?,?)',
+        const [result] = await pool.query('INSERT INTO suppliers(supplier_name, added_Date, contact_number, email_Id, Address) VALUES(?,now(),?,?,?)',
             [supplier_name, added_Date, contact_number, email_Id, Address]);
         res.json({ message: 'supplier added successfully', supplier_id: result.insertId });
 
