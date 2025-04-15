@@ -37,7 +37,7 @@ exports.addDailyStockAllocation = async (req, res) => {
 //view all
 exports.viewAllDailyStockAllocation = async (req, res) => {
     try {
-        const [DSA] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, `product_id`, `allocated_quantity`, `date` FROM `daily_stock_allocation` ');
+        const [DSA] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, `product_id`, `allocated_quantity`, `date`, `converted_to_sales` FROM `daily_stock_allocation` WHERE isActive = 1');
         res.json(DSA);
     } catch (error) {
         console.error(error);
@@ -48,23 +48,23 @@ exports.viewAllDailyStockAllocation = async (req, res) => {
 }
 
 //add dsa
-// exports.addDailyStockAllocation = async (req, res) => {
-//     try {
-//         const { marketing_staff_id, product_id, allocated_quantity } = req.body;
-//         if (!marketing_staff_id) return res.status(400).json({ error: "marketing staff id required" });
-//         const date = new Date();
+ exports.addDailyStockAllocation = async (req, res) => {
+     try {
+        const { marketing_staff_id, product_id, allocated_quantity } = req.body;
+        if (!marketing_staff_id) return res.status(400).json({ error: "marketing staff id required" });
+        const date = new Date();
 
-//         const [result] = await pool.query('INSERT INTO `daily_stock_allocation`( `marketing_staff_id`, `product_id`, `allocated_quantity`, `date`) VALUES(?,?,?,now())',
-//             [marketing_staff_id, product_id, allocated_quantity, date]);
-//         res.json({ message: 'daily stock added successfully', daily_stock_id: result.insertId });
+         const [result] = await pool.query('INSERT INTO `daily_stock_allocation`( `marketing_staff_id`, `product_id`, `allocated_quantity`, `date`,`isActive`,`converted_to_sales`) VALUES(?,?,?,now(),1,?)',
+            [marketing_staff_id, product_id, allocated_quantity, date]);
+        res.json({ message: 'daily stock added successfully', daily_stock_id: result.insertId });
 
 
-//     } catch (error) {
-//         console.error(error);
+    } catch (error) {
+        console.error(error);
 
-//         res.status(500).json({ error: 'Database error' });
-//     }
-// }
+        res.status(500).json({ error: 'Database error' });
+     }
+ }
 
 //search
 
@@ -72,7 +72,7 @@ exports.searchDailyStockAllocation = async (req, res) => {
     try {
         const { date } = req.body;
         if (!date) return res.status(400).json({ error: " Date  required" });
-        const [result] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, `product_id`, `allocated_quantity`, `date` FROM `daily_stock_allocation`  WHERE `date` = ?',[date]);
+        const [result] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, `product_id`, `allocated_quantity`, `date` FROM `daily_stock_allocation`  WHERE `date` = ? AND `isActive` = 1',[date]);
         res.json(result);
 
     }catch (error) {
@@ -87,7 +87,7 @@ exports.searchDailyStockAllocationIndividual = async (req, res) => {
         const { date,marketing_staff_id } = req.body;
         if (!date) return res.status(400).json({ error: " Date  required" });
         
-        const [result] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, d.`product_id`, p.product_name, p.mrp,`allocated_quantity`, `date` FROM `daily_stock_allocation` d JOIN products p on p.product_id=d.product_id  WHERE d.`date` = ? and d.marketing_staff_id=? ',[date,marketing_staff_id]);
+        const [result] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, d.`product_id`, p.product_name, p.mrp,`allocated_quantity`, `date` FROM `daily_stock_allocation` d JOIN products p on p.product_id=d.product_id  WHERE d.`date` = ? and d.marketing_staff_id=? AND d.`isActive` = 1',[date,marketing_staff_id]);
         res.json(result);
 
     }catch (error) {
@@ -101,7 +101,7 @@ exports.deleteDailyStockAllocation = async (req,res)=>{
     try{
         const { daily_stock_id } = req.body;
         if (!daily_stock_id) return res.status(400).json({ error: "daily stock id is required" });
-        const [result] = await pool.query('DELETE FROM `daily_stock_allocation` WHERE `daily_stock_id`=?', [daily_stock_id]);
+        const [result] = await pool.query('UPDATE `daily_stock_allocation` SET `isActive` = 0 WHERE `daily_stock_id`= ?', [daily_stock_id]);
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: 'Record not found or already deleted' });
         }
