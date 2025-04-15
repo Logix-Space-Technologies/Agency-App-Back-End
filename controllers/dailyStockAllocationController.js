@@ -3,9 +3,11 @@ const pool = require('../config/db');
 //view all
 exports.viewAllDailyStockAllocation = async (req, res) => {
     try {
-        const [DSA] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, `product_id`, `allocated_quantity`, `date` FROM `daily_stock_allocation`');
+        const [DSA] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, `product_id`, `allocated_quantity`, `date` FROM `daily_stock_allocation` ');
         res.json(DSA);
     } catch (error) {
+        console.error(error);
+
         res.status(500).json({ error: 'Database error' });
 
     }

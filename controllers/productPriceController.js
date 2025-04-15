@@ -140,7 +140,7 @@ exports.deleteProductPrice = async(req,res)=>{
         const { product_id } = req.body;
         if (!product_id) return res.status(400).json({ error: "product id is required" });
 
-        const [result] = await pool.query('DELETE FROM product_prices WHERE product_id= ? and isActive=1 ',[product_id]);
+        const [result] = await pool.query('UPDATE product_prices SET isActive = 0 WHERE product_id = ? ',[product_id]);
         if (result.affectedRows === 0) return res.status(400).json({ error: 'product price not found' });
         res.json({ message: 'product price deleted successfully' });
 
