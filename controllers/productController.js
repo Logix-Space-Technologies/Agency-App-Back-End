@@ -4,7 +4,7 @@ const pool = require('../config/db');
 //get all products
 exports.getProduct = async (req, res) => {
     try {
-        const [products] = await pool.query('SELECT product_id, product_name, c.category_name, b.brand_name, mrp, description, expiry_date, product_image, created_at FROM products p join categories c on c.category_id=p.category_id join brands b on b.brand_id=p.brand_id ');
+        const [products] = await pool.query('SELECT product_id, product_name, c.category_name, b.brand_name, mrp, description, expiry_date, product_image, created_at FROM products p join categories c on c.category_id=p.category_id join brands b on b.brand_id=p.brand_id WHERE p.isActive = 1');
         res.json(products);
 
 
@@ -59,7 +59,7 @@ exports.delProducts = async (req, res) => {
         const { product_id } = req.body;
         if (!product_id) return res.status(400).json({ error: "product id required" });
 
-        const [result] = await pool.query('DELETE FROM `products` WHERE `product_id`= ?', [product_id]);
+        const [result] = await pool.query('UPDATE `products` SET `isActive` = 0 WHERE `product_id`= ?', [product_id]);
         if (result.affectedRows === 0) return res.status(400).json({ error: "product not found" });
         res.json({ message: 'product deleted successfully' });
 
@@ -87,7 +87,7 @@ exports.searchProduct = async (req, res) => {
             FROM products p
             JOIN categories c ON c.category_id = p.category_id
             JOIN brands b ON b.brand_id = p.brand_id
-            WHERE p.product_name LIKE ? OR b.brand_name LIKE ? OR c.category_name LIKE ?`,
+            WHERE (p.product_name LIKE ? OR b.brand_name LIKE ? OR c.category_name LIKE ?) AND p.isActive = 1`,
             [searchTerm, searchTerm, searchTerm]
         );
 

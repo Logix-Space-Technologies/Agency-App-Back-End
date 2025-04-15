@@ -66,7 +66,7 @@ exports.loginUser = async (req, res) => {
 // Get All Users
 exports.getUsers = async (req, res) => {
     try {
-        const [users] = await pool.query('SELECT user_id, profile_avathar, name, role, phone, email, password_hash, created_at, Place_Of_Allocation FROM users');
+        const [users] = await pool.query('SELECT user_id, profile_avathar, name, role, phone, email, password_hash, created_at, Place_Of_Allocation FROM users WHERE isActive = 1');
         res.json(users);
     } catch (error) {
         res.status(500).json({ error: 'Database error' });
@@ -82,7 +82,7 @@ exports.searchUser = async (req, res) => {
         const [result] = await pool.query(
             `SELECT user_id, profile_avathar, name, role, phone, email, password_hash, created_at, Place_Of_Allocation
              FROM users
-             WHERE name LIKE ? OR email LIKE ? OR phone LIKE ? OR Place_Of_Allocation LIKE ?`,
+             WHERE (name LIKE ? OR email LIKE ? OR phone LIKE ? OR Place_Of_Allocation LIKE ?)  AND isActive = 1`,
             [`%${user_data}%`, `%${user_data}%`, `%${user_data}%`, `%${user_data}%`]
         );
 
@@ -137,7 +137,7 @@ exports.deleteUser = async (req, res) => {
         const { user_id } = req.body;
         if (!user_id) return res.status(400).json({ error: "User ID is required" });
 
-        await pool.query('DELETE FROM users WHERE user_id = ?', [user_id]);
+        await pool.query('UPDATE users SET isActive = 0 WHERE user_id = ?', [user_id]);
         res.json({ message: 'User deleted successfully' });
     } catch (error) {
         res.status(500).json({ error: 'Database error' });

@@ -3,7 +3,7 @@ const pool = require('../config/db');
 //view all
 exports.getAllSales = async (req, res) => {
     try {
-        const [sales] = await pool.query('SELECT sale_id, sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count FROM sales');
+        const [sales] = await pool.query('SELECT sale_id, sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count FROM sales WHERE isActive = 1');
         res.json(sales);
     } catch (error) {
         console.error(error);
@@ -39,7 +39,7 @@ exports.searchSales = async (req, res) => {
     try {
         const { sale_id } = req.body;
         if (!sale_id) return res.status(400).json({ error: "sales id required" });
-        const [result] = await pool.query('SELECT `sale_id`, `sale_type`, `marketing_staff_id`, `product_id`, `price_id`, `quantity_sold`, `amount_received`, `is_credit`, `sale_date`, `damaged_count`, `is_settled`, `loss_count` FROM`sales` WHERE `sale_id` = ? ',[sale_id]);
+        const [result] = await pool.query('SELECT `sale_id`, `sale_type`, `marketing_staff_id`, `product_id`, `price_id`, `quantity_sold`, `amount_received`, `is_credit`, `sale_date`, `damaged_count`, `is_settled`, `loss_count` FROM`sales` WHERE `sale_id` = ? AND `isActive` = 1',[sale_id]);
         res.json(result);
 
     }catch (error) {
@@ -55,7 +55,7 @@ exports.deleteSales =async(req,res)=>{
         const { sale_id } = req.body;
                 if (!sale_id) return res.status(400).json({ error: "sales id is required" });
         
-                const [result] = await pool.query('DELETE FROM sales WHERE sale_id= ?',[sale_id]);
+                const [result] = await pool.query('UPDATE sales SET isActive = 0 WHERE sale_id= ?',[sale_id]);
                 if (result.affectedRows === 0) return res.status(400).json({ error: 'sales id not found' });
                 res.json({ message: 'sales id deleted successfully' });
     }catch (error) {
