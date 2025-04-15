@@ -18,6 +18,7 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+
 app.use('/api/brands', brandRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/products',productRoutes);
