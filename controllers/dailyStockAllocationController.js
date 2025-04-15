@@ -1,5 +1,39 @@
 const pool = require('../config/db');
 
+// Multiple 
+exports.addDailyStockAllocation = async (req, res) => {
+    try {
+        const { marketing_staff_id, allocations } = req.body;
+        // console.log(Input)
+        console.log(req.body)
+
+        if (!marketing_staff_id || !allocations || !Array.isArray(allocations)) {
+            return res.status(400).json({ error: "Missing or invalid inputs" });
+        }
+
+        const date = new Date();
+
+        const insertValues = allocations
+            .filter(item => item.product_id && item.allocated_quantity)
+            .map(item => [marketing_staff_id, item.product_id, item.allocated_quantity, date]);
+
+        if (insertValues.length === 0) {
+            return res.status(400).json({ error: "No valid allocations provided" });
+        }
+
+        const [result] = await pool.query(
+            'INSERT INTO daily_stock_allocation (marketing_staff_id, product_id, allocated_quantity, date) VALUES ?',
+            [insertValues]
+        );
+
+        res.json({ message: 'Daily stock allocations added successfully', rowsInserted: result.affectedRows });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Database error' });
+    }
+};
+
+
 //view all
 exports.viewAllDailyStockAllocation = async (req, res) => {
     try {
@@ -14,23 +48,23 @@ exports.viewAllDailyStockAllocation = async (req, res) => {
 }
 
 //add dsa
-exports.addDailyStockAllocation = async (req, res) => {
-    try {
-        const { marketing_staff_id, product_id, allocated_quantity } = req.body;
-        if (!marketing_staff_id) return res.status(400).json({ error: "marketing staff id required" });
-        const date = new Date();
+// exports.addDailyStockAllocation = async (req, res) => {
+//     try {
+//         const { marketing_staff_id, product_id, allocated_quantity } = req.body;
+//         if (!marketing_staff_id) return res.status(400).json({ error: "marketing staff id required" });
+//         const date = new Date();
 
-        const [result] = await pool.query('INSERT INTO `daily_stock_allocation`( `marketing_staff_id`, `product_id`, `allocated_quantity`, `date`) VALUES(?,?,?,now())',
-            [marketing_staff_id, product_id, allocated_quantity, date]);
-        res.json({ message: 'daily stock added successfully', daily_stock_id: result.insertId });
+//         const [result] = await pool.query('INSERT INTO `daily_stock_allocation`( `marketing_staff_id`, `product_id`, `allocated_quantity`, `date`) VALUES(?,?,?,now())',
+//             [marketing_staff_id, product_id, allocated_quantity, date]);
+//         res.json({ message: 'daily stock added successfully', daily_stock_id: result.insertId });
 
 
-    } catch (error) {
-        console.error(error);
+//     } catch (error) {
+//         console.error(error);
 
-        res.status(500).json({ error: 'Database error' });
-    }
-}
+//         res.status(500).json({ error: 'Database error' });
+//     }
+// }
 
 //search
 
