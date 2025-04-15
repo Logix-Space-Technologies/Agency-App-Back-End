@@ -70,9 +70,23 @@ exports.viewAllDailyStockAllocation = async (req, res) => {
 
 exports.searchDailyStockAllocation = async (req, res) => {
     try {
-        const { daily_stock_id } = req.body;
-        if (!daily_stock_id) return res.status(400).json({ error: "daily stock id name required" });
-        const [result] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, `product_id`, `allocated_quantity`, `date` FROM `daily_stock_allocation`  WHERE `daily_stock_id` = ?',[daily_stock_id]);
+        const { date } = req.body;
+        if (!date) return res.status(400).json({ error: " Date  required" });
+        const [result] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, `product_id`, `allocated_quantity`, `date` FROM `daily_stock_allocation`  WHERE `date` = ?',[date]);
+        res.json(result);
+
+    }catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Database error' });
+    }
+}
+
+// search Individual
+exports.searchDailyStockAllocationIndividual = async (req, res) => {
+    try {
+        const { date,marketing_staff_id } = req.body;
+        if (!date) return res.status(400).json({ error: " Date  required" });
+        const [result] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, d.`product_id`, p.product_name, p.mrp,`allocated_quantity`, `date` FROM `daily_stock_allocation` d JOIN products p on p.product_id=d.product_id  WHERE d.`date` = ? and d.marketing_staff_id=? ',[date,marketing_staff_id]);
         res.json(result);
 
     }catch (error) {
