@@ -86,6 +86,7 @@ exports.searchDailyStockAllocationIndividual = async (req, res) => {
     try {
         const { date,marketing_staff_id } = req.body;
         if (!date) return res.status(400).json({ error: " Date  required" });
+        
         const [result] = await pool.query('SELECT `daily_stock_id`, `marketing_staff_id`, d.`product_id`, p.product_name, p.mrp,`allocated_quantity`, `date` FROM `daily_stock_allocation` d JOIN products p on p.product_id=d.product_id  WHERE d.`date` = ? and d.marketing_staff_id=? ',[date,marketing_staff_id]);
         res.json(result);
 
