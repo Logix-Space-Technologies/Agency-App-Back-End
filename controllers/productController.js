@@ -30,19 +30,28 @@ exports.addProduct = async (req, res) => {
         }
 
         // Insert into products
-        const [result] = await pool.query(
+        const [productResult] = await pool.query(
             `INSERT INTO products (product_name, category_id, brand_id, mrp, description, expiry_date, product_image)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
             [product_name, category_id, brand_id, mrp, description, expiry_date, product_image]
         );
 
-        const product_id = result.insertId;
+        const product_id = productResult.insertId;
 
         // Insert into product_prices
-        await pool.query(
+        const [priceResult] = await pool.query(
             `INSERT INTO product_prices (product_id, purchase_price, marketing_selling_price, direct_selling_price, effective_date)
              VALUES (?, 0, ?, ?, NOW())`,
-            [product_id, mrp,mrp]
+            [product_id, mrp, mrp]
+        );
+
+        const price_id = priceResult.insertId;
+
+        // Insert initial stock (quantity = 0, isActive = 1)
+        await pool.query(
+            `INSERT INTO stock (product_id, price_id, quantity, added_date, isActive)
+             VALUES (?, ?, 0, NOW(), 1)`,
+            [product_id, price_id]
         );
 
         res.json({ message: 'Product added successfully', product_id });
