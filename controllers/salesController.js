@@ -1,5 +1,66 @@
 const pool = require('../config/db');
 
+
+// Fetch allocated quantity and price for product sale calculation
+exports.getProductSaleMeta = async (req, res) => {
+    try {
+        const { product_id, marketing_staff_id, sale_date } = req.body;
+        console.log("Request Body:", req.body);
+
+        if (!product_id || !marketing_staff_id || !sale_date) {
+            return res.status(400).json({ error: "Missing required fields" });
+        }
+
+        // 1. Fetch allocated quantity
+        const [allocationRows] = await pool.query(
+            `SELECT allocated_quantity 
+             FROM daily_stock_allocation 
+             WHERE product_id = ? AND marketing_staff_id = ? AND date = ? AND isActive = 1`,
+            [product_id, marketing_staff_id, sale_date]
+        );
+
+        if (allocationRows.length === 0) {
+            return res.status(404).json({ error: "No allocation found" });
+        }
+
+        const allocated_quantity = allocationRows[0].allocated_quantity;
+
+        // 2. Fetch latest active marketing_selling_price
+        const [priceRows] = await pool.query(
+            `SELECT marketing_selling_price 
+             FROM product_prices 
+             WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
+             ORDER BY effective_date DESC LIMIT 1`,
+            [product_id, sale_date]
+        );
+
+        if (priceRows.length === 0) {
+            return res.status(404).json({ error: "No price data found" });
+        }
+
+        const marketing_selling_price = priceRows[0].marketing_selling_price;
+
+        // 3. Calculate total amount
+        const amount = allocated_quantity * marketing_selling_price;
+
+        console.log("Allocated Qty:", allocated_quantity);
+        console.log("Selling Price:", marketing_selling_price);
+        console.log("Amount:", amount);
+
+        res.json({
+            allocated_quantity,
+            marketing_selling_price,
+            amount
+        });
+
+    } catch (error) {
+        console.error("Error in getProductSaleMeta:", error);
+        res.status(500).json({ error: 'Database error' });
+    }
+};
+
+
+
 //view all
 exports.getAllSales = async (req, res) => {
     try {
@@ -15,106 +76,164 @@ exports.getAllSales = async (req, res) => {
 
 // Convert daily stock allocation to sales
 // Add sales using daily stock allocation + custom values per product
-exports.addSalesFromDailyAllocation = async (req, res) => {
-    try {
-        const {
-            sale_type = 'marketing',
-            marketing_staff_id,
-            sale_date = new Date(),
-            is_credit = 0,
-            is_settled = 0,
-            products = []
-        } = req.body;
+const { v4: uuidv4 } = require('uuid');
 
-        if (!marketing_staff_id || !Array.isArray(products) || products.length === 0) {
-            return res.status(400).json({ error: "Required fields are missing" });
-        }
+ exports.addSalesFromDailyAllocation = async (req, res) => {
+     try {
+         const {
+             sale_type = 'marketing',
+             marketing_staff_id,
+             sale_date = new Date(),
+             products = [],
+             amount_paid = 0 // Expecting the initial amount paid at the time of sale
+         } = req.body;
 
-        const [stockAllocations] = await pool.query(
-            `SELECT daily_stock_id, product_id, allocated_quantity 
-             FROM daily_stock_allocation 
-             WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1`,
-            [marketing_staff_id]
-        );
+         if (!marketing_staff_id || !Array.isArray(products) || products.length === 0) {
+             return res.status(400).json({ error: "Required fields are missing" });
+         }
 
-        const allocationMap = {};
-        for (const stock of stockAllocations) {
-            allocationMap[stock.product_id] = stock;
-        }
+         const [stockAllocations] = await pool.query(
+             `SELECT daily_stock_id, product_id, allocated_quantity
+              FROM daily_stock_allocation
+              WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1`,
+             [marketing_staff_id]
+         );
 
-        const salesResults = [];
+         const allocationMap = {};
+         for (const stock of stockAllocations) {
+             allocationMap[stock.product_id] = stock;
+         }
 
-        for (const item of products) {
-            const {
-                product_id,
-                quantity_sold = 0,
-                amount_received = 0,
-                damaged_count = 0,
-                loss_count = 0
-            } = item;
+         const salesResults = [];
+         const sale_tracking_id = generateUniqueSaleTrackingId(); // Generate a unique ID for this entire sale
+         let totalAmountReceivedForSale = 0;
 
-            if (!allocationMap[product_id]) {
-                console.warn(`No active allocation found for product_id ${product_id}`);
-                continue;
-            }
+         await pool.query(
+             `INSERT INTO final_sale (sale_tracking_Id, TotalAmount, UserId, DateofTransaction, isSettled, AmountPaid)
+              VALUES (?, ?, ?, ?, ?, ?)`,
+             [sale_tracking_id, 0, marketing_staff_id, sale_date, parseFloat(amount_paid) >= 0 ? (parseFloat(amount_paid) >= 0 ? (parseFloat(amount_paid) > 0 ? 0 : 1) : 1) : 1, amount_paid] // Modified initial isSettled
+         );
 
-            const [priceRows] = await pool.query(
-                `SELECT price_id 
-                 FROM product_prices 
-                 WHERE product_id = ? AND isActive = 1 AND effective_date <= ? 
-                 ORDER BY effective_date DESC LIMIT 1`,
-                [product_id, sale_date]
-            );
+         // Insert the initial payment into sales_credit_history
+         if (parseFloat(amount_paid) > 0) {
+             await pool.query(
+                 `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate, isActive)
+                  VALUES (?, ?, now(), ?)`,
+                 [sale_tracking_id, amount_paid, 1]
+             );
+         }
 
-            if (priceRows.length === 0) {
-                console.warn(`No price found for product_id ${product_id}`);
-                continue;
-            }
+         for (const item of products) {
+             const {
+                 product_id,
+                 quantity_sold = 0,
+                 amount_received = 0,
+                 damaged_count = 0,
+                 loss_count = 0
+             } = item;
 
-            const price_id = priceRows[0].price_id;
+             totalAmountReceivedForSale += parseFloat(amount_received);
 
-            const [insertResult] = await pool.query(
-                `INSERT INTO sales 
-                (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    sale_type,
-                    marketing_staff_id,
-                    product_id,
-                    price_id,
-                    quantity_sold,
-                    amount_received,
-                    is_credit,
-                    sale_date,
-                    damaged_count,
-                    is_settled,
-                    loss_count
-                ]
-            );
+             if (!allocationMap[product_id]) {
+                 console.warn(`No active allocation found for product_id ${product_id}`);
+                 continue;
+             }
 
-            // Mark allocation as converted
-            await pool.query(
-                `UPDATE daily_stock_allocation SET converted_to_sales = 1 WHERE daily_stock_id = ?`,
-                [allocationMap[product_id].daily_stock_id]
-            );
+             const [priceRows] = await pool.query(
+                 `SELECT price_id
+                  FROM product_prices
+                  WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
+                  ORDER BY effective_date DESC LIMIT 1`,
+                 [product_id, sale_date]
+             );
 
-            salesResults.push({
-                sale_id: insertResult.insertId,
-                product_id,
-                quantity_sold,
-                amount_received
-            });
-        }
+             if (priceRows.length === 0) {
+                 console.warn(`No price found for product_id ${product_id}`);
+                 continue;
+             }
 
-        res.json({ message: 'Sales added successfully', sales: salesResults });
+             const price_id = priceRows[0].price_id;
 
-    } catch (error) {
-        console.error("Error in addSales:", error);
-        res.status(500).json({ error: 'Database error' });
-    }
-};
+             const isSettledItem = parseFloat(amount_paid) >= parseFloat(amount_received) ? 1 : 0; // isSettled for the individual item
+             const isCredit = parseFloat(amount_paid) < parseFloat(amount_received) ? 1 : 0;
 
+             const [insertResult] = await pool.query(
+                 `INSERT INTO sales
+                 (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count, sale_tracking_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                 [
+                     sale_type,
+                     marketing_staff_id,
+                     product_id,
+                     price_id,
+                     quantity_sold,
+                     amount_received,
+                     isCredit,
+                     sale_date,
+                     damaged_count,
+                     isSettledItem, // Use isSettledItem here
+                     loss_count,
+                     sale_tracking_id
+                 ]
+             );
 
+             // Mark allocation as converted
+             await pool.query(
+                 `UPDATE daily_stock_allocation SET converted_to_sales = 1 WHERE daily_stock_id = ?`,
+                 [allocationMap[product_id].daily_stock_id]
+             );
+
+             salesResults.push({
+                 sale_id: insertResult.insertId,
+                 product_id,
+                 quantity_sold,
+                 amount_received,
+                 sale_tracking_id
+             });
+         }
+
+         // Update the total amount in final_sale table
+         await pool.query(
+             `UPDATE final_sale
+              SET TotalAmount = ?
+              WHERE sale_tracking_Id = ?`,
+             [totalAmountReceivedForSale, sale_tracking_id]
+         );
+
+         // Update isSettled in final_sale based on TotalAmount and AmountPaid
+         const [finalSaleRecord] = await pool.query(
+             `SELECT AmountPaid, TotalAmount FROM final_sale WHERE sale_tracking_Id = ?`,
+             [sale_tracking_id]
+         );
+
+         if (finalSaleRecord.length > 0) {
+             const { AmountPaid, TotalAmount } = finalSaleRecord[0];
+             const isFullySettled = parseFloat(AmountPaid) >= parseFloat(TotalAmount) ? 1 : 0;
+             await pool.query(
+                 `UPDATE final_sale
+                  SET isSettled = ?
+                  WHERE sale_tracking_Id = ?`,
+                 [isFullySettled, sale_tracking_id]
+             );
+         }
+
+         res.json({ message: 'Sales added successfully', sales: salesResults });
+
+     } catch (error) {
+         console.error("Error in addSales:", error);
+         res.status(500).json({ error: 'Database error' });
+     }
+ };
+
+ // Function to generate a unique 10-character alphanumeric ID
+ function generateUniqueSaleTrackingId() {
+     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+     let saleId = '';
+     for (let i = 0; i < 10; i++) {
+         saleId += characters.charAt(Math.floor(Math.random() * characters.length));
+     }
+     return saleId;
+ }
 
 //add sales
 exports.addSales = async (req, res) => {
