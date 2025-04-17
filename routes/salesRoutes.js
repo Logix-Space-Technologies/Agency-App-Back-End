@@ -1,5 +1,5 @@
 const express = require('express');
-const { getAllSales, addSales, searchSales, deleteSales } = require('../controllers/salesController');
+const { getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation } = require('../controllers/salesController');
 const router = express.Router();
 
 
@@ -7,6 +7,7 @@ router.post('/',getAllSales);
 router.post('/add',addSales);
 router.post('/search',searchSales);
 router.post('/del',deleteSales);
+router.post('/create_sales_from_dsa',addSalesFromDailyAllocation);
 
 
 module.exports = router;

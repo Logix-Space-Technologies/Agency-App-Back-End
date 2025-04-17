@@ -48,23 +48,40 @@ exports.viewAllDailyStockAllocation = async (req, res) => {
 }
 
 //add dsa
- exports.addDailyStockAllocation = async (req, res) => {
-     try {
-        const { marketing_staff_id, product_id, allocated_quantity } = req.body;
-        if (!marketing_staff_id) return res.status(400).json({ error: "marketing staff id required" });
-        const date = new Date();
-
-         const [result] = await pool.query('INSERT INTO `daily_stock_allocation`( `marketing_staff_id`, `product_id`, `allocated_quantity`, `date`,`isActive`,`converted_to_sales`) VALUES(?,?,?,now(),1,?)',
-            [marketing_staff_id, product_id, allocated_quantity, date]);
-        res.json({ message: 'daily stock added successfully', daily_stock_id: result.insertId });
-
-
+exports.addDailyStockAllocation = async (req, res) => {
+    try {
+      console.log(req.body);
+      const { marketing_staff_id, allocations } = req.body;
+  
+      if (!marketing_staff_id) {
+        return res.status(400).json({ error: "marketing staff id required" });
+      }
+  
+      if (!Array.isArray(allocations) || allocations.length === 0) {
+        return res.status(400).json({ error: "allocations are required" });
+      }
+  
+      for (const alloc of allocations) {
+        const { product_id, allocated_quantity } = alloc;
+  
+        if (!product_id || !allocated_quantity) {
+          return res.status(400).json({ error: "product_id and allocated_quantity required in each allocation" });
+        }
+  
+        await pool.query(
+          'INSERT INTO `daily_stock_allocation` (`marketing_staff_id`, `product_id`, `allocated_quantity`, `date`, `isActive`, `converted_to_sales`) VALUES (?, ?, ?, now(), 1, 0)',
+          [marketing_staff_id, product_id, allocated_quantity]
+        );
+      }
+  
+      res.json({ message: 'daily stock allocations added successfully' });
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({ error: 'Database error' });
-     }
- }
+      console.error(error);
+      res.status(500).json({ error: 'Database error' });
+    }
+  };
+  
+  
 
 //search
 
