@@ -1,9 +1,124 @@
 const pool = require('../config/db');
 
+
+exports.getSaleDetails = async (req, res) => {
+    try {
+        const { sale_tracking_id } = req.params;
+        if (!sale_tracking_id) {
+            return res.status(400).json({ error: "Sale Tracking ID is required." });
+        }
+
+        const [salesDetails] = await pool.query(
+            `
+            SELECT
+                s.sale_id,
+                s.sale_type,
+                u.name AS marketing_staff_name,
+                p.product_name,
+                pp.marketing_selling_price AS product_price,
+                s.quantity_sold,
+                s.amount_received,
+                s.is_credit,
+                s.sale_tracking_Id,
+                s.sale_date,
+                s.damaged_count,
+                s.is_settled AS item_settled,
+                s.loss_count,
+                sch.amount AS credit_amount,
+                sch.creditedDate AS credit_date
+            FROM
+                sales s
+            JOIN
+                users u ON s.marketing_staff_id = u.user_id
+            JOIN
+                products p ON s.product_id = p.product_id
+            JOIN
+                product_prices pp ON s.price_id = pp.price_id
+            LEFT JOIN
+                sales_credit_history sch ON s.sale_tracking_Id = sch.sale_tracking_Id AND sch.isActive = 1
+            WHERE
+                s.sale_tracking_Id = ?
+            `,
+            [sale_tracking_id]
+        );
+
+        if (salesDetails.length === 0) {
+            return res.status(404).json({ message: "Sale details not found." });
+        }
+
+        res.json(salesDetails);
+
+    } catch (error) {
+        console.error("Error fetching sale details:", error);
+        res.status(500).json({ error: 'Database error' });
+    }
+};
+
+
+// Fetch allocated quantity and price for product sale calculation
+exports.getProductSaleMeta = async (req, res) => {
+    try {
+        const { product_id, marketing_staff_id, sale_date } = req.body;
+        console.log("Request Body:", req.body);
+
+        if (!product_id || !marketing_staff_id || !sale_date) {
+            return res.status(400).json({ error: "Missing required fields" });
+        }
+
+        // 1. Fetch allocated quantity
+        const [allocationRows] = await pool.query(
+            `SELECT allocated_quantity 
+             FROM daily_stock_allocation 
+             WHERE product_id = ? AND marketing_staff_id = ? AND date = ? AND isActive = 1`,
+            [product_id, marketing_staff_id, sale_date]
+        );
+
+        if (allocationRows.length === 0) {
+            return res.status(404).json({ error: "No allocation found" });
+        }
+
+        const allocated_quantity = allocationRows[0].allocated_quantity;
+
+        // 2. Fetch latest active marketing_selling_price
+        const [priceRows] = await pool.query(
+            `SELECT marketing_selling_price 
+             FROM product_prices 
+             WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
+             ORDER BY effective_date DESC LIMIT 1`,
+            [product_id, sale_date]
+        );
+
+        if (priceRows.length === 0) {
+            return res.status(404).json({ error: "No price data found" });
+        }
+
+        const marketing_selling_price = priceRows[0].marketing_selling_price;
+
+        // 3. Calculate total amount
+        const amount = allocated_quantity * marketing_selling_price;
+
+        console.log("Allocated Qty:", allocated_quantity);
+        console.log("Selling Price:", marketing_selling_price);
+        console.log("Amount:", amount);
+
+        res.json({
+            allocated_quantity,
+            marketing_selling_price,
+            amount
+        });
+
+    } catch (error) {
+        console.error("Error in getProductSaleMeta:", error);
+        res.status(500).json({ error: 'Database error' });
+    }
+};
+
+
+
 //view all
 exports.getAllSales = async (req, res) => {
     try {
-        const [sales] = await pool.query('SELECT sale_id, sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count FROM sales');
+        const [sales] = await pool.query('SELECT sale_id, sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count FROM sales WHERE isActive = 1');
         res.json(sales);
     } catch (error) {
         console.error(error);
@@ -12,53 +127,340 @@ exports.getAllSales = async (req, res) => {
     }
 }
 
-//add sales
-exports.addSales = async (req, res) => {
+
+// Convert daily stock allocation to sales
+const { v4: uuidv4 } = require('uuid');
+// Add Sales 
+exports.addSalesFromDailyAllocation = async (req, res) => {
     try {
         const {
-            sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count } = req.body;
+            sale_type = 'marketing',
+            marketing_staff_id,
+            sale_date = new Date(),
+            products = [],
+            amount_paid = 0
+        } = req.body;
 
-        if (!product_id || !price_id) {
+        if (!marketing_staff_id || !Array.isArray(products) || products.length === 0) {
             return res.status(400).json({ error: "Required fields are missing" });
         }
 
-        const [result] = await pool.query(
-            `INSERT INTO sales (  sale_type,  marketing_staff_id,  product_id,  price_id,  quantity_sold,  amount_received,  is_credit,  sale_date,  damaged_count,  is_settled,  loss_count ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count]
+        const [stockAllocations] = await pool.query(
+            `SELECT daily_stock_id, product_id, allocated_quantity
+             FROM daily_stock_allocation
+             WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1`,
+            [marketing_staff_id]
         );
 
-        res.json({ message: 'Sale added successfully', sale_id: result.insertId });
+        const allocationMap = {};
+        for (const stock of stockAllocations) {
+            allocationMap[stock.product_id] = stock;
+        }
+
+        const salesResults = [];
+        const sale_tracking_id = generateUniqueSaleTrackingId();
+        let totalAmountReceivedForSale = 0;
+
+        await pool.query(
+            `INSERT INTO final_sale (sale_tracking_Id, TotalAmount, UserId, DateofTransaction, isSettled, AmountPaid)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [sale_tracking_id, 0, marketing_staff_id, sale_date,
+            parseFloat(amount_paid) > 0 ? 0 : 1, amount_paid]
+        );
+
+        if (parseFloat(amount_paid) > 0) {
+            await pool.query(
+                `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate, isActive)
+                 VALUES (?, ?, now(), ?)`,
+                [sale_tracking_id, amount_paid, 1]
+            );
+        }
+
+        for (const item of products) {
+            const {
+                product_id,
+                quantity_sold = 0,
+                amount_received = 0,
+                damaged_count = 0,
+                loss_count = 0
+            } = item;
+
+            totalAmountReceivedForSale += parseFloat(amount_received);
+
+            if (!allocationMap[product_id]) {
+                console.warn(`No active allocation found for product_id ${product_id}`);
+                continue;
+            }
+
+            if (quantity_sold > allocationMap[product_id].allocated_quantity) {
+                return res.status(400).json({
+                    error: `Sold quantity (${quantity_sold}) exceeds allocated quantity (${allocationMap[product_id].allocated_quantity}) for product ID ${product_id}`
+                });
+            }
+
+            const [priceRows] = await pool.query(
+                `SELECT price_id
+                 FROM product_prices
+                 WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
+                 ORDER BY effective_date DESC LIMIT 1`,
+                [product_id, sale_date]
+            );
+
+            if (priceRows.length === 0) {
+                console.warn(`No price found for product_id ${product_id}`);
+                continue;
+            }
+
+            const price_id = priceRows[0].price_id;
+
+            const isSettledItem = parseFloat(amount_paid) >= parseFloat(amount_received) ? 1 : 0;
+            const isCredit = parseFloat(amount_paid) < parseFloat(amount_received) ? 1 : 0;
+
+            const [insertResult] = await pool.query(
+                `INSERT INTO sales
+                 (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count, sale_tracking_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    sale_type,
+                    marketing_staff_id,
+                    product_id,
+                    price_id,
+                    quantity_sold,
+                    amount_received,
+                    isCredit,
+                    sale_date,
+                    damaged_count,
+                    isSettledItem,
+                    loss_count,
+                    sale_tracking_id
+                ]
+            );
+
+            const newSaleId = insertResult.insertId;
+
+            await pool.query(
+                `UPDATE stock
+                 SET quantity = quantity - ?
+                 WHERE product_id = ? AND isActive = 1`,
+                [quantity_sold, product_id]
+            );
+
+            const [stockIdResult] = await pool.query(
+                "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `price_id` = ? AND `isActive` = 1",
+                [product_id, price_id]
+            );
+
+            if (stockIdResult.length > 0) {
+                const stock_Id = stockIdResult[0].stock_id;
+                const addedDate = new Date();
+                const addedBy = req.user ? req.user.id : 0;
+                const creditOrDebit = 'debit';
+                const referenceInvoiceOrSale = newSaleId;
+
+                await pool.query(
+                    "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [stock_Id, -quantity_sold, 'sale', addedDate, addedBy, creditOrDebit, referenceInvoiceOrSale]
+                );
+            } else {
+                console.warn(`No active stock found for product_id: ${product_id} and price_id: ${price_id} to record in stock history.`);
+            }
+
+            await pool.query(
+                `UPDATE daily_stock_allocation SET converted_to_sales = 1 WHERE daily_stock_id = ?`,
+                [allocationMap[product_id].daily_stock_id]
+            );
+
+            salesResults.push({
+                sale_id: newSaleId,
+                product_id,
+                quantity_sold,
+                amount_received,
+                sale_tracking_id
+            });
+        }
+
+        await pool.query(
+            `UPDATE final_sale
+             SET TotalAmount = ?
+             WHERE sale_tracking_Id = ?`,
+            [totalAmountReceivedForSale, sale_tracking_id]
+        );
+
+        const [finalSaleRecord] = await pool.query(
+            `SELECT AmountPaid, TotalAmount FROM final_sale WHERE sale_tracking_Id = ?`,
+            [sale_tracking_id]
+        );
+
+        if (finalSaleRecord.length > 0) {
+            const { AmountPaid, TotalAmount } = finalSaleRecord[0];
+            const isFullySettled = parseFloat(AmountPaid) >= parseFloat(TotalAmount) ? 1 : 0;
+            await pool.query(
+                `UPDATE final_sale
+                 SET isSettled = ?
+                 WHERE sale_tracking_Id = ?`,
+                [isFullySettled, sale_tracking_id]
+            );
+        }
+
+        res.json({ message: 'Sales added successfully', sales: salesResults });
+
     } catch (error) {
-        console.error(error);
+        console.error("Error in addSales:", error);
         res.status(500).json({ error: 'Database error' });
     }
 };
 
-//search
-exports.searchSales = async (req, res) => {
-    try {
-        const { sale_id } = req.body;
-        if (!sale_id) return res.status(400).json({ error: "sales id required" });
-        const [result] = await pool.query('SELECT `sale_id`, `sale_type`, `marketing_staff_id`, `product_id`, `price_id`, `quantity_sold`, `amount_received`, `is_credit`, `sale_date`, `damaged_count`, `is_settled`, `loss_count` FROM`sales` WHERE `sale_id` = ? ',[sale_id]);
-        res.json(result);
-
-    }catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Database error' });
+function generateUniqueSaleTrackingId() {
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let saleId = '';
+    for (let i = 0; i < 10; i++) {
+        saleId += characters.charAt(Math.floor(Math.random() * characters.length));
     }
-
+    return saleId;
 }
 
-//delete
-exports.deleteSales =async(req,res)=>{
-    try{
-        const { sale_id } = req.body;
-                if (!sale_id) return res.status(400).json({ error: "sales id is required" });
+
+//add sales
+exports.addSales = async (req, res) => {
+    console.log("Function Called for Sales Entry");
+    try {
+        const { sale_type, marketing_staff_id, product_id, price_id, quantity_sold, 
+                amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count } = req.body;
+
+        console.log("Request body:", req.body);
+
+        if (!product_id || !price_id || quantity_sold === undefined) {
+            console.log("Missing required fields");
+            return res.status(400).json({ error: "Required fields are missing" });
+        }
+
+        // Insert sale
+        const [saleResult] = await pool.query(
+            `INSERT INTO sales (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, 
+             amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [sale_type, marketing_staff_id, product_id, price_id, quantity_sold, 
+             amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count]
+        );
+
+        const newSaleId = saleResult.insertId;
+        console.log("New sale created with ID:", newSaleId);
+
+        // Update stock
+        console.log("Updating stock for product:", product_id, "price:", price_id);
+        const [stockUpdateResult] = await pool.query(
+            "UPDATE stock SET quantity = quantity - ? WHERE product_id = ? AND price_id = ? AND `isActive`=1",
+            [quantity_sold, product_id, price_id]
+        );
+
+        console.log("Stock update affected rows:", stockUpdateResult.affectedRows);
         
-                const [result] = await pool.query('DELETE FROM sales WHERE sale_id= ?',[sale_id]);
-                if (result.affectedRows === 0) return res.status(400).json({ error: 'sales id not found' });
-                res.json({ message: 'sales id deleted successfully' });
-    }catch (error) {
+        if (stockUpdateResult.affectedRows === 0) {
+            console.log("Stock not found for update");
+            return res.status(404).json({ error: "Stock not found for the given product and price." });
+        }
+
+        // Get stock ID for history
+        console.log("Fetching stock ID for history");
+        const [stockIdResult] = await pool.query(
+            "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `price_id` = ? AND `isActive` = 1",
+            [product_id, price_id]
+        );
+        
+        console.log("Stock ID query result:", stockIdResult);
+
+        if (stockIdResult.length > 0) {
+            const stock_Id = stockIdResult[0].stock_id;
+            console.log("Found stock ID:", stock_Id, "for history entry");
+            
+            const addedDate = new Date();
+            const addedBy = req.user ? req.user.id : null;
+            const creditOrDebit = 'debit';
+            const referenceInvoiceOrSale = newSaleId;
+
+            console.log("Inserting into stock_history with values:", {
+                stock_Id, 
+                Qty: -quantity_sold, 
+                stock_type: 'sale', 
+                addedDate, 
+                addedBy, 
+                creditOrDebit, 
+                referenceInvoiceOrSale
+            });
+
+            try {
+                const [historyResult] = await pool.query(
+                    "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [stock_Id, -quantity_sold, 'sale', addedDate, addedBy, creditOrDebit, referenceInvoiceOrSale]
+                );
+                console.log("Stock history insert successful, ID:", historyResult.insertId);
+            } catch (historyError) {
+                console.error("Error inserting into stock_history:", historyError);
+                throw historyError; // Re-throw to be caught by the outer catch
+            }
+        } else {
+            console.warn(`No active stock found for product_id: ${product_id} and price_id: ${price_id} to record in stock history.`);
+        }
+
+        res.json({ message: 'Sale and stock updated successfully', sale_id: newSaleId });
+    } catch (error) {
+        console.error("Error in addSales:", error);
+        res.status(500).json({ error: 'Database error', details: error.message });
+    }
+};
+
+// search
+exports.searchSales = async (req, res) => {
+    try {
+        const { sale_date, from_date, to_date } = req.body;
+        let query = `
+            SELECT
+                f.id,
+                f.sale_tracking_Id,
+                f.TotalAmount,
+                u.name,
+                f.DateofTransaction,
+                f.isSettled,
+                f.AmountPaid
+            FROM
+                final_sale f
+            JOIN
+                users u ON f.UserId = u.user_id
+            WHERE
+        `;
+        const queryParams = [];
+
+        if (sale_date) {
+            query += `DATE(f.DateofTransaction) = ?`;
+            queryParams.push(sale_date);
+        } else if (from_date && to_date) {
+            query += `DATE(f.DateofTransaction) >= ? AND DATE(f.DateofTransaction) <= ?`;
+            queryParams.push(from_date, to_date);
+        } else {
+            return res.status(400).json({ error: "Please provide a sale date or a date range." });
+        }
+
+        // Add the ORDER BY clause here
+        query += ` ORDER BY f.DateofTransaction`;
+
+        const [result] = await pool.query(query, queryParams);
+        res.json(result);
+
+    } catch (error) {
+        console.error("Error searching sales:", error);
+        res.status(500).json({ error: 'Database error' });
+    }
+};
+//delete
+exports.deleteSales = async (req, res) => {
+    try {
+        const { sale_id } = req.body;
+        if (!sale_id) return res.status(400).json({ error: "sales id is required" });
+
+        const [result] = await pool.query('UPDATE sales SET isActive = 0 WHERE sale_id= ?', [sale_id]);
+        if (result.affectedRows === 0) return res.status(400).json({ error: 'sales id not found' });
+        res.json({ message: 'sales id deleted successfully' });
+    } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Database error' });
     }

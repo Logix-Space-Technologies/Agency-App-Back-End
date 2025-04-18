@@ -4,7 +4,7 @@ const pool = require('../config/db');
 //get all products
 exports.getProduct = async (req, res) => {
     try {
-        const [products] = await pool.query('SELECT product_id, product_name, c.category_name, b.brand_name, mrp, description, expiry_date, product_image, created_at FROM products p join categories c on c.category_id=p.category_id join brands b on b.brand_id=p.brand_id ');
+        const [products] = await pool.query('SELECT p.product_id, product_name, c.category_name, p.mrp,b.brand_name, pp.marketing_selling_price,pp.direct_selling_price, description, expiry_date, product_image, created_at FROM products p join categories c on c.category_id=p.category_id join brands b on b.brand_id=p.brand_id  JOIN product_prices pp ON pp.product_id=p.product_id  WHERE p.isActive = 1 and pp.isActive=1');
         res.json(products);
 
 
@@ -30,19 +30,28 @@ exports.addProduct = async (req, res) => {
         }
 
         // Insert into products
-        const [result] = await pool.query(
+        const [productResult] = await pool.query(
             `INSERT INTO products (product_name, category_id, brand_id, mrp, description, expiry_date, product_image)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
             [product_name, category_id, brand_id, mrp, description, expiry_date, product_image]
         );
 
-        const product_id = result.insertId;
+        const product_id = productResult.insertId;
 
         // Insert into product_prices
-        await pool.query(
+        const [priceResult] = await pool.query(
             `INSERT INTO product_prices (product_id, purchase_price, marketing_selling_price, direct_selling_price, effective_date)
              VALUES (?, 0, ?, ?, NOW())`,
-            [product_id, mrp,mrp]
+            [product_id, mrp, mrp]
+        );
+
+        const price_id = priceResult.insertId;
+
+        // Insert initial stock (quantity = 0, isActive = 1)
+        await pool.query(
+            `INSERT INTO stock (product_id, price_id, quantity, added_date, isActive)
+             VALUES (?, ?, 0, NOW(), 1)`,
+            [product_id, price_id]
         );
 
         res.json({ message: 'Product added successfully', product_id });
@@ -59,7 +68,7 @@ exports.delProducts = async (req, res) => {
         const { product_id } = req.body;
         if (!product_id) return res.status(400).json({ error: "product id required" });
 
-        const [result] = await pool.query('DELETE FROM `products` WHERE `product_id`= ?', [product_id]);
+        const [result] = await pool.query('UPDATE `products` SET `isActive` = 0 WHERE `product_id`= ?', [product_id]);
         if (result.affectedRows === 0) return res.status(400).json({ error: "product not found" });
         res.json({ message: 'product deleted successfully' });
 
@@ -87,7 +96,7 @@ exports.searchProduct = async (req, res) => {
             FROM products p
             JOIN categories c ON c.category_id = p.category_id
             JOIN brands b ON b.brand_id = p.brand_id
-            WHERE p.product_name LIKE ? OR b.brand_name LIKE ? OR c.category_name LIKE ?`,
+            WHERE (p.product_name LIKE ? OR b.brand_name LIKE ? OR c.category_name LIKE ?) AND p.isActive = 1`,
             [searchTerm, searchTerm, searchTerm]
         );
 
