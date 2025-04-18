@@ -1,6 +1,5 @@
 const pool = require('../config/db');
 
-
 // update
 exports.updateProductPrice = async (req, res) => {
     try {
@@ -8,8 +7,10 @@ exports.updateProductPrice = async (req, res) => {
             price_id,
             product_id,
             purchase_price,
+            commision_rate,
             marketing_selling_price,
             direct_selling_price,
+            whole_sale_price,
             effective_date
         } = req.body;
 
@@ -32,8 +33,10 @@ exports.updateProductPrice = async (req, res) => {
         // Step 2: Check if any relevant field has changed
         const isChanged =
             existing.purchase_price != purchase_price ||
+            existing.commision_rate != commision_rate ||
             existing.marketing_selling_price != marketing_selling_price ||
             existing.direct_selling_price != direct_selling_price ||
+            existing.whole_sale_price != whole_sale_price ||
             existing.effective_date.toISOString().split("T")[0] !== formattedDate;
 
         if (!isChanged) {
@@ -48,14 +51,16 @@ exports.updateProductPrice = async (req, res) => {
 
         // Step 4: Insert new record with updated data and isActive = 1
         const [insertResult] = await pool.query(
-            `INSERT INTO product_prices 
-                (product_id, purchase_price, marketing_selling_price, direct_selling_price, effective_date, isActive)
-             VALUES (?, ?, ?, ?, ?, 1)`,
+            `INSERT INTO product_prices
+                (product_id, purchase_price, commision_rate, marketing_selling_price, direct_selling_price, whole_sale_price, effective_date, isActive)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
             [
                 product_id,
                 purchase_price,
+                commision_rate,
                 marketing_selling_price,
                 direct_selling_price,
+                whole_sale_price,
                 formattedDate
             ]
         );
@@ -74,11 +79,34 @@ exports.updateProductPrice = async (req, res) => {
 
 exports.getProductPrice = async(req,res)=>{
     try{
-        const [product_prices]=await pool.query('SELECT pp.price_id,b.brand_name, p.`product_id`, `product_name`, c.category_name,  `mrp`, `description`, `expiry_date`, `product_image`, `created_at`, pp.purchase_price,pp.marketing_selling_price,pp.direct_selling_price,pp.effective_date  FROM `products` p JOIN product_prices pp on p.product_id=pp.product_id JOIN brands b on b.brand_id=p.brand_id JOIN categories c on c.category_id=p.category_id where pp.isActive=1 ');
+        const [product_prices]=await pool.query(`
+            SELECT
+                pp.price_id,
+                b.brand_name,
+                p.product_id,
+                p.product_name,
+                c.category_name,
+                p.mrp,
+                p.description,
+                p.expiry_date,
+                p.product_image,
+                p.created_at,
+                pp.purchase_price,
+                pp.commision_rate,
+                pp.marketing_selling_price,
+                pp.direct_selling_price,
+                pp.whole_sale_price,
+                pp.effective_date
+            FROM products p
+            JOIN product_prices pp ON p.product_id = pp.product_id
+            JOIN brands b ON b.brand_id = p.brand_id
+            JOIN categories c ON c.category_id = p.category_id
+            WHERE pp.isActive = 1
+        `);
         res.json(product_prices);
     }catch(error){
+        console.error(error);
         res.status(500).json({ error: 'Database error' });
-
     }
 }
 
@@ -89,17 +117,19 @@ exports.addProductPrice = async (req, res) => {
         const {
             product_id,
             purchase_price,
+            commision_rate,
             marketing_selling_price,
             direct_selling_price,
+            whole_sale_price,
             effective_date
         } = req.body;
 
         if (!product_id) return res.status(400).json({ error: "product_id is required" });
 
         const [result] = await pool.query(
-            `INSERT INTO product_prices (product_id, purchase_price, marketing_selling_price, direct_selling_price, effective_date)
-             VALUES (?, ?, ?, ?, ?)`,
-            [product_id, purchase_price, marketing_selling_price, direct_selling_price, effective_date]
+            `INSERT INTO product_prices (product_id, purchase_price, commision_rate, marketing_selling_price, direct_selling_price, whole_sale_price, effective_date)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [product_id, purchase_price, commision_rate, marketing_selling_price, direct_selling_price, whole_sale_price, effective_date]
         );
 
         res.json({ message: 'Product price added successfully', price_id: result.insertId });
@@ -118,7 +148,23 @@ exports.searchProductPrice = async (req, res) => {
         if (!product_name) return res.status(400).json({ error: "product name is required" });
 
         const [result] = await pool.query(
-            `SELECT pp.price_id, b.brand_name, p.product_id, product_name, c.category_name, mrp, description, expiry_date, product_image, created_at, pp.purchase_price, pp.marketing_selling_price, pp.direct_selling_price, pp.effective_date
+            `SELECT
+                pp.price_id,
+                b.brand_name,
+                p.product_id,
+                product_name,
+                c.category_name,
+                mrp,
+                description,
+                expiry_date,
+                product_image,
+                created_at,
+                pp.purchase_price,
+                pp.commision_rate,
+                pp.marketing_selling_price,
+                pp.direct_selling_price,
+                pp.whole_sale_price,
+                pp.effective_date
              FROM products p
              JOIN product_prices pp ON p.product_id = pp.product_id
              JOIN brands b ON b.brand_id = p.brand_id
@@ -129,6 +175,7 @@ exports.searchProductPrice = async (req, res) => {
 
           res.json(result);
     } catch (error) {
+        console.error(error);
         res.status(500).json({ error: 'Database error' });
     }
 };
@@ -146,6 +193,7 @@ exports.deleteProductPrice = async(req,res)=>{
 
 
     }catch(error){
+        console.error(error);
         res.status(500).json({ error: 'Database error' });
 
     }
