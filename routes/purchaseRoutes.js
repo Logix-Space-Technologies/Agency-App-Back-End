@@ -1,12 +1,13 @@
 const express = require('express');
-const { viewAllPurchase, addPurchase, searchPurchase, deletePurchase } = require('../controllers/purchaseController');
+const { getSuppliers, getProducts, createPurchase,getAllPurchases } = require('../controllers/purchaseController');
 const router = express.Router();
 
 
-router.post('/',viewAllPurchase);
-router.post('/add',addPurchase);
-router.post('/search',searchPurchase);
-router.post('/del',deletePurchase);
+// router.post('/',viewAllPurchase);
+router.post('/purchases',createPurchase);
+router.post('/suppliers',getSuppliers);
+router.post('/products',getProducts);
+router.post('/getAllPurchases',getAllPurchases);
 
 
 
