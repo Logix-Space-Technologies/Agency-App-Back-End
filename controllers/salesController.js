@@ -1,4 +1,225 @@
+const { config } = require('dotenv');
 const pool = require('../config/db');
+
+const { v4: uuidv4 } = require('uuid');
+
+exports.fecthAllCustomers = async (req, res) => {
+
+    try {
+        const [rows] = await pool.query("SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE 1");
+        res.json({ success: true, data: rows });
+    } catch (error) {
+        console.error("Error fetching customers:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch customers" });
+    }
+
+
+}
+
+
+exports.fecthLatestPrices = async (req, res) => {
+
+    try {
+        const [rows] = await pool.query(`
+            SELECT 
+                price_id, 
+                product_id, 
+                purchase_price, 
+                commision_rate, 
+                marketing_selling_price, 
+                direct_selling_price, 
+                whole_sale_price, 
+                effective_date, 
+                isActive 
+            FROM product_prices 
+            WHERE isActive = 1
+        `);
+        res.json({ success: true, data: rows });
+    } catch (error) {
+        console.error("Error fetching product prices:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch product prices" });
+    }
+
+
+}
+
+
+exports.addDirectSales = async (req, res) => {
+    const { agency_id, employee_id, customer, products,totalAmount,saleType } = req.body;
+
+    if (!agency_id || !employee_id || !Array.isArray(products) || products.length === 0 || !customer) {
+        return res.status(400).json({ message: "Missing or invalid input" });
+    }
+
+    const { name, place, mobile, email,amount_paying_now } = customer;
+    const sale_type = req.body.saleType;
+    const sale_date = new Date();
+
+    const connection = await pool.getConnection();
+
+
+    const isSettledItem = parseFloat(amount_paying_now) >= parseFloat(totalAmount) ? 1 : 0;
+
+
+    try {
+        await connection.beginTransaction();
+
+        // 1. Insert or fetch customer
+        const [existingCustomer] = await connection.query(
+            `SELECT id FROM Customers WHERE Mobile = ?`,
+            [ mobile]
+        );
+
+        let customer_id;
+
+        if (existingCustomer.length > 0) {
+            customer_id = existingCustomer[0].id;
+        } else {
+            const [customerResult] = await connection.query(
+                `INSERT INTO Customers (Name, Place, Mobile, EmailId)
+                 VALUES (?, ?, ?, ?)`,
+                [name, place, mobile, email]
+            );
+            customer_id = customerResult.insertId;
+        }
+        const sale_tracking_id = generateUniqueSaleTrackingId();
+
+        await connection.query(
+            `INSERT INTO final_sale ( sale_tracking_Id, TotalAmount, UserId, DateofTransaction, isSettled, AmountPaid )
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [sale_tracking_id, totalAmount,customer_id,  sale_date , isSettledItem ,amount_paying_now]
+        );
+
+
+        await connection.query(
+            `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate,isActive)
+             VALUES (?, ?, ?, ?)`,
+            [sale_tracking_id, amount_paying_now, sale_date,1]
+        );
+
+
+        for (const item of products) {
+            const { product_id, quantity, price_id = null } = item;
+
+
+            const [priceRows] = await pool.query(
+                `SELECT price_id, direct_selling_price, whole_sale_price
+                 FROM product_prices
+                 WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
+                 ORDER BY effective_date DESC LIMIT 1`,
+                [product_id, sale_date]
+            );
+
+            if (priceRows.length === 0) {
+                console.warn(`No price found for product_id ${product_id}`);
+                continue;
+            }
+
+            var marketing_selling_price =0;
+
+            console.log(priceRows[0])
+
+            if (sale_type=="direct") {
+
+                marketing_selling_price = priceRows[0].direct_selling_price;
+
+            } else {
+                 marketing_selling_price = priceRows[0].whole_sale_price;
+
+            }
+
+            // 3. Calculate total amount
+            const amount__ = quantity * marketing_selling_price;
+
+            console.log(amount__)
+
+
+
+            const price_id_ = priceRows[0].price_id;
+
+
+            // Insert into `sales`
+            const [salesResult] = await connection.query(
+                `INSERT INTO sales (
+                    sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, 
+                    is_credit, sale_tracking_Id, sale_date, damaged_count, is_settled, loss_count, isActive
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    sale_type,
+                    employee_id,
+                    product_id,
+                    price_id_,
+                    quantity,
+                    amount__, // amount_received
+                    0, // is_credit
+                    sale_tracking_id, // sale_tracking_Id
+                    sale_date,
+                    0, // damaged_count
+                    isSettledItem, // is_settled
+                    0, // loss_count
+                    1  // isActive
+                ]
+            );
+
+            const sale_id = salesResult.sale_id;
+            
+
+
+            console.log(sale_id)
+
+            console.log("Sale 1")
+
+
+            // Update stock
+            await connection.query(
+                `UPDATE stock 
+                 SET quantity = quantity - ? 
+                 WHERE  product_id = ?`,
+                [quantity,  product_id]
+            );
+
+console.log("Price ----- ")
+            console.log(price_id_)
+            console.log(" ---- Price")
+
+
+            const [stockIdResult] = await pool.query(
+                "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `isActive` = 1",
+                [product_id]
+            );
+
+            if (stockIdResult.length > 0) {
+                const stock_Id = stockIdResult[0].stock_id;
+                const addedDate = new Date();
+                const addedBy = req.user ? req.user.id : 0;
+                const creditOrDebit = 'debit';
+                const referenceInvoiceOrSale = sale_tracking_id;
+
+                await pool.query(
+                    "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [stock_Id, -quantity, 'sale', addedDate, addedBy, creditOrDebit, referenceInvoiceOrSale]
+                );
+            } else {
+                console.warn(`No active stock found for product_id: ${product_id} and price_id: ${price_id_} to record in stock history.`);
+            }
+
+
+
+        }
+
+        await connection.commit();
+        connection.release();
+
+        res.status(201).json({ message: "Direct sales recorded with customer info" });
+
+    } catch (err) {
+      await connection.rollback();
+        connection.release();
+        console.error("Error processing direct sale:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 
 
 exports.getSaleDetails = async (req, res) => {
@@ -129,7 +350,7 @@ exports.getAllSales = async (req, res) => {
 
 
 // Convert daily stock allocation to sales
-const { v4: uuidv4 } = require('uuid');
+// const { v4: uuidv4 } = require('uuid');
 // Add Sales 
 exports.addSalesFromDailyAllocation = async (req, res) => {
     try {
@@ -158,6 +379,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         }
 
         const salesResults = [];
+
         const sale_tracking_id = generateUniqueSaleTrackingId();
         let totalAmountReceivedForSale = 0;
 
@@ -236,7 +458,10 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
                 ]
             );
 
-            const newSaleId = insertResult.insertId;
+
+        const newSaleId = insertResult.insertId;
+        console.log("New sale created with ID:", newSaleId);
+
 
             await pool.query(
                 `UPDATE stock

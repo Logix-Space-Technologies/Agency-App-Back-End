@@ -6,6 +6,8 @@ exports.loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
 
+        console.log(req.body)
+
         if (!email || !password) {
             return res.status(400).json({ error: 'Email and password are required' });
         }
@@ -22,11 +24,17 @@ exports.loginUser = async (req, res) => {
 
         const user = users[0];
 
+        console.log(user)
+
         // Compare passwords
         const isMatch = await bcrypt.compare(password, user.password_hash);
+
+        console.log(isMatch)
         if (!isMatch) {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
+
+
 
         // Role-based message or routing (customize as needed)
         let redirectPage = '';

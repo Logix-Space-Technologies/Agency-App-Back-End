@@ -1,5 +1,5 @@
 const express = require('express');
-const { getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails } = require('../controllers/salesController');
+const { fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails } = require('../controllers/salesController');
 const router = express.Router();
 
 
@@ -10,6 +10,10 @@ router.post('/del',deleteSales);
 router.post('/create_sales_from_dsa',addSalesFromDailyAllocation);
 router.post('/meta',getProductSaleMeta);
 router.get('/details/:sale_tracking_id', getSaleDetails);
+router.post('/direct', addDirectSales);
+router.post('/customers', fecthAllCustomers);
+router.post('/latest_price', fecthLatestPrices);
+
 
 
 module.exports = router;
