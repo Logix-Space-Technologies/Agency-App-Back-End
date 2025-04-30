@@ -1,6 +1,42 @@
 const pool = require('../config/db');
 
 
+// Update product details and price
+exports.updateProduct = async (req, res) => {
+    try {
+        const {
+            product_id,
+            product_name,
+            // category_id,
+            // brand_id,
+            mrp,
+            description,
+            expiry_date,
+            product_image
+        } = req.body;
+
+        if (!product_id) {
+            return res.status(400).json({ error: "product_id is required" });
+        }
+
+        // Update product table only
+        await pool.query(
+            `UPDATE products 
+             SET product_name = ?, mrp = ?, description = ?, expiry_date = ?, product_image = ?
+             WHERE product_id = ? AND isActive = 1`,
+            [product_name, mrp, description, expiry_date, product_image, product_id]
+        );
+
+        res.json({ message: 'Product details updated successfully' });
+
+    } catch (error) {
+        console.error("Update error:", error);
+        res.status(500).json({ error: "Database error during update" });
+    }
+};
+
+
+
 //get all products
 exports.getProduct = async (req, res) => {
     try {
