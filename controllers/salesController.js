@@ -465,9 +465,9 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
 
             await pool.query(
                 `UPDATE stock
-                 SET quantity = quantity - ?
+                 SET quantity = quantity - ? , Damage_Qty=Damage_Qty + ? , Loss_Qty = Loss_Qty + ?
                  WHERE product_id = ? AND isActive = 1`,
-                [quantity_sold, product_id]
+                [quantity_sold,damaged_count ,loss_count , product_id]
             );
 
             const [stockIdResult] = await pool.query(
