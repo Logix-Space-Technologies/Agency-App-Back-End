@@ -1,9 +1,11 @@
 const express = require('express');
-const { fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails } = require('../controllers/salesController');
+const { fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails } = require('../controllers/salesController');
 const router = express.Router();
 
 
 router.post('/',getAllSales);
+router.post('/fecthAllCreditReport',fecthAllCreditReport);
+
 router.post('/add',addSales);
 router.post('/search',searchSales);
 router.post('/del',deleteSales);

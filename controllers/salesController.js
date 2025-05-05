@@ -3,6 +3,64 @@ const pool = require('../config/db');
 
 const { v4: uuidv4 } = require('uuid');
 
+
+exports.fecthAllCreditReport = async (req, res) => {
+    const { fromDate, toDate } = req.body.params;
+
+    console.log(req.body)
+
+    if (!fromDate) {
+        return res.status(400).json({ success: false, message: "fromDate is required." });
+    }
+
+    const dateToUse = toDate || fromDate;
+
+    try {
+        const [rows] = await pool.query(`
+            SELECT 
+    fs.id, 
+    s.sale_type, 
+    CASE 
+        WHEN s.sale_type = 'marketing' THEN u.name 
+        ELSE c.Name 
+    END AS name,
+    fs.sale_tracking_Id, 
+    fs.TotalAmount, 
+    fs.UserId, 
+    fs.DateofTransaction, 
+    fs.isSettled, 
+    fs.AmountPaid, 
+    fs.FuelExpenses, 
+    fs.VehcileServiceExpenses, 
+    fs.OtherExpenses,
+    (fs.TotalAmount - fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses) - fs.AmountPaid AS credit
+FROM 
+    final_sale fs
+JOIN 
+    (
+        SELECT sale_tracking_Id, MIN(sale_type) AS sale_type
+        FROM sales
+        GROUP BY sale_tracking_Id
+    ) s ON fs.sale_tracking_Id = s.sale_tracking_Id
+LEFT JOIN 
+    users u ON u.user_id = fs.UserId AND s.sale_type = 'marketing'
+LEFT JOIN 
+    customers c ON c.id = fs.UserId AND s.sale_type != 'marketing'
+WHERE 
+    fs.DateofTransaction BETWEEN ? AND ? AND fs.isSettled=0 
+
+        `, [fromDate, dateToUse]);
+
+        res.json({ success: true, data: rows });
+
+    } catch (error) {
+        console.error("Error fetching credit report:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch credit report" });
+    }
+};
+
+
+
 exports.fecthAllCustomers = async (req, res) => {
 
     try {
