@@ -718,25 +718,34 @@ exports.searchSales = async (req, res) => {
         const { sale_date, from_date, to_date } = req.body;
         let query = `
             SELECT
-                f.id,
-                f.sale_tracking_Id,
-                f.TotalAmount,
-                u.name,
-                f.DateofTransaction,
-                f.isSettled,
-                f.AmountPaid,
-                f.FuelExpenses,
-                f.VehcileServiceExpenses,
-                f.OtherExpenses
-            FROM
-                final_sale f
-            JOIN
-                users u ON f.UserId = u.user_id
-            WHERE
+    f.id,
+    f.sale_tracking_Id,
+    f.TotalAmount,
+    CASE 
+        WHEN s.sale_type = 'marketing' THEN u.name
+        ELSE c.Name
+    END AS name,
+    f.DateofTransaction,
+    f.isSettled,
+    f.AmountPaid,
+    f.FuelExpenses,
+    f.VehcileServiceExpenses,
+    f.OtherExpenses
+FROM
+    final_sale f
+JOIN (
+    SELECT sale_tracking_Id, sale_type
+    FROM sales
+    GROUP BY sale_tracking_Id
+) s ON f.sale_tracking_Id = s.sale_tracking_Id
+LEFT JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id
+LEFT JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id
+WHERE
+
         `;
         const queryParams = [];
 
-        
+
 
         if (sale_date) {
             query += `DATE(f.DateofTransaction) = ?`;
