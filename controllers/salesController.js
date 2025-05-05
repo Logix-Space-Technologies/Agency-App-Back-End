@@ -736,6 +736,8 @@ exports.searchSales = async (req, res) => {
         `;
         const queryParams = [];
 
+        
+
         if (sale_date) {
             query += `DATE(f.DateofTransaction) = ?`;
             queryParams.push(sale_date);
