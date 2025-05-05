@@ -151,3 +151,44 @@ exports.deleteUser = async (req, res) => {
         res.status(500).json({ error: 'Database error' });
     }
 };
+
+
+
+// Edit User
+exports.editUser = async (req, res) => {
+    try {
+        const {
+            user_id,
+            profile_avathar,
+            name,
+            role,
+            phone,
+            email,
+            Place_Of_Allocation
+        } = req.body;
+
+        if (!user_id) {
+            return res.status(400).json({ error: "User ID is required" });
+        }
+
+        const query = `
+            UPDATE users 
+            SET profile_avathar = ?, 
+                name = ?, 
+                role = ?, 
+                phone = ?, 
+                email = ?, 
+                Place_Of_Allocation = ? 
+            WHERE user_id = ?
+        `;
+
+        const values = [profile_avathar, name, role, phone, email, Place_Of_Allocation, user_id];
+
+        await pool.query(query, values);
+
+        res.json({ message: 'User updated successfully' });
+    } catch (error) {
+        console.error("Edit User Error:", error);
+        res.status(500).json({ error: 'Database error' });
+    }
+};
