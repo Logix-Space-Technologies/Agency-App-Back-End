@@ -359,8 +359,22 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
             marketing_staff_id,
             sale_date = new Date(),
             products = [],
-            amount_paid = 0
+            amount_paid = 0,
+            expenses = {},                 // Destructure expenses
+            payment_breakdown = {},       // Destructure payment breakdown
+           
         } = req.body;
+
+
+        console.log(req.body)
+        
+        // You can now access these like:
+        const { fuel = 0, vehicle_service = 0, other = 0 } = expenses;
+        const { cash = 0, card = 0, upi = 0 } = payment_breakdown;
+        
+        console.log("Fuel:", fuel);
+        console.log("Card Payment:", card);
+
 
         if (!marketing_staff_id || !Array.isArray(products) || products.length === 0) {
             return res.status(400).json({ error: "Required fields are missing" });
@@ -382,23 +396,56 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
 
         const sale_tracking_id = generateUniqueSaleTrackingId();
         let totalAmountReceivedForSale = 0;
+        const totalDeductions1 = parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
+      console.log("Products - 0")
+        console.log(products[0].amount_received)
+
+        const isSettledItem1 = amount_paid >= (products[0].amount_received - totalDeductions1) ? 1 : 0;
+
+        console.log(isSettledItem1)
+        console.log("is Settled Item  ? " + isSettledItem1 )
+
+        console.log("-----------------")
+
+        console.log({
+            fuel,
+            vehicle_service,
+            other,
+            sale_tracking_id,
+            totalAmount: 0,
+            marketing_staff_id,
+            sale_date,
+            isSettledItem1,
+            amount_paid
+          });
+          console.log("-----------------")
 
         await pool.query(
-            `INSERT INTO final_sale (sale_tracking_Id, TotalAmount, UserId, DateofTransaction, isSettled, AmountPaid)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [sale_tracking_id, 0, marketing_staff_id, sale_date,
-            parseFloat(amount_paid) > 0 ? 0 : 1, amount_paid]
+            `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction,
+             isSettled, AmountPaid)
+             VALUES (?,?,?,?, ?, ?, ?, ?, ?)`,
+            [fuel,vehicle_service, other,  sale_tracking_id, 0, marketing_staff_id, sale_date,isSettledItem1, amount_paid]
         );
+
+        
+        console.log("Final Sale Completed !!! ")
+
 
         if (parseFloat(amount_paid) > 0) {
             await pool.query(
-                `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate, isActive)
-                 VALUES (?, ?, now(), ?)`,
-                [sale_tracking_id, amount_paid, 1]
+                `INSERT INTO sales_credit_history (UPI, Cash, Card, sale_tracking_Id, amount, creditedDate, isActive)
+                 VALUES (?,?,?,?, ?, now(), ?)`,
+                [ upi,cash ,card, sale_tracking_id, amount_paid, 1]
             );
         }
 
+        console.log("sales_credit_history Completed  !!! ")
+
+
         for (const item of products) {
+            console.log("Product loop  !!! ")
+            console.log(item)
+
             const {
                 product_id,
                 quantity_sold = 0,
@@ -409,16 +456,32 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
 
             totalAmountReceivedForSale += parseFloat(amount_received);
 
+            console.log("total AmountReceived For Sale" + totalAmountReceivedForSale)
+
+
             if (!allocationMap[product_id]) {
+                console.log("No Product")
                 console.warn(`No active allocation found for product_id ${product_id}`);
                 continue;
             }
+            
+            console.log("quantity_sold"+quantity_sold )
+            console.log("quantity Allocated "+ allocationMap[product_id].allocated_quantity )
+
 
             if (quantity_sold > allocationMap[product_id].allocated_quantity) {
+                console.log("quantity allocated     error " )
+
                 return res.status(400).json({
                     error: `Sold quantity (${quantity_sold}) exceeds allocated quantity (${allocationMap[product_id].allocated_quantity}) for product ID ${product_id}`
                 });
             }
+
+
+            console.log("Product Fetch Going To " )
+
+console.log(product_id)
+            console.log(sale_date)
 
             const [priceRows] = await pool.query(
                 `SELECT price_id
@@ -428,6 +491,8 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
                 [product_id, sale_date]
             );
 
+            console.log("product_prices fetch slect")
+
             if (priceRows.length === 0) {
                 console.warn(`No price found for product_id ${product_id}`);
                 continue;
@@ -435,9 +500,20 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
 
             const price_id = priceRows[0].price_id;
 
-            const isSettledItem = parseFloat(amount_paid) >= parseFloat(amount_received) ? 1 : 0;
+            // const totalDeductions = parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
+
+            // console.log("Deductions"+totalDeductions)
+            // console.log("amount Received" + amount_received)
+            // console.log("amount Total" + amount_paid)
+            // const isSettledItem = amount_paid >= (amount_received - totalDeductions) ? 1 : 0;
+
+            // console.log("Is Settled? " + isSettledItem);
+
+            //const isSettledItem = parseFloat(amount_paid) >= parseFloat(amount_received) - (fuel+other+vehicle_service) ? 1 : 0;
             const isCredit = parseFloat(amount_paid) < parseFloat(amount_received) ? 1 : 0;
 
+
+            console.log("Enter Into Sales !!! ")
             const [insertResult] = await pool.query(
                 `INSERT INTO sales
                  (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count, sale_tracking_id)
@@ -452,7 +528,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
                     isCredit,
                     sale_date,
                     damaged_count,
-                    isSettledItem,
+                    0,
                     loss_count,
                     sale_tracking_id
                 ]
@@ -517,14 +593,16 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         );
 
         if (finalSaleRecord.length > 0) {
-            const { AmountPaid, TotalAmount } = finalSaleRecord[0];
-            const isFullySettled = parseFloat(AmountPaid) >= parseFloat(TotalAmount) ? 1 : 0;
-            await pool.query(
-                `UPDATE final_sale
-                 SET isSettled = ?
-                 WHERE sale_tracking_Id = ?`,
-                [isFullySettled, sale_tracking_id]
-            );
+            // const { AmountPaid, TotalAmount } = finalSaleRecord[0];
+
+            // const totalDeductions = parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
+
+            // console.log("Deductions"+totalDeductions)
+            // console.log("amount Received" + amount_received)
+            // console.log("amount Total" + amount_paid)
+            // const isSettledItemNew = amount_paid >= (amount_received - totalDeductions) ? 1 : 0;
+
+        
         }
 
         res.json({ message: 'Sales added successfully', sales: salesResults });
@@ -646,7 +724,10 @@ exports.searchSales = async (req, res) => {
                 u.name,
                 f.DateofTransaction,
                 f.isSettled,
-                f.AmountPaid
+                f.AmountPaid,
+                f.FuelExpenses,
+                f.VehcileServiceExpenses,
+                f.OtherExpenses
             FROM
                 final_sale f
             JOIN
