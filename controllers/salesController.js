@@ -45,7 +45,7 @@ JOIN
 LEFT JOIN 
     users u ON u.user_id = fs.UserId AND s.sale_type = 'marketing'
 LEFT JOIN 
-    customers c ON c.id = fs.UserId AND s.sale_type != 'marketing'
+    Customers c ON c.id = fs.UserId AND s.sale_type != 'marketing'
 WHERE 
     fs.DateofTransaction BETWEEN ? AND ? AND fs.isSettled=0 
 
