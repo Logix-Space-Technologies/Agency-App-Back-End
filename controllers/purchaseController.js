@@ -177,8 +177,25 @@ exports.requestReplacement = async (req, res) => {
 
 // Get Replacement History
 exports.getReplacementHistory = async (req, res) => {
+    const { page = 1, limit = 10, startDate, endDate, supplierName } = req.body;
+    const offset = (page - 1) * limit;
+
+    let conditions = `pur.replacement_provided = 1`;
+    const params = [];
+
+    if (startDate && endDate) {
+        conditions += ` AND pur.purchase_date BETWEEN ? AND ?`;
+        params.push(startDate, endDate);
+    }
+
+    if (supplierName) {
+        conditions += ` AND s.supplier_name LIKE ?`;
+        params.push(`%${supplierName}%`);
+    }
+
     try {
-        const [history] = await pool.execute(`
+        const [history] = await pool.execute(
+            `
             SELECT
                 p.product_name,
                 pur.quantity,
@@ -194,10 +211,13 @@ exports.getReplacementHistory = async (req, res) => {
             JOIN
                 suppliers s ON pur.supplier_id = s.supplier_id
             WHERE
-                pur.replacement_provided = 1
-            ORDER BY
-                pur.replacement_date DESC
-        `);
+                ${conditions}
+            ORDER BY pur.id DESC
+            LIMIT ? OFFSET ?
+        `,
+            [...params, parseInt(limit), parseInt(offset)]
+        );
+
         res.json(history);
     } catch (error) {
         console.error('Error fetching replacement history:', error);
