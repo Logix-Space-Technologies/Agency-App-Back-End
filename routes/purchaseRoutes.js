@@ -20,7 +20,7 @@ router.get('/damaged-items', getDamagedItems);
 router.post('/request-replacement', requestReplacement);
 
 // Get replacement history
-router.get('/replacement-history',getReplacementHistory);
+router.post('/replacement-history',getReplacementHistory);
 
 
 

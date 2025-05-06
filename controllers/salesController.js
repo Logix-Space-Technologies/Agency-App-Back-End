@@ -625,8 +625,8 @@ console.log(product_id)
             }
 
             await pool.query(
-                `UPDATE daily_stock_allocation SET converted_to_sales = 1 WHERE daily_stock_id = ?`,
-                [allocationMap[product_id].daily_stock_id]
+                `UPDATE daily_stock_allocation SET converted_to_sales = 1 , allocated_quantity = allocated_quantity-?  WHERE daily_stock_id = ?`,
+                [quantity_sold, allocationMap[product_id].daily_stock_id]
             );
 
             salesResults.push({
@@ -779,7 +779,7 @@ exports.searchSales = async (req, res) => {
     f.id,
     f.sale_tracking_Id,
     f.TotalAmount,
-    CASE 
+    CASE
         WHEN s.sale_type = 'marketing' THEN u.name
         ELSE c.Name
     END AS name,
@@ -792,18 +792,15 @@ exports.searchSales = async (req, res) => {
 FROM
     final_sale f
 JOIN (
-    SELECT sale_tracking_Id, sale_type
+    SELECT sale_tracking_Id, MAX(sale_type) AS sale_type
     FROM sales
     GROUP BY sale_tracking_Id
 ) s ON f.sale_tracking_Id = s.sale_tracking_Id
 LEFT JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id
 LEFT JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id
 WHERE
-
         `;
         const queryParams = [];
-
-
 
         if (sale_date) {
             query += `DATE(f.DateofTransaction) = ?`;
@@ -815,7 +812,6 @@ WHERE
             return res.status(400).json({ error: "Please provide a sale date or a date range." });
         }
 
-        // Add the ORDER BY clause here
         query += ` ORDER BY f.DateofTransaction`;
 
         const [result] = await pool.query(query, queryParams);
