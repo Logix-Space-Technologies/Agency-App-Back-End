@@ -21,8 +21,7 @@ exports.viewAllStocks = async (req, res) => {
     COALESCE(SUM(dsa.allocated_quantity), 0) AS allocated_stock,
     s.quantity 
         - COALESCE(SUM(dsa.allocated_quantity), 0)
-        - COALESCE(s.Damage_Qty, 0)
-        - COALESCE(s.Loss_Qty, 0) AS current_stock
+        AS current_stock
 
 FROM 
     stock s
