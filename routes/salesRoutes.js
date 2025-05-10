@@ -1,5 +1,5 @@
 const express = require('express');
-const { fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails } = require('../controllers/salesController');
+const { incCredit, fecthAllCreditReportUser, fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails } = require('../controllers/salesController');
 const router = express.Router();
 
 
@@ -15,6 +15,8 @@ router.get('/details/:sale_tracking_id', getSaleDetails);
 router.post('/direct', addDirectSales);
 router.post('/customers', fecthAllCustomers);
 router.post('/latest_price', fecthLatestPrices);
+router.post('/user-credit', fecthAllCreditReportUser);
+router.post('/inc-credit', incCredit);
 
 
 
