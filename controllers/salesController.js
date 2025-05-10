@@ -4,6 +4,115 @@ const pool = require('../config/db');
 const { v4: uuidv4 } = require('uuid');
 
 
+
+exports.incCredit = async (req, res) => {
+    try {
+        console.log(req.body)
+        const { allocation_id, marketing_staff_id, payment } = req.body;
+        const { cash, card, gpay } = payment;
+
+        // Calculate total payment amount
+        const totalAmount = cash + card + gpay;
+
+        // 1. Update the final_sale table
+        const updateQuery = `
+            UPDATE final_sale 
+            SET AmountPaid = AmountPaid + ? 
+            WHERE id = ?
+        `;
+        
+         await pool.query(updateQuery, [totalAmount, allocation_id]);
+
+        // 2. Insert into sales_credit_history
+        const insertQuery = `
+            INSERT INTO sales_credit_history 
+            (sale_tracking_Id, amount, creditedDate, isActive, UPI, Cash, Card) 
+            VALUES (?, ?, NOW(), 1, ?, ?, ?)
+        `;
+        
+        // Get sale_tracking_Id from final_sale
+        const [saleData] = await pool.query(`
+            SELECT sale_tracking_Id 
+            FROM final_sale 
+            WHERE id = ?
+        `, [allocation_id]);
+
+        if (!saleData || !saleData.length) {
+            return res.status(404).json({ error: 'Sale record not found' });
+        }
+
+        const saleTrackingId = saleData[0].sale_tracking_Id;
+
+        await pool.query(insertQuery, [
+            saleTrackingId,
+            totalAmount,
+            gpay, // UPI/GPay amount
+            cash,
+            card
+        ]);
+
+        res.status(200).json({ 
+            success: true,
+            message: 'Payment successfully recorded',
+            allocation_id,
+            total_payment: totalAmount
+        });
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Database error' });
+    }
+}
+exports.fecthAllCreditReportUser = async (req, res) => {
+    const { marketing_staff_id } = req.body;
+
+    console.log(req.body);
+
+    try {
+        const [rows] = await pool.query(`
+            SELECT 
+                fs.id, 
+                s.sale_type, 
+                CASE 
+                    WHEN s.sale_type = 'marketing' THEN u.name 
+                    ELSE c.Name 
+                END AS name,
+                fs.sale_tracking_Id, 
+                fs.TotalAmount, 
+                fs.UserId, 
+                fs.DateofTransaction, 
+                fs.isSettled, 
+                fs.AmountPaid, 
+                fs.FuelExpenses, 
+                fs.VehcileServiceExpenses, 
+                fs.OtherExpenses,
+                (fs.TotalAmount - fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses) - fs.AmountPaid AS credit
+            FROM 
+                final_sale fs
+            JOIN 
+                (
+                    SELECT sale_tracking_Id, MIN(sale_type) AS sale_type
+                    FROM sales
+                    GROUP BY sale_tracking_Id
+                ) s ON fs.sale_tracking_Id = s.sale_tracking_Id
+            LEFT JOIN 
+                users u ON u.user_id = fs.UserId AND s.sale_type = 'marketing'
+            LEFT JOIN 
+                Customers c ON c.id = fs.UserId AND s.sale_type != 'marketing'
+            WHERE 
+                fs.UserId = ?
+                AND ((fs.TotalAmount - fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses) - fs.AmountPaid) > 0
+        `, [marketing_staff_id]);
+
+        res.json({ success: true, data: rows });
+
+    } catch (error) {
+        console.error("Error fetching credit report:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch credit report" });
+    }
+};
+
+
 exports.fecthAllCreditReport = async (req, res) => {
     const { fromDate, toDate } = req.body.params;
 
