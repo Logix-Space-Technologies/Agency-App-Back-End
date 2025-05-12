@@ -4,7 +4,7 @@ const pool = require('../config/db');
 exports.viewAllStocks = async (req, res) => {
     try {
         const query = `
-            SELECT 
+ SELECT 
     p.product_id,
     p.product_name,
     p.category_id,
@@ -19,9 +19,7 @@ exports.viewAllStocks = async (req, res) => {
     COALESCE(pp.direct_selling_price, 0) AS direct_selling_price,
     COALESCE(pp.whole_sale_price, 0) AS whole_sale_price,
     COALESCE(SUM(dsa.allocated_quantity), 0) AS allocated_stock,
-    s.quantity 
-        - COALESCE(SUM(dsa.allocated_quantity), 0)
-        AS current_stock
+    s.quantity - COALESCE(SUM(dsa.allocated_quantity), 0) AS current_stock
 
 FROM 
     stock s
@@ -32,13 +30,24 @@ JOIN
 LEFT JOIN 
     categories c ON p.category_id = c.category_id
 LEFT JOIN 
-    daily_stock_allocation dsa ON s.product_id = dsa.product_id AND dsa.converted_to_sales = 0
+    daily_stock_allocation dsa 
+    ON s.product_id = dsa.product_id 
+    AND dsa.converted_to_sales = 0 
+    AND dsa.isActive = 1
 
 WHERE 
-    s.isActive = 1
+    s.isActive = 1 
 
 GROUP BY 
-    s.stock_id, p.product_id, pp.price_id, s.quantity, s.Damage_Qty, s.Loss_Qty, p.product_name, p.category_id, c.category_name
+    s.stock_id, 
+    p.product_id, 
+    pp.price_id, 
+    s.quantity, 
+    s.Damage_Qty, 
+    s.Loss_Qty, 
+    p.product_name, 
+    p.category_id, 
+    c.category_name;
 
         `;
         
@@ -97,6 +106,7 @@ exports.searchStock = async (req, res) => {
 
 //delete stock
 exports.deleteStock = async (req, res) => {
+    console.log( req.body)
     try {
         const { stock_id } = req.body;
         if (!stock_id) return res.status(400).json({ error: "stock id required" })
