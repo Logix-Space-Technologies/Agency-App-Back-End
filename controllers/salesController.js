@@ -4,6 +4,77 @@ const pool = require('../config/db');
 const { v4: uuidv4 } = require('uuid');
 
 
+exports.cashReport = async (req, res) => {
+    try {
+        let { fromDate, toDate } = req.body; // Or use req.query if it's a GET request
+
+        console.log(req.body)
+        if (!fromDate) {
+            return res.status(400).json({ success: false, message: "fromDate is required" });
+        }
+
+        // If only fromDate is provided, set toDate to fromDate
+        toDate = toDate || fromDate;
+
+        // 1. Credit repayments (UPI, Cash, Card)
+        const [creditHistory] = await pool.query(`
+            SELECT 
+                SUM(UPI) AS totalUPI,
+                SUM(Cash) AS totalCash,
+                SUM(Card) AS totalCard
+            FROM sales_credit_history
+            WHERE isActive = 1
+              AND creditedDate BETWEEN ? AND ?
+        `, [fromDate, toDate]);
+
+        // 2. Final sale amounts and expenses
+        const [finalSale] = await pool.query(`
+            SELECT 
+                SUM(AmountPaid) AS totalAmountPaid,
+                SUM(FuelExpenses) AS totalFuelExpenses,
+                SUM(VehcileServiceExpenses) AS totalServiceExpenses,
+                SUM(OtherExpenses) AS totalOtherExpenses
+            FROM final_sale
+            WHERE isSettled = 1
+              AND DateofTransaction BETWEEN ? AND ?
+        `, [fromDate, toDate]);
+
+        // 3. Cash sales (non-credit)
+        const [cashSales] = await pool.query(`
+            SELECT 
+                SUM(amount_received) AS totalAmountReceived
+            FROM sales
+            WHERE is_credit = 0 AND isActive = 1
+              AND sale_date BETWEEN ? AND ?
+        `, [fromDate, toDate]);
+
+        // Response
+        const report = {
+            fromCreditHistory: {
+                totalUPI: creditHistory[0].totalUPI || 0,
+                totalCash: creditHistory[0].totalCash || 0,
+                totalCard: creditHistory[0].totalCard || 0,
+            },
+            fromFinalSale: {
+                totalAmountPaid: finalSale[0].totalAmountPaid || 0,
+                totalFuelExpenses: finalSale[0].totalFuelExpenses || 0,
+                totalServiceExpenses: finalSale[0].totalServiceExpenses || 0,
+                totalOtherExpenses: finalSale[0].totalOtherExpenses || 0,
+            },
+            fromSales: {
+                totalCashSaleReceived: cashSales[0].totalAmountReceived || 0
+            }
+        };
+
+        res.status(200).json({ success: true, report });
+    } catch (error) {
+        console.error("Error generating cash report:", error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+
+
 
 exports.incCredit = async (req, res) => {
     try {
