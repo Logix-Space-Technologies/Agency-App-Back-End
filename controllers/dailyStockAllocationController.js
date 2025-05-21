@@ -1,5 +1,109 @@
 const pool = require('../config/db');
 
+
+
+//view all
+exports.getAllocationByStaffAndDate = async (req, res) => {
+
+    const { staff_id, date } = req.body;
+
+    if (!staff_id || !date) {
+        return res.status(400).json({ message: "staff_id and date are required" });
+    }
+
+    try {
+        const [rows] = await pool.query(`
+            SELECT 
+                dsa.daily_stock_id,
+                dsa.marketing_staff_id,
+                dsa.product_id,
+                dsa.allocated_quantity,
+                dsa.date,
+                dsa.isActive AS allocation_isActive,
+                dsa.converted_to_sales,
+                
+                p.product_name,
+                p.category_id,
+                p.brand_id,
+                p.mrp,
+                p.description,
+                p.expiry_date,
+                p.product_image,
+                p.isActive AS product_isActive,
+
+                u.name AS staff_name,
+                u.profile_avathar,
+                u.role,
+                u.phone,
+                u.email,
+                u.Place_Of_Allocation,
+                u.isActive AS user_isActive
+
+            FROM daily_stock_allocation dsa
+            JOIN products p ON dsa.product_id = p.product_id
+            JOIN users u ON dsa.marketing_staff_id = u.user_id
+            WHERE dsa.marketing_staff_id = ? AND dsa.date = ?
+        `, [staff_id, date]);
+
+        res.status(200).json(rows);
+    } catch (error) {
+        console.error('Error fetching staff allocation:', error);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+
+
+
+exports.getAllocationByProductAndDate = async (req, res) => {
+    const { product_id, date } = req.body;
+
+    if (!product_id || !date) {
+        return res.status(400).json({ message: "product_id and date are required" });
+    }
+
+    try {
+        const [rows] = await pool.query(`
+            SELECT 
+                dsa.daily_stock_id,
+                dsa.marketing_staff_id,
+                dsa.product_id,
+                dsa.allocated_quantity,
+                dsa.date,
+                dsa.isActive AS allocation_isActive,
+                dsa.converted_to_sales,
+
+                p.product_name,
+                p.category_id,
+                p.brand_id,
+                p.mrp,
+                p.description,
+                p.expiry_date,
+                p.product_image,
+                p.isActive AS product_isActive,
+
+                u.name AS staff_name,
+                u.profile_avathar,
+                u.role,
+                u.phone,
+                u.email,
+                u.Place_Of_Allocation,
+                u.isActive AS user_isActive
+
+            FROM daily_stock_allocation dsa
+            JOIN products p ON dsa.product_id = p.product_id
+            JOIN users u ON dsa.marketing_staff_id = u.user_id
+            WHERE dsa.product_id = ? AND dsa.date = ?
+        `, [product_id, date]);
+
+        res.status(200).json(rows);
+    } catch (error) {
+        console.error('Error fetching product allocation:', error);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+
 // Multiple 
 exports.addDailyStockAllocation = async (req, res) => {
     try {
