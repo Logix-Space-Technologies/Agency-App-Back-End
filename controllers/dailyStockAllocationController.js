@@ -42,7 +42,7 @@ exports.getAllocationByStaffAndDate = async (req, res) => {
             FROM daily_stock_allocation dsa
             JOIN products p ON dsa.product_id = p.product_id
             JOIN users u ON dsa.marketing_staff_id = u.user_id
-            WHERE dsa.marketing_staff_id = ? AND dsa.date = ?
+            WHERE dsa.marketing_staff_id = ? AND dsa.date = ? 
         `, [staff_id, date]);
 
         res.status(200).json(rows);
@@ -55,6 +55,54 @@ exports.getAllocationByStaffAndDate = async (req, res) => {
 
 
 
+// exports.getAllocationByProductAndDate = async (req, res) => {
+//     const { product_id, date } = req.body;
+
+//     if (!product_id || !date) {
+//         return res.status(400).json({ message: "product_id and date are required" });
+//     }
+
+//     try {
+//         const [rows] = await pool.query(`
+//             SELECT 
+//                 dsa.daily_stock_id,
+//                 dsa.marketing_staff_id,
+//                 dsa.product_id,
+//                 dsa.allocated_quantity,
+//                 dsa.date,
+//                 dsa.isActive AS allocation_isActive,
+//                 dsa.converted_to_sales,
+
+//                 p.product_name,
+//                 p.category_id,
+//                 p.brand_id,
+//                 p.mrp,
+//                 p.description,
+//                 p.expiry_date,
+//                 p.product_image,
+//                 p.isActive AS product_isActive,
+
+//                 u.name AS staff_name,
+//                 u.profile_avathar,
+//                 u.role,
+//                 u.phone,
+//                 u.email,
+//                 u.Place_Of_Allocation,
+//                 u.isActive AS user_isActive
+
+//             FROM daily_stock_allocation dsa
+//             JOIN products p ON dsa.product_id = p.product_id
+//             JOIN users u ON dsa.marketing_staff_id = u.user_id
+//             WHERE dsa.product_id = ? AND dsa.date = ?
+//         `, [product_id, date]);
+
+//         res.status(200).json(rows);
+//     } catch (error) {
+//         console.error('Error fetching product allocation:', error);
+//         res.status(500).json({ message: "Internal server error" });
+//     }
+// };
+
 exports.getAllocationByProductAndDate = async (req, res) => {
     const { product_id, date } = req.body;
 
@@ -63,7 +111,8 @@ exports.getAllocationByProductAndDate = async (req, res) => {
     }
 
     try {
-        const [rows] = await pool.query(`
+        // 1. Allocation details
+        const [allocations] = await pool.query(`
             SELECT 
                 dsa.daily_stock_id,
                 dsa.marketing_staff_id,
@@ -93,12 +142,52 @@ exports.getAllocationByProductAndDate = async (req, res) => {
             FROM daily_stock_allocation dsa
             JOIN products p ON dsa.product_id = p.product_id
             JOIN users u ON dsa.marketing_staff_id = u.user_id
-            WHERE dsa.product_id = ? AND dsa.date = ?
+            WHERE dsa.product_id = ? AND dsa.date = ? AND dsa.converted_to_sales =0
         `, [product_id, date]);
 
-        res.status(200).json(rows);
+        // 2. Sales details
+        const [sales] = await pool.query(`
+            SELECT 
+                s.sale_id,
+                s.sale_type,
+                s.marketing_staff_id,
+                s.product_id,
+                s.price_id,
+                s.quantity_sold,
+                s.amount_received,
+                s.is_credit,
+                s.sale_tracking_Id,
+                s.sale_date,
+                s.damaged_count,
+                s.loss_count,
+                s.is_settled,
+                s.isActive,
+
+                u.name AS staff_name,
+                u.phone,
+                u.email
+
+            FROM sales s
+            LEFT JOIN users u ON s.marketing_staff_id = u.user_id
+            WHERE s.product_id = ? AND s.sale_date = ? 
+        `, [product_id, date]);
+
+        // 3. Summary totals
+        const total_allocated_quantity = allocations.reduce((sum, row) => sum + row.allocated_quantity, 0);
+        const total_sold_quantity = sales.reduce((sum, row) => sum + row.quantity_sold, 0);
+
+        // 4. Final response
+        res.status(200).json({
+            allocations,
+            sales,
+            summary: {
+                total_allocated_quantity,
+                total_sold_quantity
+            }
+        });
+
     } catch (error) {
-        console.error('Error fetching product allocation:', error);
+        console.error('Error fetching allocation and sales data:', error);
         res.status(500).json({ message: "Internal server error" });
     }
 };
