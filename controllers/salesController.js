@@ -172,10 +172,13 @@ exports.fecthAllCreditReportUser = async (req, res) => {
                 users u ON u.user_id = fs.UserId AND s.sale_type = 'marketing'
             LEFT JOIN 
                 Customers c ON c.id = fs.UserId AND s.sale_type != 'marketing'
-            WHERE 
-                fs.UserId = ?
-                AND ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) > 0
-                 OR ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) < 0
+        WHERE 
+    fs.UserId = ?
+    AND (
+        ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) > 0
+        OR ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) < 0
+    )
+
         `, [marketing_staff_id]);
 
 
