@@ -735,13 +735,13 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
             console.log("quantity Allocated "+ allocationMap[product_id].allocated_quantity )
 
 
-            if (quantity_sold > allocationMap[product_id].allocated_quantity) {
-                console.log("quantity allocated     error " )
+            // if (quantity_sold > allocationMap[product_id].allocated_quantity) {
+            //     console.log("quantity allocated     error " )
 
-                return res.status(400).json({
-                    error: `Sold quantity (${quantity_sold}) exceeds allocated quantity (${allocationMap[product_id].allocated_quantity}) for product ID ${product_id}`
-                });
-            }
+            //     return res.status(400).json({
+            //         error: `Sold quantity (${quantity_sold}) exceeds allocated quantity (${allocationMap[product_id].allocated_quantity}) for product ID ${product_id}`
+            //     });
+            // }
 
 
             console.log("Product Fetch Going To " )
