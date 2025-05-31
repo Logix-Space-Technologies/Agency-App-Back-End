@@ -313,7 +313,9 @@ exports.fecthLatestPrices = async (req, res) => {
 exports.addDirectSales = async (req, res) => {
     const { agency_id, employee_id, customer, products,totalAmount,saleType } = req.body;
 
-    if (!agency_id || !employee_id || !Array.isArray(products) || products.length === 0 || !customer) {
+    console.log(req.body)
+
+    if (!agency_id || products.length === 0 ) {
         return res.status(400).json({ message: "Missing or invalid input" });
     }
 

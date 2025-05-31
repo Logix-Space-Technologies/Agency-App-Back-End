@@ -81,6 +81,18 @@ exports.getUsers = async (req, res) => {
     }
 };
 
+// Get All Customers
+exports.getCustomers = async (req, res) => {
+    try {
+                const { mobile } = req.body;
+
+        const [customers] = await pool.query('SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE `Mobile`=?', [mobile]);
+        res.json(customers);
+    } catch (error) {
+        res.status(500).json({ error: 'Database error' });
+    }
+};
+
 // Search User
 exports.searchUser = async (req, res) => {
     try {
