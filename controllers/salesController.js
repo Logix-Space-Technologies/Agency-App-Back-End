@@ -4,6 +4,49 @@ const pool = require('../config/db');
 const { v4: uuidv4 } = require('uuid');
 
 
+exports.fetchDailyDataForPrint = async (req, res) => {
+    const { marketing_staff_id, date } = req.body;
+
+    try {
+        const [finalSalerows] = await pool.query(
+            "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses` FROM `final_sale` WHERE `UserId` = ? AND `DateofTransaction` = ?",
+            [marketing_staff_id, date]
+        );
+
+        const [productData] = await pool.query(
+            `SELECT 
+                s.sale_id, 
+                s.sale_type, 
+                s.marketing_staff_id, 
+                p.product_name, 
+                s.price_id, 
+                s.quantity_sold, 
+                s.amount_received, 
+                s.is_credit, 
+                s.sale_tracking_Id, 
+                s.sale_date, 
+                s.damaged_count, 
+                s.is_settled, 
+                s.loss_count, 
+                s.isActive
+            FROM 
+                sales s
+            JOIN 
+                products p ON s.product_id = p.product_id
+            WHERE 
+                s.marketing_staff_id = ? AND s.sale_date = ?`,
+            [marketing_staff_id, date]
+        );
+
+        res.json({ success: true, saledata: finalSalerows, details: productData });
+    } catch (error) {
+        console.error("Error fetching daily data for print:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch data" });
+    }
+};
+
+
+
 exports.cashReport = async (req, res) => {
     try {
         let { fromDate, toDate } = req.body; // Or use req.query if it's a GET request
