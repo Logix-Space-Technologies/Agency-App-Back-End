@@ -1,5 +1,5 @@
 const express = require('express');
-const { cashReport,incCredit, fecthAllCreditReportUser, fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails } = require('../controllers/salesController');
+const { fetchDailyDataForPrint,cashReport,incCredit, fecthAllCreditReportUser, fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails } = require('../controllers/salesController');
 const router = express.Router();
 
 
@@ -18,6 +18,7 @@ router.post('/latest_price', fecthLatestPrices);
 router.post('/user-credit', fecthAllCreditReportUser);
 router.post('/inc-credit', incCredit);
 router.post('/cashReport', cashReport);
+router.post('/fetchDailyDataForPrint', fetchDailyDataForPrint);
 
 
 
