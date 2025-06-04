@@ -49,15 +49,15 @@ exports.fetchDailyDataForPrint = async (req, res) => {
 
 exports.cashReport = async (req, res) => {
     try {
-        let { fromDate, toDate } = req.body; // Or use req.query if it's a GET request
+        let { fromDate, toDate } = req.body;
 
-        console.log(req.body)
         if (!fromDate) {
             return res.status(400).json({ success: false, message: "fromDate is required" });
         }
 
-        // If only fromDate is provided, set toDate to fromDate
-        toDate = toDate || fromDate;
+        // If toDate is not given, treat it as a single-day range
+        const startDateTime = fromDate + " 00:00:00";
+        const endDateTime = (toDate || fromDate) + " 23:59:59";
 
         // 1. Credit repayments (UPI, Cash, Card)
         const [creditHistory] = await pool.query(`
@@ -68,7 +68,7 @@ exports.cashReport = async (req, res) => {
             FROM sales_credit_history
             WHERE isActive = 1
               AND creditedDate BETWEEN ? AND ?
-        `, [fromDate, toDate]);
+        `, [startDateTime, endDateTime]);
 
         // 2. Final sale amounts and expenses
         const [finalSale] = await pool.query(`
@@ -80,7 +80,7 @@ exports.cashReport = async (req, res) => {
             FROM final_sale
             WHERE isSettled = 1
               AND DateofTransaction BETWEEN ? AND ?
-        `, [fromDate, toDate]);
+        `, [startDateTime, endDateTime]);
 
         // 3. Cash sales (non-credit)
         const [cashSales] = await pool.query(`
@@ -89,9 +89,8 @@ exports.cashReport = async (req, res) => {
             FROM sales
             WHERE is_credit = 0 AND isActive = 1
               AND sale_date BETWEEN ? AND ?
-        `, [fromDate, toDate]);
+        `, [startDateTime, endDateTime]);
 
-        // Response
         const report = {
             fromCreditHistory: {
                 totalUPI: creditHistory[0].totalUPI || 0,
