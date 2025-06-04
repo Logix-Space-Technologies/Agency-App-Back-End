@@ -226,20 +226,7 @@ exports.fecthAllCreditReportUser = async (req, res) => {
 
 
          const [creditInfo] = await pool.query(`
-    SELECT 
-    fs.UserId, 
-    SUM(fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) AS TotalAmount, 
-    SUM(fs.AmountPaid) AS TotalPaid,
-    SUM(fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - SUM(fs.AmountPaid) AS Credit
-FROM 
-    final_sale fs
-JOIN 
-    sales s ON fs.sale_tracking_Id = s.sale_tracking_Id
-WHERE 
-    fs.UserId = ? 
-    AND s.sale_type = 'marketing'
-GROUP BY 
-    fs.UserId;
+  SELECT      fs.UserId,      SUM(fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) AS TotalAmount,      SUM(fs.AmountPaid) AS TotalPaid,     SUM(fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - SUM(fs.AmountPaid) AS Credit FROM      final_sale fs  WHERE      fs.UserId = ?
 
         `, [marketing_staff_id]);
 
