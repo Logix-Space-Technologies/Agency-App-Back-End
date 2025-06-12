@@ -183,38 +183,37 @@ exports.fecthAllCreditReportUser = async (req, res) => {
 
     try {
         const [rows] = await pool.query(`
-     SELECT 
-                fs.id, 
-                s.sale_type, 
-                CASE 
-                    WHEN s.sale_type = 'marketing' THEN u.name 
-                    ELSE c.Name 
-                END AS name,
-                fs.sale_tracking_Id, 
-                fs.TotalAmount, 
-                fs.UserId, 
-                fs.DateofTransaction, 
-                fs.isSettled, 
-                fs.AmountPaid, 
-                fs.FuelExpenses, 
-                fs.VehcileServiceExpenses, 
-                fs.OtherExpenses,
-               (fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) AS finalAmount,
-
-                (fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid AS credit
-            FROM 
-                final_sale fs
-            JOIN 
-                (
-                    SELECT sale_tracking_Id, MIN(sale_type) AS sale_type
-                    FROM sales
-                    GROUP BY sale_tracking_Id
-                ) s ON fs.sale_tracking_Id = s.sale_tracking_Id
-            LEFT JOIN 
-                users u ON u.user_id = fs.UserId AND s.sale_type = 'marketing'
-            LEFT JOIN 
-                Customers c ON c.id = fs.UserId AND s.sale_type != 'marketing'
-        WHERE 
+    SELECT 
+    fs.id, 
+    s.sale_type, 
+    CASE 
+        WHEN s.sale_type = 'marketing' THEN u.name 
+        ELSE c.Name 
+    END AS name,
+    fs.sale_tracking_Id, 
+    fs.TotalAmount, 
+    fs.UserId, 
+    fs.DateofTransaction, 
+    fs.isSettled, 
+    fs.AmountPaid, 
+    fs.FuelExpenses, 
+    fs.VehcileServiceExpenses, 
+    fs.OtherExpenses,
+    (fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) AS finalAmount,
+    (fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid AS credit
+FROM 
+    final_sale fs
+JOIN 
+    (
+        SELECT sale_tracking_Id, MIN(sale_type) AS sale_type
+        FROM sales
+        GROUP BY sale_tracking_Id
+    ) s ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type = 'marketing'
+LEFT JOIN 
+    users u ON u.user_id = fs.UserId
+LEFT JOIN 
+    Customers c ON c.id = fs.UserId
+WHERE 
     fs.UserId = ?
     AND (
         ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) > 0
