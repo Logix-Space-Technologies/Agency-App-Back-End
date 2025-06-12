@@ -225,8 +225,26 @@ WHERE
 
 
          const [creditInfo] = await pool.query(`
-  SELECT      fs.UserId,      SUM(fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) AS TotalAmount,      SUM(fs.AmountPaid) AS TotalPaid,     SUM(fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - SUM(fs.AmountPaid) AS Credit FROM      final_sale fs  WHERE      fs.UserId = ?
-
+SELECT 
+    fs.UserId AS UserId,
+    SUM(fs.TotalAmount) AS TotalAmount,
+    SUM(fs.AmountPaid) AS TotalPaid,
+    SUM((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) AS Credit
+FROM 
+    final_sale fs
+JOIN 
+    (
+        SELECT DISTINCT sale_tracking_Id
+        FROM sales
+        WHERE sale_type = 'marketing'
+    ) s ON fs.sale_tracking_Id = s.sale_tracking_Id
+WHERE 
+    fs.UserId = ?
+    AND (
+        ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) <> 0
+    )
+GROUP BY 
+    fs.UserId
         `, [marketing_staff_id]);
 
         
