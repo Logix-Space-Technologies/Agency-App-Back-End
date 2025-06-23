@@ -1,6 +1,6 @@
 const pool = require('../config/db');
 
-// update
+
 exports.updateProductPrice = async (req, res) => {
     try {
         const {
@@ -11,14 +11,17 @@ exports.updateProductPrice = async (req, res) => {
             marketing_selling_price,
             direct_selling_price,
             whole_sale_price,
-            effective_date
+            effective_date,
+            cgst_percentage = 0.00,
+            sgst_percentage = 0.00,
+            igst_percentage = 0.00,
+            cess_percentage = 0.00
         } = req.body;
 
         if (!price_id) return res.status(400).json({ error: "price_id is required" });
 
         const formattedDate = effective_date?.split("T")[0];
 
-        // Step 1: Fetch the existing record
         const [existingRows] = await pool.query(
             `SELECT * FROM product_prices WHERE price_id = ? AND isActive = 1`,
             [price_id]
@@ -30,30 +33,31 @@ exports.updateProductPrice = async (req, res) => {
 
         const existing = existingRows[0];
 
-        // Step 2: Check if any relevant field has changed
         const isChanged =
             existing.purchase_price != purchase_price ||
             existing.commision_rate != commision_rate ||
             existing.marketing_selling_price != marketing_selling_price ||
             existing.direct_selling_price != direct_selling_price ||
             existing.whole_sale_price != whole_sale_price ||
+            existing.cgst_percentage != cgst_percentage ||
+            existing.sgst_percentage != sgst_percentage ||
+            existing.igst_percentage != igst_percentage ||
+            existing.cess_percentage != cess_percentage ||
             existing.effective_date.toISOString().split("T")[0] !== formattedDate;
 
         if (!isChanged) {
             return res.json({ message: "No change detected. No update needed." });
         }
 
-        // Step 3: Set existing record as inactive
         await pool.query(
             `UPDATE product_prices SET isActive = 0 WHERE price_id = ?`,
             [price_id]
         );
 
-        // Step 4: Insert new record with updated data and isActive = 1
         const [insertResult] = await pool.query(
             `INSERT INTO product_prices
-                (product_id, purchase_price, commision_rate, marketing_selling_price, direct_selling_price, whole_sale_price, effective_date, isActive)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+                (product_id, purchase_price, commision_rate, marketing_selling_price, direct_selling_price, whole_sale_price, effective_date, isActive, cgst_percentage, sgst_percentage, igst_percentage, cess_percentage)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
             [
                 product_id,
                 purchase_price,
@@ -61,7 +65,11 @@ exports.updateProductPrice = async (req, res) => {
                 marketing_selling_price,
                 direct_selling_price,
                 whole_sale_price,
-                formattedDate
+                formattedDate,
+                cgst_percentage,
+                sgst_percentage,
+                igst_percentage,
+                cess_percentage
             ]
         );
 
@@ -72,6 +80,80 @@ exports.updateProductPrice = async (req, res) => {
         res.status(500).json({ error: "Database error" });
     }
 };
+
+
+// update
+// exports.updateProductPrice = async (req, res) => {
+//     try {
+//         const {
+//             price_id,
+//             product_id,
+//             purchase_price,
+//             commision_rate,
+//             marketing_selling_price,
+//             direct_selling_price,
+//             whole_sale_price,
+//             effective_date
+//         } = req.body;
+
+//         if (!price_id) return res.status(400).json({ error: "price_id is required" });
+
+//         const formattedDate = effective_date?.split("T")[0];
+
+//         // Step 1: Fetch the existing record
+//         const [existingRows] = await pool.query(
+//             `SELECT * FROM product_prices WHERE price_id = ? AND isActive = 1`,
+//             [price_id]
+//         );
+
+//         if (existingRows.length === 0) {
+//             return res.status(404).json({ error: "Active product price not found" });
+//         }
+
+//         const existing = existingRows[0];
+
+//         // Step 2: Check if any relevant field has changed
+//         const isChanged =
+//             existing.purchase_price != purchase_price ||
+//             existing.commision_rate != commision_rate ||
+//             existing.marketing_selling_price != marketing_selling_price ||
+//             existing.direct_selling_price != direct_selling_price ||
+//             existing.whole_sale_price != whole_sale_price ||
+//             existing.effective_date.toISOString().split("T")[0] !== formattedDate;
+
+//         if (!isChanged) {
+//             return res.json({ message: "No change detected. No update needed." });
+//         }
+
+//         // Step 3: Set existing record as inactive
+//         await pool.query(
+//             `UPDATE product_prices SET isActive = 0 WHERE price_id = ?`,
+//             [price_id]
+//         );
+
+//         // Step 4: Insert new record with updated data and isActive = 1
+//         const [insertResult] = await pool.query(
+//             `INSERT INTO product_prices
+//                 (product_id, purchase_price, commision_rate, marketing_selling_price, direct_selling_price, whole_sale_price, effective_date, isActive)
+//              VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+//             [
+//                 product_id,
+//                 purchase_price,
+//                 commision_rate,
+//                 marketing_selling_price,
+//                 direct_selling_price,
+//                 whole_sale_price,
+//                 formattedDate
+//             ]
+//         );
+
+//         res.json({ message: "Product price updated successfully", new_price_id: insertResult.insertId });
+
+//     } catch (error) {
+//         console.error(error);
+//         res.status(500).json({ error: "Database error" });
+//     }
+// };
 
 
 
@@ -96,7 +178,12 @@ exports.getProductPrice = async(req,res)=>{
                 pp.marketing_selling_price,
                 pp.direct_selling_price,
                 pp.whole_sale_price,
-                pp.effective_date
+                pp.effective_date,
+                 pp.cgst_percentage, 
+                  pp.sgst_percentage,  
+                  pp.igst_percentage, 
+                   pp.cess_percentage
+
             FROM products p
             JOIN product_prices pp ON p.product_id = pp.product_id
             JOIN brands b ON b.brand_id = p.brand_id
@@ -164,7 +251,11 @@ exports.searchProductPrice = async (req, res) => {
                 pp.marketing_selling_price,
                 pp.direct_selling_price,
                 pp.whole_sale_price,
-                pp.effective_date
+                pp.effective_date,
+                    pp.cgst_percentage, 
+                  pp.sgst_percentage,  
+                  pp.igst_percentage, 
+                   pp.cess_percentage
              FROM products p
              JOIN product_prices pp ON p.product_id = pp.product_id
              JOIN brands b ON b.brand_id = p.brand_id

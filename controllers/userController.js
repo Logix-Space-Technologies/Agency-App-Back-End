@@ -86,7 +86,11 @@ exports.getCustomers = async (req, res) => {
     try {
                 const { mobile } = req.body;
 
-        const [customers] = await pool.query('SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE `Mobile`=?', [mobile]);
+        const [customers] = await pool.query(
+            'SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE `Mobile` = ? OR `Name` LIKE ?',
+            [mobile, `%${mobile}%`]
+        );
+        
         res.json(customers);
     } catch (error) {
         res.status(500).json({ error: 'Database error' });
