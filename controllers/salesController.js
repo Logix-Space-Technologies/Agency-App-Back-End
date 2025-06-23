@@ -364,6 +364,11 @@ exports.fecthLatestPrices = async (req, res) => {
                 direct_selling_price, 
                 whole_sale_price, 
                 effective_date, 
+                 cgst_percentage, 
+                 sgst_percentage,
+                  igst_percentage,
+                 cess_percentage
+
                 isActive 
             FROM product_prices 
             WHERE isActive = 1
