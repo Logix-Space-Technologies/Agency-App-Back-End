@@ -8,11 +8,20 @@ exports.fetchDailyDataForPrint = async (req, res) => {
     const { marketing_staff_id, date } = req.body;
 
     try {
+        // Step 1: Get final sale data
         const [finalSalerows] = await pool.query(
             "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses` FROM `final_sale` WHERE `UserId` = ? AND `DateofTransaction` = ?",
             [marketing_staff_id, date]
         );
 
+        // Check if sale data exists
+        if (finalSalerows.length === 0) {
+            return res.json({ success: false, message: "No final sale found for given staff and date." });
+        }
+
+        const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
+
+        // Step 2: Get product sale data
         const [productData] = await pool.query(
             `SELECT 
                 s.sale_id, 
@@ -38,12 +47,25 @@ exports.fetchDailyDataForPrint = async (req, res) => {
             [marketing_staff_id, date]
         );
 
-        res.json({ success: true, saledata: finalSalerows, details: productData });
+        // Step 3: Get payment breakdown (using sale_tracking_Id from above)
+        const [transactionData] = await pool.query(
+            "SELECT SUM(`amount`) AS total, SUM(`UPI`) AS upi, SUM(`Cash`) AS cash, SUM(`Card`) AS card FROM `sales_credit_history` WHERE `sale_tracking_Id` = ?",
+            [saleTrackingId]
+        );
+
+        res.json({
+            success: true,
+            saledata: finalSalerows,
+            details: productData,
+            payments: transactionData[0] || {} // handle no data scenario
+        });
+
     } catch (error) {
         console.error("Error fetching daily data for print:", error);
         res.status(500).json({ success: false, message: "Failed to fetch data" });
     }
 };
+
 
 
 
