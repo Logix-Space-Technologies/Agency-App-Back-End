@@ -1,5 +1,9 @@
 const express = require('express');
-const { getSuppliers, getProducts, createPurchase,getAllPurchases, createPurchaseNew, getDamagedItems, requestReplacement, getReplacementHistory } = require('../controllers/purchaseController');
+const { getSuppliers, getProducts, createPurchase,getAllPurchases,
+     createPurchaseNew, getDamagedItems, requestReplacement,
+      getReplacementHistory, createEnhancedPurchase,
+    calculateFreebies,
+    getEnhancedDamagedItems } = require('../controllers/purchaseController');
 const router = express.Router();
 
 
@@ -14,7 +18,7 @@ router.post('/getAllPurchases',getAllPurchases);
 router.post('/purchases_new', createPurchaseNew);
 
 // Get damaged items
-router.get('/damaged-items', getDamagedItems);
+router.post('/damaged-items', getDamagedItems);
 
 // Request replacement
 router.post('/request-replacement', requestReplacement);
@@ -22,6 +26,12 @@ router.post('/request-replacement', requestReplacement);
 // Get replacement history
 router.post('/replacement-history',getReplacementHistory);
 
+
+
+// New enhanced routes
+router.post('/enhanced-purchase', createEnhancedPurchase);
+router.post('/calculate-freebies', calculateFreebies);
+router.get('/enhanced-damaged-items', getEnhancedDamagedItems);
 
 
 module.exports = router;
