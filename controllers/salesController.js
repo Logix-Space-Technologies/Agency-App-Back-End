@@ -198,6 +198,89 @@ exports.incCredit = async (req, res) => {
         res.status(500).json({ error: 'Database error' });
     }
 }
+
+exports.fecthAllCreditReportCustomers = async (req, res) => {
+    const { marketing_staff_id } = req.body;
+
+    console.log(req.body);
+
+    try {
+        const [rows] = await pool.query(`
+    SELECT 
+    fs.id, 
+    s.sale_type, 
+    CASE 
+        WHEN s.sale_type = 'marketing' THEN u.name 
+        ELSE c.Name 
+    END AS name,
+    fs.sale_tracking_Id, 
+    fs.TotalAmount, 
+    fs.UserId, 
+    fs.DateofTransaction, 
+    fs.isSettled, 
+    fs.AmountPaid, 
+    fs.FuelExpenses, 
+    fs.VehcileServiceExpenses, 
+    fs.OtherExpenses,
+    (fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) AS finalAmount,
+    (fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid AS credit
+FROM 
+    final_sale fs
+JOIN 
+    (
+        SELECT sale_tracking_Id, MIN(sale_type) AS sale_type
+        FROM sales
+        GROUP BY sale_tracking_Id
+    ) s ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type != 'marketing'
+LEFT JOIN 
+    users u ON u.user_id = fs.UserId
+LEFT JOIN 
+    Customers c ON c.id = fs.UserId
+WHERE 
+    fs.UserId = ?
+    AND (
+        ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) > 0
+        OR ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) < 0
+    )
+
+        `, [marketing_staff_id]);
+
+
+
+         const [creditInfo] = await pool.query(`
+SELECT 
+    fs.UserId AS UserId,
+    SUM(fs.TotalAmount) AS TotalAmount,
+    SUM(fs.AmountPaid) AS TotalPaid,
+    SUM((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) AS Credit
+FROM 
+    final_sale fs
+JOIN 
+    (
+        SELECT DISTINCT sale_tracking_Id
+        FROM sales
+        WHERE sale_type != 'marketing'
+    ) s ON fs.sale_tracking_Id = s.sale_tracking_Id
+WHERE 
+    fs.UserId = ?
+    AND (
+        ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) <> 0
+    )
+GROUP BY 
+    fs.UserId
+        `, [marketing_staff_id]);
+
+        
+
+        res.json({ success: true, data: rows , creditInfo:creditInfo });
+
+    } catch (error) {
+        console.error("Error fetching credit report:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch credit report" });
+    }
+};
+
+
 exports.fecthAllCreditReportUser = async (req, res) => {
     const { marketing_staff_id } = req.body;
 

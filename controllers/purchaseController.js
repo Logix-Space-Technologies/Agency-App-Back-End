@@ -2,6 +2,232 @@ const pool = require('../config/db'); // Assuming your db.js exports the promise
 
 
 
+// Enhanced purchase controller with all scenarios
+exports.createEnhancedPurchase = async (req, res) => {
+    const {
+        supplierId,
+        invoiceNumber,
+        purchaseDetails,
+        addedBy,
+        isReplacement,
+        isFreebie,
+        relatedPurchaseId, // For linking to original purchase
+        compensationType, // 'replacement', 'discount', 'freebie', 'partial'
+        compensationDetails
+    } = req.body;
+
+    if (!supplierId || !purchaseDetails || purchaseDetails.length === 0) {
+        return res.status(400).json({ error: 'Missing required purchase data.' });
+    }
+
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+
+        // Process each item in the purchase
+        for (const item of purchaseDetails) {
+            const {
+                productId,
+                quantity,
+                purchasePrice,
+                totalAmount,
+                isDamaged,
+                isFreeItem,
+                originalPurchaseId,
+                damageDescription,
+                freebieRatio // e.g., "5:1" for 5 damaged get 1 free
+            } = item;
+
+            // Validate required fields
+            if (!productId || !quantity) {
+                await connection.rollback();
+                connection.release();
+                return res.status(400).json({ error: 'Missing product ID or quantity.' });
+            }
+
+            // Check stock for replacement scenarios
+            if (isReplacement) {
+                const [stock] = await connection.execute(
+                    'SELECT Damage_Qty FROM stock WHERE product_id = ?',
+                    [productId]
+                );
+                
+                if (stock.length === 0 || stock[0].Damage_Qty < quantity) {
+                    await connection.rollback();
+                    connection.release();
+                    return res.status(400).json({ 
+                        error: `Cannot replace ${quantity} items. Only ${stock[0]?.Damage_Qty || 0} damaged items available.`
+                    });
+                }
+            }
+
+            // Insert purchase record with enhanced fields
+            const [purchaseResult] = await connection.execute(
+                `INSERT INTO purchase (
+                    product_id, purchase_date, purchase_price, total_amount, quantity,
+                    Invoice_Number, supplier_id, is_damaged, damage_description,
+                    replacement_provided, replacement_date, is_free_replacement,
+                    is_freebie, related_purchase_id, compensation_type, compensation_details
+                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    productId,
+                    isReplacement || isFreeItem ? 0 : purchasePrice, // Free items have 0 price
+                    isReplacement || isFreeItem ? 0 : totalAmount,
+                    quantity,
+                    invoiceNumber,
+                    supplierId,
+                    isDamaged || false,
+                    isDamaged ? (damageDescription || 'Damaged item') : null,
+                    isReplacement || false,
+                    isReplacement ? new Date() : null,
+                    isReplacement,
+                    isFreeItem || false,
+                    relatedPurchaseId || null,
+                    compensationType || null,
+                    compensationDetails ? JSON.stringify(compensationDetails) : null
+                ]
+            );
+
+            // Handle stock updates based on purchase type
+            if (isReplacement) {
+                // For replacements, reduce damaged quantity
+                await connection.execute(
+                    'UPDATE stock SET Damage_Qty = Damage_Qty - ? WHERE product_id = ?',
+                    [quantity, productId]
+                );
+            } else if (isDamaged) {
+                // For damaged items, move to Damage_Qty
+                await connection.execute(
+                    'UPDATE stock SET quantity = quantity - ?, Damage_Qty = Damage_Qty + ? WHERE product_id = ?',
+                    [quantity, quantity, productId]
+                );
+            } else if (isFreeItem) {
+                // For freebies, increase stock without affecting financials
+                await connection.execute(
+                    'UPDATE stock SET quantity = quantity + ? WHERE product_id = ?',
+                    [quantity, productId]
+                );
+            } else {
+                // Normal purchase
+                await connection.execute(
+                    'UPDATE stock SET quantity = quantity + ? WHERE product_id = ?',
+                    [quantity, productId]
+                );
+            }
+
+            // Record in stock history with appropriate type
+            let stockType;
+            if (isReplacement) stockType = 'replacement';
+            else if (isDamaged) stockType = 'damage';
+            else if (isFreeItem) stockType = 'freebie';
+            else stockType = 'purchase';
+
+            await connection.execute(
+                `INSERT INTO stock_History (
+                    stock_Id, Qty, stock_type, AddedDate, AddedBy,
+                    CreditOrDebit, ReferenceInvoiceOrSale
+                ) VALUES (?, ?, ?, NOW(), ?, ?, ?)`,
+                [
+                    productId,
+                    quantity,
+                    stockType,
+                     0,
+                    isReplacement || isDamaged ? 'Debit' : 'Credit',
+                    invoiceNumber
+                ]
+            );
+        }
+
+        await connection.commit();
+        connection.release();
+        res.status(201).json({ message: 'Purchase processed successfully!' });
+    } catch (error) {
+        if (connection) {
+            await connection.rollback();
+            connection.release();
+        }
+        console.error('Error in enhanced purchase process:', error);
+        res.status(500).json({ error: 'Database error during purchase process.' });
+    }
+};
+
+// New endpoint to handle freebie calculations
+exports.calculateFreebies = async (req, res) => {
+    const { productId, purchasedQuantity, freebieRatio } = req.body;
+    
+    try {
+        // Parse ratio (e.g., "5:1" means 5 purchased = 1 free)
+        const [purchaseReq, freeQty] = freebieRatio.split(':').map(Number);
+        
+        if (!purchaseReq || !freeQty) {
+            return res.status(400).json({ error: 'Invalid freebie ratio format. Use "X:Y".' });
+        }
+        
+        const freebieQuantity = Math.floor(purchasedQuantity / purchaseReq) * freeQty;
+        
+        res.json({
+            freebieQuantity,
+            description: `Buy ${purchaseReq}, get ${freeQty} free`
+        });
+    } catch (error) {
+        console.error('Error calculating freebies:', error);
+        res.status(500).json({ error: 'Error calculating freebie quantity.' });
+    }
+};
+
+// Enhanced damaged items endpoint
+exports.getEnhancedDamagedItems = async (req, res) => {
+    try {
+        const [items] = await pool.execute(`
+            SELECT 
+                p.product_id, 
+                p.product_name,
+                p.product_image,
+                s.Damage_Qty as damaged_quantity,
+                s.quantity as current_stock,
+                MAX(pur.purchase_date) as last_purchase_date,
+                MAX(pur.Invoice_Number) as last_invoice,
+                sup.supplier_name,
+                sup.supplier_id,
+                sup.replacement_policy,
+                GROUP_CONCAT(DISTINCT pur.compensation_type) as compensation_options
+            FROM 
+                products p
+            JOIN 
+                stock s ON p.product_id = s.product_id
+            LEFT JOIN 
+                purchase pur ON p.product_id = pur.product_id
+            LEFT JOIN 
+                suppliers sup ON pur.supplier_id = sup.supplier_id
+            WHERE 
+                s.Damage_Qty > 0 AND p.isActive = 1
+            GROUP BY
+                p.product_id
+            ORDER BY
+                s.Damage_Qty DESC
+        `);
+        
+        // Process compensation options
+        const processedItems = items.map(item => {
+            return {
+                ...item,
+                compensation_options: item.compensation_options 
+                    ? [...new Set(item.compensation_options.split(',').filter(Boolean))] 
+                    : []
+            };
+        });
+        
+        res.json(processedItems);
+    } catch (error) {
+        console.error('Error fetching damaged items:', error);
+        res.status(500).json({ error: 'Database error while fetching damaged items.' });
+    }
+};
+
+
+
+
 // Create a New Purchase with Support for Replacements
 exports.createPurchaseNew = async (req, res) => {
     console.log("test")
