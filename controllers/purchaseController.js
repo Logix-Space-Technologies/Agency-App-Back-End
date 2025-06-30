@@ -346,30 +346,31 @@ exports.createPurchaseNew = async (req, res) => {
 exports.getDamagedItems = async (req, res) => {
     try {
         const [items] = await pool.execute(`
-            SELECT 
-                p.product_id, 
-                p.product_name,
-                p.product_image,
-                s.Damage_Qty as damaged_quantity,
-                MAX(pur.purchase_date) as last_purchase_date,
-                MAX(pur.Invoice_Number) as last_invoice,
-                sup.supplier_name,
-                sup.supplier_id,
-                s.quantity as current_stock
-            FROM 
-                products p
-            JOIN 
-                stock s ON p.product_id = s.product_id
-            LEFT JOIN 
-                purchase pur ON p.product_id = pur.product_id
-            LEFT JOIN 
-                suppliers sup ON pur.supplier_id = sup.supplier_id
-            WHERE 
-                s.Damage_Qty > 0 AND p.isActive = 1
-            GROUP BY
-                p.product_id
-            ORDER BY
-                s.Damage_Qty DESC
+           SELECT 
+        p.product_id, 
+        p.product_name,
+        p.product_image,
+        MAX(s.Damage_Qty) as damaged_quantity,
+        MAX(pur.purchase_date) as last_purchase_date,
+        MAX(pur.Invoice_Number) as last_invoice,
+        MAX(sup.supplier_name) as supplier_name,
+        MAX(sup.supplier_id) as supplier_id,
+        MAX(s.quantity) as current_stock
+    FROM 
+        products p
+    JOIN 
+        stock s ON p.product_id = s.product_id
+    LEFT JOIN 
+        purchase pur ON p.product_id = pur.product_id
+    LEFT JOIN 
+        suppliers sup ON pur.supplier_id = sup.supplier_id
+    WHERE 
+        s.Damage_Qty > 0 AND p.isActive = 1
+    GROUP BY
+        p.product_id, p.product_name, p.product_image
+    ORDER BY
+        damaged_quantity DESC
+        
         `);
         res.json(items);
     } catch (error) {
