@@ -1,29 +1,31 @@
-const { config } = require('dotenv');
-const pool = require('../config/db');
+const { config } = require("dotenv");
+const pool = require("../config/db");
 
-const { v4: uuidv4 } = require('uuid');
-
+const { v4: uuidv4 } = require("uuid");
 
 exports.fetchDailyDataForPrint = async (req, res) => {
-    const { marketing_staff_id, date } = req.body;
+  const { marketing_staff_id, date } = req.body;
 
-    try {
-        // Step 1: Get final sale data
-        const [finalSalerows] = await pool.query(
-            "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses` FROM `final_sale` WHERE `UserId` = ? AND `DateofTransaction` = ?",
-            [marketing_staff_id, date]
-        );
+  try {
+    // Step 1: Get final sale data
+    const [finalSalerows] = await pool.query(
+      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses` FROM `final_sale` WHERE `UserId` = ? AND `DateofTransaction` = ?",
+      [marketing_staff_id, date]
+    );
 
-        // Check if sale data exists
-        if (finalSalerows.length === 0) {
-            return res.json({ success: false, message: "No final sale found for given staff and date." });
-        }
+    // Check if sale data exists
+    if (finalSalerows.length === 0) {
+      return res.json({
+        success: false,
+        message: "No final sale found for given staff and date.",
+      });
+    }
 
-        const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
+    const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
 
-        // Step 2: Get product sale data
-        const [productData] = await pool.query(
-            `SELECT 
+    // Step 2: Get product sale data
+    const [productData] = await pool.query(
+      `SELECT 
                 s.sale_id, 
                 s.sale_type, 
                 s.marketing_staff_id, 
@@ -44,45 +46,44 @@ exports.fetchDailyDataForPrint = async (req, res) => {
                 products p ON s.product_id = p.product_id
             WHERE 
                 s.marketing_staff_id = ? AND s.sale_date = ?`,
-            [marketing_staff_id, date]
-        );
+      [marketing_staff_id, date]
+    );
 
-        // Step 3: Get payment breakdown (using sale_tracking_Id from above)
-        const [transactionData] = await pool.query(
-            "SELECT SUM(`amount`) AS total, SUM(`UPI`) AS upi, SUM(`Cash`) AS cash, SUM(`Card`) AS card FROM `sales_credit_history` WHERE `sale_tracking_Id` = ?",
-            [saleTrackingId]
-        );
+    // Step 3: Get payment breakdown (using sale_tracking_Id from above)
+    const [transactionData] = await pool.query(
+      "SELECT SUM(`amount`) AS total, SUM(`UPI`) AS upi, SUM(`Cash`) AS cash, SUM(`Card`) AS card FROM `sales_credit_history` WHERE `sale_tracking_Id` = ?",
+      [saleTrackingId]
+    );
 
-        res.json({
-            success: true,
-            saledata: finalSalerows,
-            details: productData,
-            payments: transactionData[0] || {} // handle no data scenario
-        });
-
-    } catch (error) {
-        console.error("Error fetching daily data for print:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch data" });
-    }
+    res.json({
+      success: true,
+      saledata: finalSalerows,
+      details: productData,
+      payments: transactionData[0] || {}, // handle no data scenario
+    });
+  } catch (error) {
+    console.error("Error fetching daily data for print:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch data" });
+  }
 };
 
-
-
-
 exports.cashReport = async (req, res) => {
-    try {
-        let { fromDate, toDate } = req.body;
+  try {
+    let { fromDate, toDate } = req.body;
 
-        if (!fromDate) {
-            return res.status(400).json({ success: false, message: "fromDate is required" });
-        }
+    if (!fromDate) {
+      return res
+        .status(400)
+        .json({ success: false, message: "fromDate is required" });
+    }
 
-        // If toDate is not given, treat it as a single-day range
-        const startDateTime = fromDate + " 00:00:00";
-        const endDateTime = (toDate || fromDate) + " 23:59:59";
+    // If toDate is not given, treat it as a single-day range
+    const startDateTime = fromDate + " 00:00:00";
+    const endDateTime = (toDate || fromDate) + " 23:59:59";
 
-        // 1. Credit repayments (UPI, Cash, Card)
-        const [creditHistory] = await pool.query(`
+    // 1. Credit repayments (UPI, Cash, Card)
+    const [creditHistory] = await pool.query(
+      `
             SELECT 
                 SUM(UPI) AS totalUPI,
                 SUM(Cash) AS totalCash,
@@ -90,10 +91,13 @@ exports.cashReport = async (req, res) => {
             FROM sales_credit_history
             WHERE isActive = 1
               AND creditedDate BETWEEN ? AND ?
-        `, [startDateTime, endDateTime]);
+        `,
+      [startDateTime, endDateTime]
+    );
 
-        // 2. Final sale amounts and expenses
-        const [finalSale] = await pool.query(`
+    // 2. Final sale amounts and expenses
+    const [finalSale] = await pool.query(
+      `
             SELECT 
                 SUM(AmountPaid) AS totalAmountPaid,
                 SUM(FuelExpenses) AS totalFuelExpenses,
@@ -102,110 +106,115 @@ exports.cashReport = async (req, res) => {
             FROM final_sale
             WHERE isSettled = 1
               AND DateofTransaction BETWEEN ? AND ?
-        `, [startDateTime, endDateTime]);
+        `,
+      [startDateTime, endDateTime]
+    );
 
-        // 3. Cash sales (non-credit)
-        const [cashSales] = await pool.query(`
+    // 3. Cash sales (non-credit)
+    const [cashSales] = await pool.query(
+      `
             SELECT 
                 SUM(amount_received) AS totalAmountReceived
             FROM sales
             WHERE is_credit = 0 AND isActive = 1
               AND sale_date BETWEEN ? AND ?
-        `, [startDateTime, endDateTime]);
+        `,
+      [startDateTime, endDateTime]
+    );
 
-        const report = {
-            fromCreditHistory: {
-                totalUPI: creditHistory[0].totalUPI || 0,
-                totalCash: creditHistory[0].totalCash || 0,
-                totalCard: creditHistory[0].totalCard || 0,
-            },
-            fromFinalSale: {
-                totalAmountPaid: finalSale[0].totalAmountPaid || 0,
-                totalFuelExpenses: finalSale[0].totalFuelExpenses || 0,
-                totalServiceExpenses: finalSale[0].totalServiceExpenses || 0,
-                totalOtherExpenses: finalSale[0].totalOtherExpenses || 0,
-            },
-            fromSales: {
-                totalCashSaleReceived: cashSales[0].totalAmountReceived || 0
-            }
-        };
+    const report = {
+      fromCreditHistory: {
+        totalUPI: creditHistory[0].totalUPI || 0,
+        totalCash: creditHistory[0].totalCash || 0,
+        totalCard: creditHistory[0].totalCard || 0,
+      },
+      fromFinalSale: {
+        totalAmountPaid: finalSale[0].totalAmountPaid || 0,
+        totalFuelExpenses: finalSale[0].totalFuelExpenses || 0,
+        totalServiceExpenses: finalSale[0].totalServiceExpenses || 0,
+        totalOtherExpenses: finalSale[0].totalOtherExpenses || 0,
+      },
+      fromSales: {
+        totalCashSaleReceived: cashSales[0].totalAmountReceived || 0,
+      },
+    };
 
-        res.status(200).json({ success: true, report });
-    } catch (error) {
-        console.error("Error generating cash report:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
-    }
+    res.status(200).json({ success: true, report });
+  } catch (error) {
+    console.error("Error generating cash report:", error);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
 };
 
-
-
-
 exports.incCredit = async (req, res) => {
-    try {
-        console.log(req.body)
-        const { allocation_id, marketing_staff_id, payment } = req.body;
-        const { cash, card, gpay } = payment;
+  try {
+    console.log(req.body);
+    const { allocation_id, marketing_staff_id, payment } = req.body;
+    const { cash, card, gpay } = payment;
 
-        // Calculate total payment amount
-        const totalAmount = cash + card + gpay;
+    // Calculate total payment amount
+    const totalAmount = cash + card + gpay;
 
-        // 1. Update the final_sale table
-        const updateQuery = `
+    // 1. Update the final_sale table
+    const updateQuery = `
             UPDATE final_sale 
             SET AmountPaid = AmountPaid + ? 
             WHERE id = ?
         `;
-        
-         await pool.query(updateQuery, [totalAmount, allocation_id]);
 
-        // 2. Insert into sales_credit_history
-        const insertQuery = `
+    await pool.query(updateQuery, [totalAmount, allocation_id]);
+
+    // 2. Insert into sales_credit_history
+    const insertQuery = `
             INSERT INTO sales_credit_history 
             (sale_tracking_Id, amount, creditedDate, isActive, UPI, Cash, Card) 
             VALUES (?, ?, NOW(), 1, ?, ?, ?)
         `;
-        
-        // Get sale_tracking_Id from final_sale
-        const [saleData] = await pool.query(`
+
+    // Get sale_tracking_Id from final_sale
+    const [saleData] = await pool.query(
+      `
             SELECT sale_tracking_Id 
             FROM final_sale 
             WHERE id = ?
-        `, [allocation_id]);
+        `,
+      [allocation_id]
+    );
 
-        if (!saleData || !saleData.length) {
-            return res.status(404).json({ error: 'Sale record not found' });
-        }
-
-        const saleTrackingId = saleData[0].sale_tracking_Id;
-
-        await pool.query(insertQuery, [
-            saleTrackingId,
-            totalAmount,
-            gpay, // UPI/GPay amount
-            cash,
-            card
-        ]);
-
-        res.status(200).json({ 
-            success: true,
-            message: 'Payment successfully recorded',
-            allocation_id,
-            total_payment: totalAmount
-        });
-
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Database error' });
+    if (!saleData || !saleData.length) {
+      return res.status(404).json({ error: "Sale record not found" });
     }
-}
+
+    const saleTrackingId = saleData[0].sale_tracking_Id;
+
+    await pool.query(insertQuery, [
+      saleTrackingId,
+      totalAmount,
+      gpay, // UPI/GPay amount
+      cash,
+      card,
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: "Payment successfully recorded",
+      allocation_id,
+      total_payment: totalAmount,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
 
 exports.fecthAllCreditReportCustomers = async (req, res) => {
-    const { marketing_staff_id } = req.body;
+  const { marketing_staff_id } = req.body;
 
-    console.log(req.body);
+  console.log(req.body);
 
-    try {
-        const [rows] = await pool.query(`
+  try {
+    const [rows] = await pool.query(
+      `
     SELECT 
     fs.id, 
     s.sale_type, 
@@ -243,11 +252,12 @@ WHERE
         OR ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) < 0
     )
 
-        `, [marketing_staff_id]);
+        `,
+      [marketing_staff_id]
+    );
 
-
-
-         const [creditInfo] = await pool.query(`
+    const [creditInfo] = await pool.query(
+      `
 SELECT 
     fs.UserId AS UserId,
     SUM(fs.TotalAmount) AS TotalAmount,
@@ -268,26 +278,27 @@ WHERE
     )
 GROUP BY 
     fs.UserId
-        `, [marketing_staff_id]);
+        `,
+      [marketing_staff_id]
+    );
 
-        
-
-        res.json({ success: true, data: rows , creditInfo:creditInfo });
-
-    } catch (error) {
-        console.error("Error fetching credit report:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch credit report" });
-    }
+    res.json({ success: true, data: rows, creditInfo: creditInfo });
+  } catch (error) {
+    console.error("Error fetching credit report:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch credit report" });
+  }
 };
 
-
 exports.fecthAllCreditReportUser = async (req, res) => {
-    const { marketing_staff_id } = req.body;
+  const { marketing_staff_id } = req.body;
 
-    console.log(req.body);
+  console.log(req.body);
 
-    try {
-        const [rows] = await pool.query(`
+  try {
+    const [rows] = await pool.query(
+      `
     SELECT 
     fs.id, 
     s.sale_type, 
@@ -325,11 +336,12 @@ WHERE
         OR ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) < 0
     )
 
-        `, [marketing_staff_id]);
+        `,
+      [marketing_staff_id]
+    );
 
-
-
-         const [creditInfo] = await pool.query(`
+    const [creditInfo] = await pool.query(
+      `
 SELECT 
     fs.UserId AS UserId,
     SUM(fs.TotalAmount) AS TotalAmount,
@@ -350,32 +362,35 @@ WHERE
     )
 GROUP BY 
     fs.UserId
-        `, [marketing_staff_id]);
+        `,
+      [marketing_staff_id]
+    );
 
-        
-
-        res.json({ success: true, data: rows , creditInfo:creditInfo });
-
-    } catch (error) {
-        console.error("Error fetching credit report:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch credit report" });
-    }
+    res.json({ success: true, data: rows, creditInfo: creditInfo });
+  } catch (error) {
+    console.error("Error fetching credit report:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch credit report" });
+  }
 };
 
-
 exports.fecthAllCreditReport = async (req, res) => {
-    const { fromDate, toDate } = req.body.params;
+  const { fromDate, toDate } = req.body.params;
 
-    console.log(req.body)
+  console.log(req.body);
 
-    if (!fromDate) {
-        return res.status(400).json({ success: false, message: "fromDate is required." });
-    }
+  if (!fromDate) {
+    return res
+      .status(400)
+      .json({ success: false, message: "fromDate is required." });
+  }
 
-    const dateToUse = toDate || fromDate;
+  const dateToUse = toDate || fromDate;
 
-    try {
-        const [rows] = await pool.query(`
+  try {
+    const [rows] = await pool.query(
+      `
             SELECT 
     fs.id, 
     s.sale_type, 
@@ -408,36 +423,36 @@ LEFT JOIN
 WHERE 
     fs.DateofTransaction BETWEEN ? AND ? AND fs.isSettled=0 
 
-        `, [fromDate, dateToUse]);
+        `,
+      [fromDate, dateToUse]
+    );
 
-        res.json({ success: true, data: rows });
-
-    } catch (error) {
-        console.error("Error fetching credit report:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch credit report" });
-    }
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error("Error fetching credit report:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch credit report" });
+  }
 };
 
-
-
 exports.fecthAllCustomers = async (req, res) => {
-
-    try {
-        const [rows] = await pool.query("SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE 1");
-        res.json({ success: true, data: rows });
-    } catch (error) {
-        console.error("Error fetching customers:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch customers" });
-    }
-
-
-}
-
+  try {
+    const [rows] = await pool.query(
+      "SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE 1"
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error("Error fetching customers:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch customers" });
+  }
+};
 
 exports.fecthLatestPrices = async (req, res) => {
-
-    try {
-        const [rows] = await pool.query(`
+  try {
+    const [rows] = await pool.query(`
             SELECT 
                 price_id, 
                 product_id, 
@@ -456,205 +471,204 @@ exports.fecthLatestPrices = async (req, res) => {
             FROM product_prices 
             WHERE isActive = 1
         `);
-        res.json({ success: true, data: rows });
-    } catch (error) {
-        console.error("Error fetching product prices:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch product prices" });
-    }
-
-
-}
-
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error("Error fetching product prices:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch product prices" });
+  }
+};
 
 exports.addDirectSales = async (req, res) => {
-    const { agency_id, employee_id, customer, products,totalAmount,saleType } = req.body;
+  const { agency_id, employee_id, customer, products, totalAmount, saleType } =
+    req.body;
 
-    console.log(req.body)
+  console.log(req.body);
 
-    if (!agency_id || products.length === 0 ) {
-        return res.status(400).json({ message: "Missing or invalid input" });
-    }
+  if (!agency_id || products.length === 0) {
+    return res.status(400).json({ message: "Missing or invalid input" });
+  }
 
-    const { name, place, mobile, email,amount_paying_now } = customer;
-    const sale_type = req.body.saleType;
-    const sale_date = new Date();
+  const { name, place, mobile, email, amount_paying_now } = customer;
+  const sale_type = req.body.saleType;
+  const sale_date = new Date();
 
-    const connection = await pool.getConnection();
+  const connection = await pool.getConnection();
 
+  const isSettledItem =
+    parseFloat(amount_paying_now) >= parseFloat(totalAmount) ? 1 : 0;
 
-    const isSettledItem = parseFloat(amount_paying_now) >= parseFloat(totalAmount) ? 1 : 0;
+  try {
+    await connection.beginTransaction();
 
+    // 1. Insert or fetch customer
+    const [existingCustomer] = await connection.query(
+      `SELECT id FROM Customers WHERE Mobile = ?`,
+      [mobile]
+    );
 
-    try {
-        await connection.beginTransaction();
+    let customer_id;
 
-        // 1. Insert or fetch customer
-        const [existingCustomer] = await connection.query(
-            `SELECT id FROM Customers WHERE Mobile = ?`,
-            [ mobile]
-        );
-
-        let customer_id;
-
-        if (existingCustomer.length > 0) {
-            customer_id = existingCustomer[0].id;
-        } else {
-            const [customerResult] = await connection.query(
-                `INSERT INTO Customers (Name, Place, Mobile, EmailId)
+    if (existingCustomer.length > 0) {
+      customer_id = existingCustomer[0].id;
+    } else {
+      const [customerResult] = await connection.query(
+        `INSERT INTO Customers (Name, Place, Mobile, EmailId)
                  VALUES (?, ?, ?, ?)`,
-                [name, place, mobile, email]
-            );
-            customer_id = customerResult.insertId;
-        }
-        const sale_tracking_id = generateUniqueSaleTrackingId();
+        [name, place, mobile, email]
+      );
+      customer_id = customerResult.insertId;
+    }
+    const sale_tracking_id = generateUniqueSaleTrackingId();
 
-        await connection.query(
-            `INSERT INTO final_sale ( sale_tracking_Id, TotalAmount, UserId, DateofTransaction, isSettled, AmountPaid )
+    await connection.query(
+      `INSERT INTO final_sale ( sale_tracking_Id, TotalAmount, UserId, DateofTransaction, isSettled, AmountPaid )
              VALUES (?, ?, ?, ?, ?, ?)`,
-            [sale_tracking_id, totalAmount,customer_id,  sale_date , isSettledItem ,amount_paying_now]
-        );
+      [
+        sale_tracking_id,
+        totalAmount,
+        customer_id,
+        sale_date,
+        isSettledItem,
+        amount_paying_now,
+      ]
+    );
 
-
-        await connection.query(
-            `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate,isActive)
+    await connection.query(
+      `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate,isActive)
              VALUES (?, ?, ?, ?)`,
-            [sale_tracking_id, amount_paying_now, sale_date,1]
-        );
+      [sale_tracking_id, amount_paying_now, sale_date, 1]
+    );
 
+    for (const item of products) {
+      const { product_id, quantity, price_id = null } = item;
 
-        for (const item of products) {
-            const { product_id, quantity, price_id = null } = item;
-
-
-            const [priceRows] = await pool.query(
-                `SELECT price_id, direct_selling_price, whole_sale_price
+      const [priceRows] = await pool.query(
+        `SELECT price_id, direct_selling_price, whole_sale_price
                  FROM product_prices
                  WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
                  ORDER BY effective_date DESC LIMIT 1`,
-                [product_id, sale_date]
-            );
+        [product_id, sale_date]
+      );
 
-            if (priceRows.length === 0) {
-                console.warn(`No price found for product_id ${product_id}`);
-                continue;
-            }
+      if (priceRows.length === 0) {
+        console.warn(`No price found for product_id ${product_id}`);
+        continue;
+      }
 
-            var marketing_selling_price =0;
+      var marketing_selling_price = 0;
 
-            console.log(priceRows[0])
+      console.log(priceRows[0]);
 
-            if (sale_type=="direct") {
+      if (sale_type == "direct") {
+        marketing_selling_price = priceRows[0].direct_selling_price;
+      } else {
+        marketing_selling_price = priceRows[0].whole_sale_price;
+      }
 
-                marketing_selling_price = priceRows[0].direct_selling_price;
+      // 3. Calculate total amount
+      const amount__ = quantity * marketing_selling_price;
 
-            } else {
-                 marketing_selling_price = priceRows[0].whole_sale_price;
+      console.log(amount__);
 
-            }
+      const price_id_ = priceRows[0].price_id;
 
-            // 3. Calculate total amount
-            const amount__ = quantity * marketing_selling_price;
-
-            console.log(amount__)
-
-
-
-            const price_id_ = priceRows[0].price_id;
-
-
-            // Insert into `sales`
-            const [salesResult] = await connection.query(
-                `INSERT INTO sales (
+      // Insert into `sales`
+      const [salesResult] = await connection.query(
+        `INSERT INTO sales (
                     sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, 
                     is_credit, sale_tracking_Id, sale_date, damaged_count, is_settled, loss_count, isActive
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    sale_type,
-                    employee_id,
-                    product_id,
-                    price_id_,
-                    quantity,
-                    amount__, // amount_received
-                    0, // is_credit
-                    sale_tracking_id, // sale_tracking_Id
-                    sale_date,
-                    0, // damaged_count
-                    isSettledItem, // is_settled
-                    0, // loss_count
-                    1  // isActive
-                ]
-            );
+        [
+          sale_type,
+          employee_id,
+          product_id,
+          price_id_,
+          quantity,
+          amount__, // amount_received
+          0, // is_credit
+          sale_tracking_id, // sale_tracking_Id
+          sale_date,
+          0, // damaged_count
+          isSettledItem, // is_settled
+          0, // loss_count
+          1, // isActive
+        ]
+      );
 
-            const sale_id = salesResult.sale_id;
-            
+      const sale_id = salesResult.sale_id;
 
+      console.log(sale_id);
 
-            console.log(sale_id)
+      console.log("Sale 1");
 
-            console.log("Sale 1")
-
-
-            // Update stock
-            await connection.query(
-                `UPDATE stock 
+      // Update stock
+      await connection.query(
+        `UPDATE stock 
                  SET quantity = quantity - ? 
                  WHERE  product_id = ?`,
-                [quantity,  product_id]
-            );
+        [quantity, product_id]
+      );
 
-console.log("Price ----- ")
-            console.log(price_id_)
-            console.log(" ---- Price")
+      console.log("Price ----- ");
+      console.log(price_id_);
+      console.log(" ---- Price");
 
+      const [stockIdResult] = await pool.query(
+        "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `isActive` = 1",
+        [product_id]
+      );
 
-            const [stockIdResult] = await pool.query(
-                "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `isActive` = 1",
-                [product_id]
-            );
+      if (stockIdResult.length > 0) {
+        const stock_Id = stockIdResult[0].stock_id;
+        const addedDate = new Date();
+        const addedBy = req.user ? req.user.id : 0;
+        const creditOrDebit = "debit";
+        const referenceInvoiceOrSale = sale_tracking_id;
 
-            if (stockIdResult.length > 0) {
-                const stock_Id = stockIdResult[0].stock_id;
-                const addedDate = new Date();
-                const addedBy = req.user ? req.user.id : 0;
-                const creditOrDebit = 'debit';
-                const referenceInvoiceOrSale = sale_tracking_id;
-
-                await pool.query(
-                    "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [stock_Id, -quantity, 'sale', addedDate, addedBy, creditOrDebit, referenceInvoiceOrSale]
-                );
-            } else {
-                console.warn(`No active stock found for product_id: ${product_id} and price_id: ${price_id_} to record in stock history.`);
-            }
-
-
-
-        }
-
-        await connection.commit();
-        connection.release();
-
-        res.status(201).json({ message: "Direct sales recorded with customer info" });
-
-    } catch (err) {
-      await connection.rollback();
-        connection.release();
-        console.error("Error processing direct sale:", err);
-        res.status(500).json({ message: "Internal server error" });
+        await pool.query(
+          "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [
+            stock_Id,
+            -quantity,
+            "sale",
+            addedDate,
+            addedBy,
+            creditOrDebit,
+            referenceInvoiceOrSale,
+          ]
+        );
+      } else {
+        console.warn(
+          `No active stock found for product_id: ${product_id} and price_id: ${price_id_} to record in stock history.`
+        );
+      }
     }
+
+    await connection.commit();
+    connection.release();
+
+    res
+      .status(201)
+      .json({ message: "Direct sales recorded with customer info" });
+  } catch (err) {
+    await connection.rollback();
+    connection.release();
+    console.error("Error processing direct sale:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
 };
 
-
-
 exports.getSaleDetails = async (req, res) => {
-    try {
-        const { sale_tracking_id } = req.params;
-        if (!sale_tracking_id) {
-            return res.status(400).json({ error: "Sale Tracking ID is required." });
-        }
+  try {
+    const { sale_tracking_id } = req.params;
+    if (!sale_tracking_id) {
+      return res.status(400).json({ error: "Sale Tracking ID is required." });
+    }
 
-        const [salesDetails] = await pool.query(
-            `
+    const [salesDetails] = await pool.query(
+      `
             SELECT
                 s.sale_id,
                 s.sale_type,
@@ -684,463 +698,511 @@ exports.getSaleDetails = async (req, res) => {
             WHERE
                 s.sale_tracking_Id = ?
             `,
-            [sale_tracking_id]
-        );
+      [sale_tracking_id]
+    );
 
-        if (salesDetails.length === 0) {
-            return res.status(404).json({ message: "Sale details not found." });
-        }
-
-        res.json(salesDetails);
-
-    } catch (error) {
-        console.error("Error fetching sale details:", error);
-        res.status(500).json({ error: 'Database error' });
+    if (salesDetails.length === 0) {
+      return res.status(404).json({ message: "Sale details not found." });
     }
-};
 
+    res.json(salesDetails);
+  } catch (error) {
+    console.error("Error fetching sale details:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
 
 // Fetch allocated quantity and price for product sale calculation
 exports.getProductSaleMeta = async (req, res) => {
-    try {
-        const { product_id, marketing_staff_id, sale_date } = req.body;
-        console.log("Request Body:", req.body);
+  try {
+    const { product_id, marketing_staff_id, sale_date } = req.body;
+    console.log("Request Body:", req.body);
 
-        if (!product_id || !marketing_staff_id || !sale_date) {
-            return res.status(400).json({ error: "Missing required fields" });
-        }
+    if (!product_id || !marketing_staff_id || !sale_date) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
 
-        // 1. Fetch allocated quantity
-        const [allocationRows] = await pool.query(
-            `SELECT allocated_quantity 
+    // 1. Fetch allocated quantity
+    const [allocationRows] = await pool.query(
+      `SELECT allocated_quantity 
              FROM daily_stock_allocation 
              WHERE product_id = ? AND marketing_staff_id = ? AND date = ? AND isActive = 1`,
-            [product_id, marketing_staff_id, sale_date]
-        );
+      [product_id, marketing_staff_id, sale_date]
+    );
 
-        if (allocationRows.length === 0) {
-            return res.status(404).json({ error: "No allocation found" });
-        }
+    if (allocationRows.length === 0) {
+      return res.status(404).json({ error: "No allocation found" });
+    }
 
-        const allocated_quantity = allocationRows[0].allocated_quantity;
+    const allocated_quantity = allocationRows[0].allocated_quantity;
 
-        // 2. Fetch latest active marketing_selling_price
-        const [priceRows] = await pool.query(
-            `SELECT marketing_selling_price 
+    // 2. Fetch latest active marketing_selling_price
+    const [priceRows] = await pool.query(
+      `SELECT marketing_selling_price 
              FROM product_prices 
              WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
              ORDER BY effective_date DESC LIMIT 1`,
-            [product_id, sale_date]
-        );
+      [product_id, sale_date]
+    );
 
-        if (priceRows.length === 0) {
-            return res.status(404).json({ error: "No price data found" });
-        }
-
-        const marketing_selling_price = priceRows[0].marketing_selling_price;
-
-        // 3. Calculate total amount
-        const amount = allocated_quantity * marketing_selling_price;
-
-        console.log("Allocated Qty:", allocated_quantity);
-        console.log("Selling Price:", marketing_selling_price);
-        console.log("Amount:", amount);
-
-        res.json({
-            allocated_quantity,
-            marketing_selling_price,
-            amount
-        });
-
-    } catch (error) {
-        console.error("Error in getProductSaleMeta:", error);
-        res.status(500).json({ error: 'Database error' });
+    if (priceRows.length === 0) {
+      return res.status(404).json({ error: "No price data found" });
     }
+
+    const marketing_selling_price = priceRows[0].marketing_selling_price;
+
+    // 3. Calculate total amount
+    const amount = allocated_quantity * marketing_selling_price;
+
+    console.log("Allocated Qty:", allocated_quantity);
+    console.log("Selling Price:", marketing_selling_price);
+    console.log("Amount:", amount);
+
+    res.json({
+      allocated_quantity,
+      marketing_selling_price,
+      amount,
+    });
+  } catch (error) {
+    console.error("Error in getProductSaleMeta:", error);
+    res.status(500).json({ error: "Database error" });
+  }
 };
-
-
 
 //view all
 exports.getAllSales = async (req, res) => {
-    try {
-        const [sales] = await pool.query('SELECT sale_id, sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count FROM sales WHERE isActive = 1');
-        res.json(sales);
-    } catch (error) {
-        console.error(error);
+  try {
+    const [sales] = await pool.query(
+      "SELECT sale_id, sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count FROM sales WHERE isActive = 1"
+    );
+    res.json(sales);
+  } catch (error) {
+    console.error(error);
 
-        res.status(500).json({ error: 'Database error' });
-    }
-}
-
+    res.status(500).json({ error: "Database error" });
+  }
+};
 
 // Convert daily stock allocation to sales
 // const { v4: uuidv4 } = require('uuid');
-// Add Sales 
+// Add Sales
 exports.addSalesFromDailyAllocation = async (req, res) => {
-    try {
-        const {
-            sale_type = 'marketing',
-            marketing_staff_id,
-            sale_date = new Date(),
-            products = [],
-            amount_paid = 0,
-            expenses = {},                 // Destructure expenses
-            payment_breakdown = {},       // Destructure payment breakdown
-           
-        } = req.body;
+  try {
+    const {
+      sale_type = "marketing",
+      marketing_staff_id,
+      sale_date = new Date(),
+      products = [],
+      amount_paid = 0,
+      expenses = {}, // Destructure expenses
+      payment_breakdown = {}, // Destructure payment breakdown
+    } = req.body;
 
+    console.log(req.body);
 
-        console.log(req.body)
-        
-        // You can now access these like:
-        const { fuel = 0, vehicle_service = 0, other = 0 } = expenses;
-        const { cash = 0, card = 0, upi = 0 } = payment_breakdown;
-        
-        console.log("Fuel:", fuel);
-        console.log("Card Payment:", card);
+    // You can now access these like:
+    const { fuel = 0, vehicle_service = 0, other = 0 } = expenses;
+    const { cash = 0, card = 0, upi = 0 } = payment_breakdown;
 
+    console.log("Fuel:", fuel);
+    console.log("Card Payment:", card);
 
-        if (!marketing_staff_id || !Array.isArray(products) || products.length === 0) {
-            return res.status(400).json({ error: "Required fields are missing" });
-        }
+    if (
+      !marketing_staff_id ||
+      !Array.isArray(products) ||
+      products.length === 0
+    ) {
+      return res.status(400).json({ error: "Required fields are missing" });
+    }
 
-        const [stockAllocations] = await pool.query(
-            `SELECT daily_stock_id, product_id, allocated_quantity
+    const [stockAllocations] = await pool.query(
+      `SELECT daily_stock_id, product_id, allocated_quantity
              FROM daily_stock_allocation
              WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1`,
-            [marketing_staff_id]
-        );
+      [marketing_staff_id]
+    );
 
-        const allocationMap = {};
-        for (const stock of stockAllocations) {
-            allocationMap[stock.product_id] = stock;
-        }
+    const allocationMap = {};
+    for (const stock of stockAllocations) {
+      allocationMap[stock.product_id] = stock;
+    }
 
-        const salesResults = [];
+    const salesResults = [];
 
-        const sale_tracking_id = generateUniqueSaleTrackingId();
-        let totalAmountReceivedForSale = 0;
-        const totalDeductions1 = parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
-      console.log("Products - 0")
-        console.log(products[0].amount_received)
+    const sale_tracking_id = generateUniqueSaleTrackingId();
+    let totalAmountReceivedForSale = 0;
+    const totalDeductions1 =
+      parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
+    console.log("Products - 0");
+    console.log(products[0].amount_received);
 
-        const isSettledItem1 = amount_paid >= (products[0].amount_received - totalDeductions1) ? 1 : 0;
+    const isSettledItem1 =
+      amount_paid >= products[0].amount_received - totalDeductions1 ? 1 : 0;
 
-        console.log(isSettledItem1)
-        console.log("is Settled Item  ? " + isSettledItem1 )
+    console.log(isSettledItem1);
+    console.log("is Settled Item  ? " + isSettledItem1);
 
-        console.log("-----------------")
+    console.log("-----------------");
 
-        console.log({
-            fuel,
-            vehicle_service,
-            other,
-            sale_tracking_id,
-            totalAmount: 0,
-            marketing_staff_id,
-            sale_date,
-            isSettledItem1,
-            amount_paid
-          });
-          console.log("-----------------")
+    console.log({
+      fuel,
+      vehicle_service,
+      other,
+      sale_tracking_id,
+      totalAmount: 0,
+      marketing_staff_id,
+      sale_date,
+      isSettledItem1,
+      amount_paid,
+    });
+    console.log("-----------------");
 
-        await pool.query(
-            `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction,
+    await pool.query(
+      `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction,
              isSettled, AmountPaid)
              VALUES (?,?,?,?, ?, ?, ?, ?, ?)`,
-            [fuel,vehicle_service, other,  sale_tracking_id, 0, marketing_staff_id, sale_date,isSettledItem1, amount_paid]
-        );
+      [
+        fuel,
+        vehicle_service,
+        other,
+        sale_tracking_id,
+        0,
+        marketing_staff_id,
+        sale_date,
+        isSettledItem1,
+        amount_paid,
+      ]
+    );
 
-        
-        console.log("Final Sale Completed !!! ")
+    console.log("Final Sale Completed !!! ");
 
-
-        if (parseFloat(amount_paid) > 0) {
-            await pool.query(
-                `INSERT INTO sales_credit_history (UPI, Cash, Card, sale_tracking_Id, amount, creditedDate, isActive)
+    if (parseFloat(amount_paid) > 0) {
+      await pool.query(
+        `INSERT INTO sales_credit_history (UPI, Cash, Card, sale_tracking_Id, amount, creditedDate, isActive)
                  VALUES (?,?,?,?, ?, now(), ?)`,
-                [ upi,cash ,card, sale_tracking_id, amount_paid, 1]
-            );
-        }
+        [upi, cash, card, sale_tracking_id, amount_paid, 1]
+      );
+    }
 
-        console.log("sales_credit_history Completed  !!! ")
+    console.log("sales_credit_history Completed  !!! ");
 
+    for (const item of products) {
+      console.log("Product loop  !!! ");
+      console.log(item);
 
-        for (const item of products) {
-            console.log("Product loop  !!! ")
-            console.log(item)
+      const {
+        product_id,
+        quantity_sold = 0,
+        amount_received = 0,
+        damaged_count = 0,
+        loss_count = 0,
+      } = item;
 
-            const {
-                product_id,
-                quantity_sold = 0,
-                amount_received = 0,
-                damaged_count = 0,
-                loss_count = 0
-            } = item;
+      totalAmountReceivedForSale += parseFloat(amount_received);
 
-            totalAmountReceivedForSale += parseFloat(amount_received);
+      console.log("total AmountReceived For Sale" + totalAmountReceivedForSale);
 
-            console.log("total AmountReceived For Sale" + totalAmountReceivedForSale)
+      if (!allocationMap[product_id]) {
+        console.log("No Product");
+        console.warn(`No active allocation found for product_id ${product_id}`);
+        continue;
+      }
 
+      console.log("quantity_sold" + quantity_sold);
+      console.log(
+        "quantity Allocated " + allocationMap[product_id].allocated_quantity
+      );
 
-            if (!allocationMap[product_id]) {
-                console.log("No Product")
-                console.warn(`No active allocation found for product_id ${product_id}`);
-                continue;
-            }
-            
-            console.log("quantity_sold"+quantity_sold )
-            console.log("quantity Allocated "+ allocationMap[product_id].allocated_quantity )
+      // if (quantity_sold > allocationMap[product_id].allocated_quantity) {
+      //     console.log("quantity allocated     error " )
 
+      //     return res.status(400).json({
+      //         error: `Sold quantity (${quantity_sold}) exceeds allocated quantity (${allocationMap[product_id].allocated_quantity}) for product ID ${product_id}`
+      //     });
+      // }
 
-            // if (quantity_sold > allocationMap[product_id].allocated_quantity) {
-            //     console.log("quantity allocated     error " )
+      console.log("Product Fetch Going To ");
 
-            //     return res.status(400).json({
-            //         error: `Sold quantity (${quantity_sold}) exceeds allocated quantity (${allocationMap[product_id].allocated_quantity}) for product ID ${product_id}`
-            //     });
-            // }
+      console.log(product_id);
+      console.log(sale_date);
 
-
-            console.log("Product Fetch Going To " )
-
-console.log(product_id)
-            console.log(sale_date)
-
-            const [priceRows] = await pool.query(
-                `SELECT price_id
+      const [priceRows] = await pool.query(
+        `SELECT price_id
                  FROM product_prices
                  WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
                  ORDER BY effective_date DESC LIMIT 1`,
-                [product_id, sale_date]
-            );
+        [product_id, sale_date]
+      );
 
-            console.log("product_prices fetch slect")
+      console.log("product_prices fetch slect");
 
-            if (priceRows.length === 0) {
-                console.warn(`No price found for product_id ${product_id}`);
-                continue;
-            }
+      if (priceRows.length === 0) {
+        console.warn(`No price found for product_id ${product_id}`);
+        continue;
+      }
 
-            const price_id = priceRows[0].price_id;
+      const price_id = priceRows[0].price_id;
 
-            // const totalDeductions = parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
+      // const totalDeductions = parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
 
-            // console.log("Deductions"+totalDeductions)
-            // console.log("amount Received" + amount_received)
-            // console.log("amount Total" + amount_paid)
-            // const isSettledItem = amount_paid >= (amount_received - totalDeductions) ? 1 : 0;
+      // console.log("Deductions"+totalDeductions)
+      // console.log("amount Received" + amount_received)
+      // console.log("amount Total" + amount_paid)
+      // const isSettledItem = amount_paid >= (amount_received - totalDeductions) ? 1 : 0;
 
-            // console.log("Is Settled? " + isSettledItem);
+      // console.log("Is Settled? " + isSettledItem);
 
-            //const isSettledItem = parseFloat(amount_paid) >= parseFloat(amount_received) - (fuel+other+vehicle_service) ? 1 : 0;
-            const isCredit = parseFloat(amount_paid) < parseFloat(amount_received) ? 1 : 0;
+      //const isSettledItem = parseFloat(amount_paid) >= parseFloat(amount_received) - (fuel+other+vehicle_service) ? 1 : 0;
+      const isCredit =
+        parseFloat(amount_paid) < parseFloat(amount_received) ? 1 : 0;
 
-
-            console.log("Enter Into Sales !!! ")
-            const [insertResult] = await pool.query(
-                `INSERT INTO sales
+      console.log("Enter Into Sales !!! ");
+      const [insertResult] = await pool.query(
+        `INSERT INTO sales
                  (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count, sale_tracking_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    sale_type,
-                    marketing_staff_id,
-                    product_id,
-                    price_id,
-                    quantity_sold,
-                    amount_received,
-                    isCredit,
-                    sale_date,
-                    damaged_count,
-                    0,
-                    loss_count,
-                    sale_tracking_id
-                ]
-            );
+        [
+          sale_type,
+          marketing_staff_id,
+          product_id,
+          price_id,
+          quantity_sold,
+          amount_received,
+          isCredit,
+          sale_date,
+          damaged_count,
+          0,
+          loss_count,
+          sale_tracking_id,
+        ]
+      );
 
+      const newSaleId = insertResult.insertId;
+      console.log("New sale created with ID:", newSaleId);
 
-        const newSaleId = insertResult.insertId;
-        console.log("New sale created with ID:", newSaleId);
-
-
-            await pool.query(
-                `UPDATE stock
+      await pool.query(
+        `UPDATE stock
                  SET quantity = quantity - ? , Damage_Qty=Damage_Qty + ? , Loss_Qty = Loss_Qty + ?
                  WHERE product_id = ? AND isActive = 1`,
-                [quantity_sold,damaged_count ,loss_count , product_id]
-            );
+        [quantity_sold, damaged_count, loss_count, product_id]
+      );
 
-            const [stockIdResult] = await pool.query(
-                "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `price_id` = ? AND `isActive` = 1",
-                [product_id, price_id]
-            );
+      const [stockIdResult] = await pool.query(
+        "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `price_id` = ? AND `isActive` = 1",
+        [product_id, price_id]
+      );
 
-            if (stockIdResult.length > 0) {
-                const stock_Id = stockIdResult[0].stock_id;
-                const addedDate = new Date();
-                const addedBy = req.user ? req.user.id : 0;
-                const creditOrDebit = 'debit';
-                const referenceInvoiceOrSale = newSaleId;
-
-                await pool.query(
-                    "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [stock_Id, -quantity_sold, 'sale', addedDate, addedBy, creditOrDebit, referenceInvoiceOrSale]
-                );
-            } else {
-                console.warn(`No active stock found for product_id: ${product_id} and price_id: ${price_id} to record in stock history.`);
-            }
-
-            await pool.query(
-                `UPDATE daily_stock_allocation SET converted_to_sales = 1 , allocated_quantity = allocated_quantity-?  WHERE daily_stock_id = ?`,
-                [quantity_sold, allocationMap[product_id].daily_stock_id]
-            );
-
-            salesResults.push({
-                sale_id: newSaleId,
-                product_id,
-                quantity_sold,
-                amount_received,
-                sale_tracking_id
-            });
-        }
+      if (stockIdResult.length > 0) {
+        const stock_Id = stockIdResult[0].stock_id;
+        const addedDate = new Date();
+        const addedBy = req.user ? req.user.id : 0;
+        const creditOrDebit = "debit";
+        const referenceInvoiceOrSale = newSaleId;
 
         await pool.query(
-            `UPDATE final_sale
+          "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [
+            stock_Id,
+            -quantity_sold,
+            "sale",
+            addedDate,
+            addedBy,
+            creditOrDebit,
+            referenceInvoiceOrSale,
+          ]
+        );
+      } else {
+        console.warn(
+          `No active stock found for product_id: ${product_id} and price_id: ${price_id} to record in stock history.`
+        );
+      }
+
+      await pool.query(
+        `UPDATE daily_stock_allocation SET converted_to_sales = 1 , allocated_quantity = allocated_quantity-?  WHERE daily_stock_id = ?`,
+        [quantity_sold, allocationMap[product_id].daily_stock_id]
+      );
+
+      salesResults.push({
+        sale_id: newSaleId,
+        product_id,
+        quantity_sold,
+        amount_received,
+        sale_tracking_id,
+      });
+    }
+
+    await pool.query(
+      `UPDATE final_sale
              SET TotalAmount = ?
              WHERE sale_tracking_Id = ?`,
-            [totalAmountReceivedForSale, sale_tracking_id]
-        );
+      [totalAmountReceivedForSale, sale_tracking_id]
+    );
 
-        const [finalSaleRecord] = await pool.query(
-            `SELECT AmountPaid, TotalAmount FROM final_sale WHERE sale_tracking_Id = ?`,
-            [sale_tracking_id]
-        );
+    const [finalSaleRecord] = await pool.query(
+      `SELECT AmountPaid, TotalAmount FROM final_sale WHERE sale_tracking_Id = ?`,
+      [sale_tracking_id]
+    );
 
-        if (finalSaleRecord.length > 0) {
-            // const { AmountPaid, TotalAmount } = finalSaleRecord[0];
-
-            // const totalDeductions = parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
-
-            // console.log("Deductions"+totalDeductions)
-            // console.log("amount Received" + amount_received)
-            // console.log("amount Total" + amount_paid)
-            // const isSettledItemNew = amount_paid >= (amount_received - totalDeductions) ? 1 : 0;
-
-        
-        }
-
-        res.json({ message: 'Sales added successfully', sales: salesResults });
-
-    } catch (error) {
-        console.error("Error in addSales:", error);
-        res.status(500).json({ error: 'Database error' });
+    if (finalSaleRecord.length > 0) {
+      // const { AmountPaid, TotalAmount } = finalSaleRecord[0];
+      // const totalDeductions = parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
+      // console.log("Deductions"+totalDeductions)
+      // console.log("amount Received" + amount_received)
+      // console.log("amount Total" + amount_paid)
+      // const isSettledItemNew = amount_paid >= (amount_received - totalDeductions) ? 1 : 0;
     }
+
+    res.json({ message: "Sales added successfully", sales: salesResults });
+  } catch (error) {
+    console.error("Error in addSales:", error);
+    res.status(500).json({ error: "Database error" });
+  }
 };
 
 function generateUniqueSaleTrackingId() {
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let saleId = '';
-    for (let i = 0; i < 10; i++) {
-        saleId += characters.charAt(Math.floor(Math.random() * characters.length));
-    }
-    return saleId;
+  const characters =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let saleId = "";
+  for (let i = 0; i < 10; i++) {
+    saleId += characters.charAt(Math.floor(Math.random() * characters.length));
+  }
+  return saleId;
 }
-
 
 //add sales
 exports.addSales = async (req, res) => {
-    console.log("Function Called for Sales Entry");
-    try {
-        const { sale_type, marketing_staff_id, product_id, price_id, quantity_sold, 
-                amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count } = req.body;
+  console.log("Function Called for Sales Entry");
+  try {
+    const {
+      sale_type,
+      marketing_staff_id,
+      product_id,
+      price_id,
+      quantity_sold,
+      amount_received,
+      is_credit,
+      sale_date,
+      damaged_count,
+      is_settled,
+      loss_count,
+    } = req.body;
 
-        console.log("Request body:", req.body);
+    console.log("Request body:", req.body);
 
-        if (!product_id || !price_id || quantity_sold === undefined) {
-            console.log("Missing required fields");
-            return res.status(400).json({ error: "Required fields are missing" });
-        }
+    if (!product_id || !price_id || quantity_sold === undefined) {
+      console.log("Missing required fields");
+      return res.status(400).json({ error: "Required fields are missing" });
+    }
 
-        // Insert sale
-        const [saleResult] = await pool.query(
-            `INSERT INTO sales (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, 
+    // Insert sale
+    const [saleResult] = await pool.query(
+      `INSERT INTO sales (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, 
              amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [sale_type, marketing_staff_id, product_id, price_id, quantity_sold, 
-             amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count]
-        );
+      [
+        sale_type,
+        marketing_staff_id,
+        product_id,
+        price_id,
+        quantity_sold,
+        amount_received,
+        is_credit,
+        sale_date,
+        damaged_count,
+        is_settled,
+        loss_count,
+      ]
+    );
 
-        const newSaleId = saleResult.insertId;
-        console.log("New sale created with ID:", newSaleId);
+    const newSaleId = saleResult.insertId;
+    console.log("New sale created with ID:", newSaleId);
 
-        // Update stock
-        console.log("Updating stock for product:", product_id, "price:", price_id);
-        const [stockUpdateResult] = await pool.query(
-            "UPDATE stock SET quantity = quantity - ? WHERE product_id = ? AND price_id = ? AND `isActive`=1",
-            [quantity_sold, product_id, price_id]
-        );
+    // Update stock
+    console.log("Updating stock for product:", product_id, "price:", price_id);
+    const [stockUpdateResult] = await pool.query(
+      "UPDATE stock SET quantity = quantity - ? WHERE product_id = ? AND price_id = ? AND `isActive`=1",
+      [quantity_sold, product_id, price_id]
+    );
 
-        console.log("Stock update affected rows:", stockUpdateResult.affectedRows);
-        
-        if (stockUpdateResult.affectedRows === 0) {
-            console.log("Stock not found for update");
-            return res.status(404).json({ error: "Stock not found for the given product and price." });
-        }
+    console.log("Stock update affected rows:", stockUpdateResult.affectedRows);
 
-        // Get stock ID for history
-        console.log("Fetching stock ID for history");
-        const [stockIdResult] = await pool.query(
-            "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `price_id` = ? AND `isActive` = 1",
-            [product_id, price_id]
-        );
-        
-        console.log("Stock ID query result:", stockIdResult);
-
-        if (stockIdResult.length > 0) {
-            const stock_Id = stockIdResult[0].stock_id;
-            console.log("Found stock ID:", stock_Id, "for history entry");
-            
-            const addedDate = new Date();
-            const addedBy = req.user ? req.user.id : null;
-            const creditOrDebit = 'debit';
-            const referenceInvoiceOrSale = newSaleId;
-
-            console.log("Inserting into stock_history with values:", {
-                stock_Id, 
-                Qty: -quantity_sold, 
-                stock_type: 'sale', 
-                addedDate, 
-                addedBy, 
-                creditOrDebit, 
-                referenceInvoiceOrSale
-            });
-
-            try {
-                const [historyResult] = await pool.query(
-                    "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [stock_Id, -quantity_sold, 'sale', addedDate, addedBy, creditOrDebit, referenceInvoiceOrSale]
-                );
-                console.log("Stock history insert successful, ID:", historyResult.insertId);
-            } catch (historyError) {
-                console.error("Error inserting into stock_history:", historyError);
-                throw historyError; // Re-throw to be caught by the outer catch
-            }
-        } else {
-            console.warn(`No active stock found for product_id: ${product_id} and price_id: ${price_id} to record in stock history.`);
-        }
-
-        res.json({ message: 'Sale and stock updated successfully', sale_id: newSaleId });
-    } catch (error) {
-        console.error("Error in addSales:", error);
-        res.status(500).json({ error: 'Database error', details: error.message });
+    if (stockUpdateResult.affectedRows === 0) {
+      console.log("Stock not found for update");
+      return res
+        .status(404)
+        .json({ error: "Stock not found for the given product and price." });
     }
+
+    // Get stock ID for history
+    console.log("Fetching stock ID for history");
+    const [stockIdResult] = await pool.query(
+      "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `price_id` = ? AND `isActive` = 1",
+      [product_id, price_id]
+    );
+
+    console.log("Stock ID query result:", stockIdResult);
+
+    if (stockIdResult.length > 0) {
+      const stock_Id = stockIdResult[0].stock_id;
+      console.log("Found stock ID:", stock_Id, "for history entry");
+
+      const addedDate = new Date();
+      const addedBy = req.user ? req.user.id : null;
+      const creditOrDebit = "debit";
+      const referenceInvoiceOrSale = newSaleId;
+
+      console.log("Inserting into stock_history with values:", {
+        stock_Id,
+        Qty: -quantity_sold,
+        stock_type: "sale",
+        addedDate,
+        addedBy,
+        creditOrDebit,
+        referenceInvoiceOrSale,
+      });
+
+      try {
+        const [historyResult] = await pool.query(
+          "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [
+            stock_Id,
+            -quantity_sold,
+            "sale",
+            addedDate,
+            addedBy,
+            creditOrDebit,
+            referenceInvoiceOrSale,
+          ]
+        );
+        console.log(
+          "Stock history insert successful, ID:",
+          historyResult.insertId
+        );
+      } catch (historyError) {
+        console.error("Error inserting into stock_history:", historyError);
+        throw historyError; // Re-throw to be caught by the outer catch
+      }
+    } else {
+      console.warn(
+        `No active stock found for product_id: ${product_id} and price_id: ${price_id} to record in stock history.`
+      );
+    }
+
+    res.json({
+      message: "Sale and stock updated successfully",
+      sale_id: newSaleId,
+    });
+  } catch (error) {
+    console.error("Error in addSales:", error);
+    res.status(500).json({ error: "Database error", details: error.message });
+  }
 };
 
 // search
 exports.searchSales = async (req, res) => {
-    try {
-        const { sale_date, from_date, to_date } = req.body;
-        let query = `
+  try {
+    const { sale_date, from_date, to_date } = req.body;
+    let query = `
             SELECT
     f.id,
     f.sale_tracking_Id,
@@ -1166,39 +1228,179 @@ LEFT JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id
 LEFT JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id
 WHERE
         `;
-        const queryParams = [];
+    const queryParams = [];
 
-        if (sale_date) {
-            query += `DATE(f.DateofTransaction) = ?`;
-            queryParams.push(sale_date);
-        } else if (from_date && to_date) {
-            query += `DATE(f.DateofTransaction) >= ? AND DATE(f.DateofTransaction) <= ?`;
-            queryParams.push(from_date, to_date);
-        } else {
-            return res.status(400).json({ error: "Please provide a sale date or a date range." });
-        }
-
-        query += ` ORDER BY f.DateofTransaction`;
-
-        const [result] = await pool.query(query, queryParams);
-        res.json(result);
-
-    } catch (error) {
-        console.error("Error searching sales:", error);
-        res.status(500).json({ error: 'Database error' });
+    if (sale_date) {
+      query += `DATE(f.DateofTransaction) = ?`;
+      queryParams.push(sale_date);
+    } else if (from_date && to_date) {
+      query += `DATE(f.DateofTransaction) >= ? AND DATE(f.DateofTransaction) <= ?`;
+      queryParams.push(from_date, to_date);
+    } else {
+      return res
+        .status(400)
+        .json({ error: "Please provide a sale date or a date range." });
     }
+
+    query += ` ORDER BY f.DateofTransaction`;
+
+    const [result] = await pool.query(query, queryParams);
+    res.json(result);
+  } catch (error) {
+    console.error("Error searching sales:", error);
+    res.status(500).json({ error: "Database error" });
+  }
 };
 //delete
 exports.deleteSales = async (req, res) => {
-    try {
-        const { sale_id } = req.body;
-        if (!sale_id) return res.status(400).json({ error: "sales id is required" });
+  try {
+    const { sale_id } = req.body;
+    if (!sale_id)
+      return res.status(400).json({ error: "sales id is required" });
 
-        const [result] = await pool.query('UPDATE sales SET isActive = 0 WHERE sale_id= ?', [sale_id]);
-        if (result.affectedRows === 0) return res.status(400).json({ error: 'sales id not found' });
-        res.json({ message: 'sales id deleted successfully' });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Database error' });
+    const [result] = await pool.query(
+      "UPDATE sales SET isActive = 0 WHERE sale_id= ?",
+      [sale_id]
+    );
+    if (result.affectedRows === 0)
+      return res.status(400).json({ error: "sales id not found" });
+    res.json({ message: "sales id deleted successfully" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+//view all allocation by date
+exports.fetchFinalSaleListByDate = async (req, res) => {
+  try {
+    const { date } = req.body;
+    //console.log(req.body);
+    const [sales] = await pool.query(
+      "SELECT FS.id, FS.sale_tracking_Id, U.name, FS.TotalAmount, FS.isSettled  FROM `final_sale` as FS JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id  JOIN `users` as U ON FS.`UserId` = U.`user_id` WHERE FS.`DateofTransaction`= ? AND S.sale_type='marketing' GROUP BY FS.`sale_tracking_Id`",
+      [date]
+    );
+    res.json(sales);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+//fetch data for print with allocation ID - final sale -ID  
+exports.fetchSalesDataForPrintByID = async (req, res) => {
+  try {
+    let { allocationID } = req.body;
+    // Step 1: Get final sale data
+    const [finalSalerows] = await pool.query(
+      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses` FROM `final_sale` WHERE  `id` = ?",
+      [allocationID]
+    );
+
+    // Check if sale data exists
+    if (finalSalerows.length === 0) {
+      return res.json({
+        success: false,
+        message: "No final sale found for given date.",
+      });
     }
-}
+
+    const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
+
+    // Step 2: Get product sale data
+    const [productData] = await pool.query(
+      `SELECT 
+                s.sale_id, 
+                s.sale_type, 
+                s.marketing_staff_id, 
+                p.product_name, 
+                pp.marketing_selling_price, 
+                s.quantity_sold, 
+                s.amount_received, 
+                s.is_credit, 
+                s.sale_tracking_Id, 
+                s.sale_date, 
+                s.damaged_count, 
+                s.is_settled, 
+                s.loss_count, 
+                s.isActive,
+                u.name
+            FROM 
+                sales s
+            JOIN 
+                products p ON s.product_id = p.product_id
+            JOIN 
+                product_prices pp ON pp.price_id = s.price_id    
+            JOIN
+                final_sale fs ON s.sale_tracking_Id = fs.sale_tracking_Id
+            JOIN 
+                users u ON s.marketing_staff_id = u.user_id        
+            WHERE 
+                 fs.id = ?`,
+      [allocationID]
+    );
+
+    // Step 3: Get payment breakdown (using sale_tracking_Id from above)
+    const [transactionData] = await pool.query(
+      "SELECT SUM(`amount`) AS total, SUM(`UPI`) AS upi, SUM(`Cash`) AS cash, SUM(`Card`) AS card FROM `sales_credit_history` WHERE `sale_tracking_Id` = ?",
+      [saleTrackingId]
+    );
+
+    res.json({
+      success: true,
+      saledata: finalSalerows,
+      details: productData,
+      payments: transactionData[0] || {}, // handle no data scenario
+    });
+  } catch (error) {
+    console.error("Error fetching daily data for print:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch data" });
+  }
+};
+
+//view all allocation by date
+exports.fetchDirectSaleListByDate = async (req, res) => {
+  try {
+    const { date } = req.body;
+    console.log(req.body);
+    const [sales] = await pool.query(
+      "SELECT FS.id, FS.sale_tracking_Id, C.Name, FS.TotalAmount, FS.isSettled FROM `final_sale` as FS JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id JOIN `customers` as C ON FS.`UserId` = C.`id` WHERE FS.`DateofTransaction`= ? AND S.sale_type!='marketing' GROUP BY FS.`sale_tracking_Id`;",
+      [date]
+    );
+    res.json(sales);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
+
+    try {
+      let { allocationID } = req.body;
+      // Step 1: Get final sale data
+      const [finalSalerows] = await pool.query(
+        "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses` FROM `final_sale` WHERE  `id` = ?",
+        [allocationID]
+      );
+
+      // Check if sale data exists
+      if (finalSalerows.length === 0) {
+        return res.json({
+          success: false,
+          message: "No final sale found for given date.",
+        });
+      }
+
+      const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
+
+
+
+
+
+    }catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }  
+
+};  
