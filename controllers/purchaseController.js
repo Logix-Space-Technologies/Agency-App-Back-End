@@ -633,30 +633,35 @@ exports.getPurchaseBills = async (req, res) => {
     const { supplier_id } = req.body;
     if (!supplier_id)
       return res.status(400).json({ error: "supplier data is required" });
-    const sql =
-      "SELECT `Invoice_Number`,  SUM(`total_amount`) AS totalAmountPerInvoice, `AddedDate` FROM  `purchase` WHERE `supplier_id` = ? AND isActive = 1 GROUP BY `Invoice_Number`, `AddedDate` ORDER BY `id` DESC LIMIT 0, 10 ";
+    
+    // Fixed query - either use MAX(id) or order by a grouped column
+    const sql = `
+      SELECT 
+        Invoice_Number, 
+        SUM(total_amount) AS totalAmountPerInvoice, 
+        AddedDate,
+        MAX(id) as latest_id
+      FROM purchase 
+      WHERE supplier_id = ? AND isActive = 1 
+      GROUP BY Invoice_Number, AddedDate 
+      ORDER BY latest_id DESC 
+      LIMIT 0, 10
+    `;
+    
     const [result] = await pool.query(sql, [supplier_id]);
     console.log(result);
 
     const [totalSum] = await pool.query(
-      "SELECT SUM(`total_amount`) AS total_amount FROM `purchase` WHERE `supplier_id` = ? AND isActive=1",
+      "SELECT SUM(total_amount) AS total_amount FROM purchase WHERE supplier_id = ? AND isActive=1",
       [supplier_id]
     );
     const totalAmount = totalSum[0]?.total_amount ?? 0;
 
     const [amtPaid] = await pool.query(
-      "SELECT  SUM(`total_amount`) AS amount_paid FROM `purchase_settlement` WHERE `supplier_id` = ? AND isActive=1",
+      "SELECT SUM(total_amount) AS amount_paid FROM purchase_settlement WHERE supplier_id = ? AND isActive=1",
       [supplier_id]
     );
     const amount_paid = amtPaid[0]?.amount_paid ?? 0;
-
-    console.log(amount_paid);
-
-    // const amountPaid = amtPaid.reduce(
-    //   (sum, row) => sum + parseFloat(row.amount),
-    //   0
-    // );
-    // console.log(amountPaid);
 
     res.json({
       result: result,
