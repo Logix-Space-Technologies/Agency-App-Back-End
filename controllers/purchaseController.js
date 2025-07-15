@@ -634,7 +634,7 @@ exports.getPurchaseBills = async (req, res) => {
     if (!supplier_id)
       return res.status(400).json({ error: "supplier data is required" });
     const sql =
-      "SELECT `Invoice_Number`, SUM(`total_amount`) AS totalAmountPerInvoice, `AddedDate` FROM `purchase` WHERE `supplier_id` = ? AND isActive=1 GROUP BY `Invoice_Number` ORDER BY `id` DESC LIMIT 0,10;";
+      "SELECT `Invoice_Number`,  SUM(`total_amount`) AS totalAmountPerInvoice, `AddedDate` FROM  `purchase` WHERE `supplier_id` = ? AND isActive = 1 GROUP BY `Invoice_Number`, `AddedDate` ORDER BY `id` DESC LIMIT 0, 10 ";
     const [result] = await pool.query(sql, [supplier_id]);
     console.log(result);
 
