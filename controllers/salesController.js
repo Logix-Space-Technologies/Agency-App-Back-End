@@ -1277,9 +1277,14 @@ exports.fetchFinalSaleListByDate = async (req, res) => {
     const { date } = req.body;
     //console.log(req.body);
     const [sales] = await pool.query(
-      "SELECT FS.id, FS.sale_tracking_Id, U.name, FS.TotalAmount, FS.isSettled  FROM `final_sale` as FS JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id  JOIN `users` as U ON FS.`UserId` = U.`user_id` WHERE FS.`DateofTransaction`= ? AND S.sale_type='marketing' GROUP BY FS.`sale_tracking_Id`",
-      [date]
-    );
+  "SELECT FS.id, FS.sale_tracking_Id, U.name, FS.TotalAmount, FS.isSettled " +
+  "FROM `final_sale` as FS " +
+  "JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id " +
+  "JOIN `users` as U ON FS.`UserId` = U.`user_id` " +
+  "WHERE FS.`DateofTransaction`= ? AND S.sale_type='marketing' " +
+  "GROUP BY FS.`sale_tracking_Id`, FS.id, U.name, FS.TotalAmount, FS.isSettled",
+  [date]
+);
     res.json(sales);
   } catch (error) {
     console.error(error);
