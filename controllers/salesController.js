@@ -1378,9 +1378,10 @@ exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
 
     try {
       let { allocationID } = req.body;
+      console.log(allocationID);
       // Step 1: Get final sale data
       const [finalSalerows] = await pool.query(
-        "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses` FROM `final_sale` WHERE  `id` = ?",
+        "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile  FROM `final_sale` JOIN customers C ON UserId = C.id WHERE  final_sale.`id` = ?",
         [allocationID]
       );
 
@@ -1394,10 +1395,52 @@ exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
 
       const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
 
+       // Step 2: Get product sale data
+    const [productData] = await pool.query(
+      `SELECT 
+                s.sale_id, 
+                s.sale_type, 
+                s.marketing_staff_id,
+                p.product_id, 
+                p.product_name, 
+                pp.marketing_selling_price,
+                pp.direct_selling_price,
+                pp.whole_sale_price, 
+                s.quantity_sold, 
+                s.amount_received, 
+                s.is_credit, 
+                s.sale_tracking_Id, 
+                s.sale_date, 
+                s.damaged_count, 
+                s.is_settled, 
+                s.loss_count, 
+                s.isActive
+            FROM 
+                sales s
+            JOIN 
+                products p ON s.product_id = p.product_id
+            JOIN 
+                product_prices pp ON pp.price_id = s.price_id    
+            JOIN
+                final_sale fs ON s.sale_tracking_Id = fs.sale_tracking_Id   
+            WHERE 
+                 fs.id = ?`,
+      [allocationID]
+    );
 
+     // Step 3: Get payment breakdown (using sale_tracking_Id from above)
+    const [transactionData] = await pool.query(
+      "SELECT SUM(`amount`) AS total, SUM(`UPI`) AS upi, SUM(`Cash`) AS cash, SUM(`Card`) AS card FROM `sales_credit_history` WHERE `sale_tracking_Id` = ?",
+      [saleTrackingId]
+    );
 
-
-
+    res.json({
+      success: true,
+      saledata: finalSalerows,
+      details: productData,
+      payments: transactionData[0] || {}, // handle no data scenario
+    });
+  
     }catch (error) {
     console.error(error);
     res.status(500).json({ error: "Database error" });
