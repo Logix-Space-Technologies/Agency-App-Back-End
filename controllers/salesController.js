@@ -1396,21 +1396,18 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
     // 3. Run modified main query
  const [sales] = await pool.query(
       `SELECT 
-         FS.id, 
-         FS.sale_tracking_Id, 
-         C.Name, 
-         FS.TotalAmount, 
-         FS.isSettled 
-       FROM final_sale FS
-       LEFT JOIN (
-         SELECT sale_tracking_Id, MAX(sale_type) as sale_type 
-         FROM sales 
-         GROUP BY sale_tracking_Id
-       ) S ON FS.sale_tracking_Id = S.sale_tracking_Id
-       LEFT JOIN Customers C ON FS.UserId = C.id
-       WHERE FS.DateofTransaction = ?
-         AND (S.sale_type IS NULL OR S.sale_type != 'marketing')
-       GROUP BY FS.id, FS.sale_tracking_Id, C.Name, FS.TotalAmount, FS.isSettled`,
+    FS.id, 
+    FS.sale_tracking_Id, 
+    C.Name, 
+    FS.TotalAmount, 
+    FS.isSettled,
+    S.sale_type
+FROM sales S
+JOIN final_sale FS ON S.sale_tracking_Id = FS.sale_tracking_Id
+LEFT JOIN Customers C ON FS.UserId = C.id
+WHERE DATE(FS.DateofTransaction) = '2025-07-25'
+    AND S.sale_type != 'marketing'
+GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type`,
       [date]
     );
 
