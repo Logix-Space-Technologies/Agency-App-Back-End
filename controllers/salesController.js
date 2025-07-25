@@ -1369,12 +1369,13 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
     const { date } = req.body;
     console.log(req.body);
     const [sales] = await pool.query(
-      "SELECT FS.id, FS.sale_tracking_Id, C.Name, FS.TotalAmount, FS.isSettled " +
+      "SELECT ANY_VALUE(FS.id) as id, FS.sale_tracking_Id, ANY_VALUE(C.Name) as Name, " +
+  "ANY_VALUE(FS.TotalAmount) as TotalAmount, ANY_VALUE(FS.isSettled) as isSettled " +
   "FROM `final_sale` as FS " +
   "JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id " +
   "JOIN `Customers` as C ON FS.`UserId` = C.`id` " +
   "WHERE FS.`DateofTransaction`= ? AND S.sale_type!='marketing' " +
-  "GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled",
+  "GROUP BY FS.sale_tracking_Id",
       [date]
     );
     res.json(sales);
