@@ -1405,7 +1405,7 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
 FROM sales S
 JOIN final_sale FS ON S.sale_tracking_Id = FS.sale_tracking_Id
 LEFT JOIN Customers C ON FS.UserId = C.id
-WHERE DATE(FS.DateofTransaction) = '2025-07-25'
+WHERE DATE(FS.DateofTransaction) = ?
     AND S.sale_type != 'marketing'
 GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type`,
       [date]
