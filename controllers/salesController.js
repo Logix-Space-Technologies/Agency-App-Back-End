@@ -1369,12 +1369,38 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
     const { date } = req.body;
     console.log(`Searching for date: ${date}`);
 
+    // 1. First check raw data exists
+    const [testCount] = await pool.query(
+      `SELECT COUNT(*) as count FROM final_sale WHERE DateofTransaction = ?`,
+      [date]
+    );
+    console.log(`Raw records for ${date}:`, testCount[0].count);
+
+    // 2. Check join conditions
+    const [joinTest] = await pool.query(
+      `SELECT 
+         FS.id as fs_id, 
+         FS.sale_tracking_Id, 
+         S.sale_tracking_Id as s_tracking_id,
+         S.sale_type,
+         C.Name
+       FROM final_sale FS
+       LEFT JOIN sales S ON FS.sale_tracking_Id = S.sale_tracking_Id
+       LEFT JOIN Customers C ON FS.UserId = C.id
+       WHERE FS.DateofTransaction = ?
+       LIMIT 5`,
+      [date]
+    );
+    console.log('Join test samples:', joinTest);
+
+    // 3. Run modified main query
     const [sales] = await pool.query(
       `SELECT FS.id, FS.sale_tracking_Id, C.Name, FS.TotalAmount, FS.isSettled 
-       FROM final_sale as FS 
-       JOIN sales as S ON FS.sale_tracking_Id = S.sale_tracking_Id 
-       JOIN Customers as C ON FS.UserId = C.id 
-       WHERE FS.DateofTransaction = ? AND S.sale_type != 'marketing' 
+       FROM final_sale FS 
+       LEFT JOIN sales S ON FS.sale_tracking_Id = S.sale_tracking_Id 
+       LEFT JOIN Customers C ON FS.UserId = C.id 
+       WHERE FS.DateofTransaction = ? 
+       AND (S.sale_tracking_Id IS NULL OR S.sale_type != 'marketing')
        GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled`,
       [date]
     );
@@ -1383,7 +1409,7 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
     res.json(sales);
   } catch (error) {
     console.error("Error in fetchDirectSaleListByDate:", error);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: "Database error", details: error.message });
   }
 };
 
