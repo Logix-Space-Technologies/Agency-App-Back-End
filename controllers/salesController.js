@@ -1384,6 +1384,8 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
       [date]
     );
 
+        console.log("SQL Result:", sales); // <-- Log the result here
+
     res.json(sales);
   } catch (error) {
     console.error(error);
