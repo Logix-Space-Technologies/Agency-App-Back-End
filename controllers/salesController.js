@@ -1370,17 +1370,7 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
     console.log(`Searching for date: ${date}`);
 
     const [sales] = await pool.query(
-      `SELECT 
-        ANY_VALUE(FS.id) AS id,
-        FS.sale_tracking_Id,
-        ANY_VALUE(C.Name) AS Name,
-        ANY_VALUE(FS.TotalAmount) AS TotalAmount,
-        ANY_VALUE(FS.isSettled) AS isSettled
-      FROM final_sale AS FS
-      JOIN sales AS S ON FS.sale_tracking_Id = S.sale_tracking_Id
-      JOIN Customers AS C ON FS.UserId = C.id
-      WHERE FS.DateofTransaction = ? AND S.sale_type != 'marketing'
-      GROUP BY FS.sale_tracking_Id;`,
+      "SELECT FS.id, FS.sale_tracking_Id, C.Name, FS.TotalAmount, FS.isSettled FROM `final_sale` as FS JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id JOIN `Customers` as C ON FS.`UserId` = C.`id` WHERE FS.`DateofTransaction`= ? AND S.sale_type!='marketing' GROUP BY FS.`sale_tracking_Id`;",
       [date]
     );
 
