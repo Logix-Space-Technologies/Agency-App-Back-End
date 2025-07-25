@@ -1428,7 +1428,7 @@ exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
       console.log(allocationID);
       // Step 1: Get final sale data
       const [finalSalerows] = await pool.query(
-        "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile  FROM `final_sale` JOIN customers C ON UserId = C.id WHERE  final_sale.`id` = ?",
+        "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ?",
         [allocationID]
       );
 
