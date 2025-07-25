@@ -1367,29 +1367,58 @@ exports.fetchSalesDataForPrintByID = async (req, res) => {
 exports.fetchDirectSaleListByDate = async (req, res) => {
   try {
     const { date } = req.body;
-    console.log(req.body);
+    console.log("Searching for date:", date);
 
+    // Modified query with proper date handling
     const [sales] = await pool.query(
       `SELECT 
-        ANY_VALUE(FS.id) AS id,
-        FS.sale_tracking_Id,
-        ANY_VALUE(C.Name) AS Name,
-        ANY_VALUE(FS.TotalAmount) AS TotalAmount,
-        ANY_VALUE(FS.isSettled) AS isSettled
-      FROM final_sale AS FS
-      JOIN sales AS S ON FS.sale_tracking_Id = S.sale_tracking_Id
-      JOIN Customers AS C ON FS.UserId = C.id
-      WHERE FS.DateofTransaction = ? AND S.sale_type != 'marketing'
-      GROUP BY FS.sale_tracking_Id;`,
+         FS.id,
+         FS.sale_tracking_Id,
+         C.Name,
+         FS.TotalAmount,
+         FS.isSettled
+       FROM final_sale AS FS
+       JOIN sales AS S ON FS.sale_tracking_Id = S.sale_tracking_Id
+       JOIN Customers AS C ON FS.UserId = C.id
+       WHERE DATE(FS.DateofTransaction) = DATE(?)
+         AND S.sale_type != 'marketing'
+       GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled`,
       [date]
     );
 
-        console.log("SQL Result:", sales); // <-- Log the result here
+    console.log(`Found ${sales.length} records`);
 
-    res.json(sales);
+    if (sales.length === 0) {
+      // Diagnostic query to check what exists for this date
+      const [diagnostic] = await pool.query(
+        `SELECT 
+           FS.sale_tracking_Id,
+           FS.DateofTransaction,
+           S.sale_type,
+           C.Name
+         FROM final_sale FS
+         JOIN sales S ON FS.sale_tracking_Id = S.sale_tracking_Id
+         LEFT JOIN Customers C ON FS.UserId = C.id
+         WHERE DATE(FS.DateofTransaction) = DATE(?)
+         LIMIT 5`,
+        [date]
+      );
+      
+      console.log("Diagnostic data:", diagnostic);
+    }
+
+    res.json({ success: true, data: sales });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Database error" });
+    console.error("Error details:", {
+      message: error.message,
+      sql: error.sql,
+      stack: error.stack
+    });
+    res.status(500).json({ 
+      success: false, 
+      error: "Database error",
+      details: error.message 
+    });
   }
 };
 
