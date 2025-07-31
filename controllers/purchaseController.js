@@ -508,6 +508,58 @@ exports.getAllPurchases = async (req, res) => {
   }
 };
 
+// Get All Active Purchases with Supplier and Product Name
+exports.getAllPurchasesByValues = async (req, res) => {
+  try {
+    const { date, supplier } = req.body;
+    console.log(req.body);
+    const queryParams = [];
+    let query = `SELECT
+                pr.product_name,
+                p.purchase_date,
+                p.purchase_price,
+                p.total_amount,
+                p.quantity,
+                p.Invoice_Number,
+                s.supplier_name,
+                p.AddedDate,
+                p.is_damaged,
+                p.damage_description,
+                p.replacement_provided,
+                p.replacement_date,
+                p.is_free_replacement,
+                p.id AS purchase_id
+            FROM
+                purchase p
+            JOIN
+                suppliers s ON p.supplier_id = s.supplier_id
+            JOIN
+                products pr ON pr.product_id = p.product_id
+            WHERE  
+            `;
+    if (date) {
+      query += "p.purchase_date= ? AND p.isActive = 1";
+      queryParams.push(date);
+    } else if (supplier) {
+      query += "s.supplier_name = ? AND p.isActive = 1";
+      queryParams.push(supplier);
+    }
+
+    //console.log(query,queryParams);
+    const [purchases] = await pool.query(query,queryParams)
+    res.json(purchases);
+
+  } catch (error) {
+    console.error(
+      "Error fetching active purchases with supplier and product:",
+      error
+    );
+    res
+      .status(500)
+      .json({ error: "Database error while fetching active purchases." });
+  }
+};
+
 // Get All Suppliers (for the dropdown)
 exports.getSuppliers = async (req, res) => {
   try {
@@ -633,7 +685,7 @@ exports.getPurchaseBills = async (req, res) => {
     const { supplier_id } = req.body;
     if (!supplier_id)
       return res.status(400).json({ error: "supplier data is required" });
-    
+
     // Fixed query - either use MAX(id) or order by a grouped column
     const sql = `
       SELECT 
@@ -647,7 +699,7 @@ exports.getPurchaseBills = async (req, res) => {
       ORDER BY latest_id DESC 
       LIMIT 0, 10
     `;
-    
+
     const [result] = await pool.query(sql, [supplier_id]);
     console.log(result);
 
@@ -699,7 +751,7 @@ exports.purchaseSettlement = async (req, res) => {
     }
 
     //const sql = "Insert into  brands SET brand_name = ? WHERE brand_id = ?";
-        // const sql = "INSERT into `purchase_settlement`(`supplier_id`, `total_amount`,`added_date`, `transaction_date`, `transaction_type`, `remarks`, `isActive`) VALUES (?, ?, ?, ?, ?, ?, 1)";
+    // const sql = "INSERT into `purchase_settlement`(`supplier_id`, `total_amount`,`added_date`, `transaction_date`, `transaction_type`, `remarks`, `isActive`) VALUES (?, ?, ?, ?, ?, ?, 1)";
 
     const sql =
       "INSERT into `purchase_settlement`(`supplier_id`, `cash_amount`, `card_amount`, `upi_amount`, `cheque_amount`, `total_amount`, `added_date`, `transaction_date`, `remarks`, `isActive`) VALUES (?, ?, ?, ?, ?, ?,?,?,?, 1)";
