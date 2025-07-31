@@ -1272,19 +1272,30 @@ exports.deleteSales = async (req, res) => {
 };
 
 //view all allocation by date
-exports.fetchFinalSaleListByDate = async (req, res) => {
+exports.fetchFinalSaleListBySearchValue = async (req, res) => {
   try {
-    const { date } = req.body;
-    //console.log(req.body);
-    const [sales] = await pool.query(
-  "SELECT FS.id, FS.sale_tracking_Id, U.name, FS.TotalAmount, FS.isSettled " +
-  "FROM `final_sale` as FS " +
-  "JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id " +
-  "JOIN `users` as U ON FS.`UserId` = U.`user_id` " +
-  "WHERE FS.`DateofTransaction`= ? AND S.sale_type='marketing' " +
-  "GROUP BY FS.`sale_tracking_Id`, FS.id, U.name, FS.TotalAmount, FS.isSettled",
-  [date]
-);
+    const { date, user } = req.body;
+    // console.log(req.body);
+    const queryParams = [];
+    let query =
+      "SELECT FS.id, FS.sale_tracking_Id, U.name, FS.TotalAmount, FS.isSettled " +
+      "FROM `final_sale` as FS " +
+      "JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id " +
+      "JOIN `users` as U ON FS.`UserId` = U.`user_id` " +
+      "WHERE" + " ";
+    if (date) {
+      query +=
+        "FS.`DateofTransaction`= ? AND S.sale_type='marketing' " +
+        "GROUP BY FS.`sale_tracking_Id`, FS.id, U.name, FS.TotalAmount, FS.isSettled";
+      queryParams.push(date);
+    } else if (user) {
+      query +=
+        "U.name= ? AND S.sale_type='marketing' " +
+        "GROUP BY FS.`sale_tracking_Id`, FS.id, U.name, FS.TotalAmount, FS.isSettled";
+      queryParams.push(user);
+    }
+
+    const [sales] = await pool.query(query, queryParams);
     res.json(sales);
   } catch (error) {
     console.error(error);
@@ -1292,7 +1303,7 @@ exports.fetchFinalSaleListByDate = async (req, res) => {
   }
 };
 
-//fetch data for print with allocation ID - final sale -ID  
+//fetch data for print with allocation ID - final sale -ID
 exports.fetchSalesDataForPrintByID = async (req, res) => {
   try {
     let { allocationID } = req.body;
@@ -1432,17 +1443,17 @@ exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
         [allocationID]
       );
 
-      // Check if sale data exists
-      if (finalSalerows.length === 0) {
-        return res.json({
-          success: false,
-          message: "No final sale found for given date.",
-        });
-      }
+    // Check if sale data exists
+    if (finalSalerows.length === 0) {
+      return res.json({
+        success: false,
+        message: "No final sale found for given date.",
+      });
+    }
 
-      const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
+    const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
 
-       // Step 2: Get product sale data
+    // Step 2: Get product sale data
     const [productData] = await pool.query(
       `SELECT 
                 s.sale_id, 
@@ -1479,7 +1490,7 @@ exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
       [allocationID]
     );
 
-     // Step 3: Get payment breakdown (using sale_tracking_Id from above)
+    // Step 3: Get payment breakdown (using sale_tracking_Id from above)
     const [transactionData] = await pool.query(
       "SELECT SUM(`amount`) AS total, SUM(`UPI`) AS upi, SUM(`Cash`) AS cash, SUM(`Card`) AS card FROM `sales_credit_history` WHERE `sale_tracking_Id` = ?",
       [saleTrackingId]
@@ -1495,6 +1506,6 @@ exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
     }catch (error) {
     console.error(error);
     res.status(500).json({ error: "Database error" });
-  }  
+  }
 
-};  
+};

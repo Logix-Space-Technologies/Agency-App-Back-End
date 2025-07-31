@@ -3,7 +3,7 @@ const { getSuppliers, getProducts, createPurchase,getAllPurchases,
      createPurchaseNew, getDamagedItems, requestReplacement,
       getReplacementHistory, createEnhancedPurchase,
     calculateFreebies,
-    getEnhancedDamagedItems, getPurchaseBills, getTransactionTypes,purchaseSettlement } = require('../controllers/purchaseController');
+    getEnhancedDamagedItems, getPurchaseBills, getTransactionTypes,purchaseSettlement,getAllPurchasesByValues } = require('../controllers/purchaseController');
 const router = express.Router();
 
 
@@ -15,7 +15,7 @@ router.post('/getAllPurchases',getAllPurchases);
 router.post('/viewBills', getPurchaseBills);
 router.post('/transactionTypes', getTransactionTypes);
 router.post('/addSettlemet', purchaseSettlement);
-
+router.post('/getAllPurchasesByValues', getAllPurchasesByValues);
 
 
 // Create new purchase
