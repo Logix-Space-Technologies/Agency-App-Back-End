@@ -674,6 +674,7 @@ exports.getSaleDetails = async (req, res) => {
                 s.sale_type,
                 u.name AS marketing_staff_name,
                 p.product_name,
+                p.product_id,
                 pp.marketing_selling_price AS product_price,
                 s.quantity_sold,
                 s.amount_received,
@@ -1282,7 +1283,8 @@ exports.fetchFinalSaleListBySearchValue = async (req, res) => {
       "FROM `final_sale` as FS " +
       "JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id " +
       "JOIN `users` as U ON FS.`UserId` = U.`user_id` " +
-      "WHERE" + " ";
+      "WHERE" +
+      " ";
     if (date) {
       query +=
         "FS.`DateofTransaction`= ? AND S.sale_type='marketing' " +
@@ -1402,10 +1404,10 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
        LIMIT 5`,
       [date]
     );
-    console.log('Join test samples:', joinTest);
+    console.log("Join test samples:", joinTest);
 
     // 3. Run modified main query
- const [sales] = await pool.query(
+    const [sales] = await pool.query(
       `SELECT 
     FS.id, 
     FS.sale_tracking_Id, 
@@ -1430,18 +1432,15 @@ GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sal
   }
 };
 
-
-
-exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
-
-    try {
-      let { allocationID } = req.body;
-      console.log(allocationID);
-      // Step 1: Get final sale data
-      const [finalSalerows] = await pool.query(
-        "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ?",
-        [allocationID]
-      );
+exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
+  try {
+    let { allocationID } = req.body;
+    console.log(allocationID);
+    // Step 1: Get final sale data
+    const [finalSalerows] = await pool.query(
+      "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ?",
+      [allocationID]
+    );
 
     // Check if sale data exists
     if (finalSalerows.length === 0) {
@@ -1502,10 +1501,86 @@ exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
       details: productData,
       payments: transactionData[0] || {}, // handle no data scenario
     });
-  
-    }catch (error) {
+  } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Database error" });
   }
+};
 
+exports.submitAllProductReturns = async (req, res) => {
+  const { items } = req.body;
+  // console.log(req.body);
+  let connection;
+
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    for (const item of items) {
+      const {
+        invoice_no,
+        product_id,
+        returned_quantity,
+        damaged_refund_quantity,
+        damaged_replacement_quantity,
+        return_amount,
+        damaged_refund_amount,
+        added_by,
+      } = item;
+
+
+      if (returned_quantity > 0 || damaged_refund_quantity > 0 || damaged_replacement_quantity > 0) {
+        await connection.query(
+          `INSERT INTO direct_sale_return (
+          invoice_no,
+          product_id,
+          returned_quantity,
+          return_amount,
+          damaged_refund_quantity,
+          damaged_refund_amount,
+          damaged_replacement_quantity,
+          date,
+          added_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?,NOW(), ?)`,
+          [
+            invoice_no,
+            product_id,
+            returned_quantity,
+            return_amount,
+            damaged_refund_quantity,
+            damaged_refund_amount,
+            damaged_replacement_quantity,
+            added_by, // e.g. req.user.name or passed from frontend
+          ]
+        );
+      }
+
+      if (returned_quantity > 0) {
+        await connection.query(
+          `UPDATE stock SET quantity = quantity + ? WHERE product_id = ?`,
+          [returned_quantity, product_id]
+        );
+      }
+       if (damaged_refund_quantity > 0 || damaged_replacement_quantity > 0) {
+        let damaged_count = damaged_refund_quantity + damaged_replacement_quantity;
+        await connection.query(
+          `UPDATE stock SET Damage_Qty = Damage_Qty + ? WHERE product_id = ?`,
+          [damaged_count, product_id]
+        );
+      }
+      if (damaged_replacement_quantity > 0 ) {
+        await connection.query(
+          `UPDATE stock SET quantity = quantity - ? WHERE product_id = ?`,
+          [damaged_replacement_quantity, product_id]
+        );
+      }
+
+    }
+    await connection.commit();
+    res
+      .status(200)
+      .json({ message: "Returns and stock updated successfully." });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ error: "Database error" });
+  }
 };
