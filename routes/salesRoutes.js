@@ -1,5 +1,5 @@
 const express = require('express');
-const { fecthAllCreditReportCustomers,fetchDailyDataForPrint,cashReport,incCredit, fecthAllCreditReportUser, fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails, fetchFinalSaleListByDate, fetchSalesDataForPrintByID, fetchDirectSaleListByDate, fetchDirectSalesDataForPrintByID} = require('../controllers/salesController');
+const { fecthAllCreditReportCustomers,fetchDailyDataForPrint,cashReport,incCredit, fecthAllCreditReportUser, fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails, fetchFinalSaleListBySearchValue, fetchSalesDataForPrintByID, fetchDirectSaleListByDate, fetchDirectSalesDataForPrintByID,submitAllProductReturns} = require('../controllers/salesController');
 const router = express.Router();
 
 
@@ -20,10 +20,11 @@ router.post('/customer-credit', fecthAllCreditReportCustomers);
 router.post('/inc-credit', incCredit);
 router.post('/cashReport', cashReport);
 router.post('/fetchDailyDataForPrint', fetchDailyDataForPrint);
-router.post('/fetchFinalSaleListByDate', fetchFinalSaleListByDate);
+router.post('/fetchFinalSaleListBySearchValue', fetchFinalSaleListBySearchValue);
 router.post('/fetchSalesDataForPrintByID', fetchSalesDataForPrintByID);
 router.post('/fetchDirectSaleListByDate', fetchDirectSaleListByDate);
 router.post('/fetchDirectSalesDataForPrintByID', fetchDirectSalesDataForPrintByID);
+router.post('/submitReturn', submitAllProductReturns);
 
 
 module.exports = router;

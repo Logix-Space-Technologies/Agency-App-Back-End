@@ -674,6 +674,7 @@ exports.getSaleDetails = async (req, res) => {
                 s.sale_type,
                 u.name AS marketing_staff_name,
                 p.product_name,
+                p.product_id,
                 pp.marketing_selling_price AS product_price,
                 s.quantity_sold,
                 s.amount_received,
@@ -1272,19 +1273,31 @@ exports.deleteSales = async (req, res) => {
 };
 
 //view all allocation by date
-exports.fetchFinalSaleListByDate = async (req, res) => {
+exports.fetchFinalSaleListBySearchValue = async (req, res) => {
   try {
-    const { date } = req.body;
-    //console.log(req.body);
-    const [sales] = await pool.query(
-  "SELECT FS.id, FS.sale_tracking_Id, U.name, FS.TotalAmount, FS.isSettled " +
-  "FROM `final_sale` as FS " +
-  "JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id " +
-  "JOIN `users` as U ON FS.`UserId` = U.`user_id` " +
-  "WHERE FS.`DateofTransaction`= ? AND S.sale_type='marketing' " +
-  "GROUP BY FS.`sale_tracking_Id`, FS.id, U.name, FS.TotalAmount, FS.isSettled",
-  [date]
-);
+    const { date, user } = req.body;
+    // console.log(req.body);
+    const queryParams = [];
+    let query =
+      "SELECT FS.id, FS.sale_tracking_Id, U.name, FS.TotalAmount, FS.isSettled " +
+      "FROM `final_sale` as FS " +
+      "JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id " +
+      "JOIN `users` as U ON FS.`UserId` = U.`user_id` " +
+      "WHERE" +
+      " ";
+    if (date) {
+      query +=
+        "FS.`DateofTransaction`= ? AND S.sale_type='marketing' " +
+        "GROUP BY FS.`sale_tracking_Id`, FS.id, U.name, FS.TotalAmount, FS.isSettled";
+      queryParams.push(date);
+    } else if (user) {
+      query +=
+        "U.name= ? AND S.sale_type='marketing' " +
+        "GROUP BY FS.`sale_tracking_Id`, FS.id, U.name, FS.TotalAmount, FS.isSettled";
+      queryParams.push(user);
+    }
+
+    const [sales] = await pool.query(query, queryParams);
     res.json(sales);
   } catch (error) {
     console.error(error);
@@ -1292,7 +1305,7 @@ exports.fetchFinalSaleListByDate = async (req, res) => {
   }
 };
 
-//fetch data for print with allocation ID - final sale -ID  
+//fetch data for print with allocation ID - final sale -ID
 exports.fetchSalesDataForPrintByID = async (req, res) => {
   try {
     let { allocationID } = req.body;
@@ -1391,10 +1404,10 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
        LIMIT 5`,
       [date]
     );
-    console.log('Join test samples:', joinTest);
+    console.log("Join test samples:", joinTest);
 
     // 3. Run modified main query
- const [sales] = await pool.query(
+    const [sales] = await pool.query(
       `SELECT 
     FS.id, 
     FS.sale_tracking_Id, 
@@ -1419,30 +1432,27 @@ GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sal
   }
 };
 
+exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
+  try {
+    let { allocationID } = req.body;
+    console.log(allocationID);
+    // Step 1: Get final sale data
+    const [finalSalerows] = await pool.query(
+      "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ?",
+      [allocationID]
+    );
 
+    // Check if sale data exists
+    if (finalSalerows.length === 0) {
+      return res.json({
+        success: false,
+        message: "No final sale found for given date.",
+      });
+    }
 
-exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
+    const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
 
-    try {
-      let { allocationID } = req.body;
-      console.log(allocationID);
-      // Step 1: Get final sale data
-      const [finalSalerows] = await pool.query(
-        "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ?",
-        [allocationID]
-      );
-
-      // Check if sale data exists
-      if (finalSalerows.length === 0) {
-        return res.json({
-          success: false,
-          message: "No final sale found for given date.",
-        });
-      }
-
-      const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
-
-       // Step 2: Get product sale data
+    // Step 2: Get product sale data
     const [productData] = await pool.query(
       `SELECT 
                 s.sale_id, 
@@ -1479,7 +1489,7 @@ exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
       [allocationID]
     );
 
-     // Step 3: Get payment breakdown (using sale_tracking_Id from above)
+    // Step 3: Get payment breakdown (using sale_tracking_Id from above)
     const [transactionData] = await pool.query(
       "SELECT SUM(`amount`) AS total, SUM(`UPI`) AS upi, SUM(`Cash`) AS cash, SUM(`Card`) AS card FROM `sales_credit_history` WHERE `sale_tracking_Id` = ?",
       [saleTrackingId]
@@ -1491,10 +1501,86 @@ exports.fetchDirectSalesDataForPrintByID = async(req, res) => {
       details: productData,
       payments: transactionData[0] || {}, // handle no data scenario
     });
-  
-    }catch (error) {
+  } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Database error" });
-  }  
+  }
+};
 
-};  
+exports.submitAllProductReturns = async (req, res) => {
+  const { items } = req.body;
+  // console.log(req.body);
+  let connection;
+
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    for (const item of items) {
+      const {
+        invoice_no,
+        product_id,
+        returned_quantity,
+        damaged_refund_quantity,
+        damaged_replacement_quantity,
+        return_amount,
+        damaged_refund_amount,
+        added_by,
+      } = item;
+
+
+      if (returned_quantity > 0 || damaged_refund_quantity > 0 || damaged_replacement_quantity > 0) {
+        await connection.query(
+          `INSERT INTO direct_sale_return (
+          invoice_no,
+          product_id,
+          returned_quantity,
+          return_amount,
+          damaged_refund_quantity,
+          damaged_refund_amount,
+          damaged_replacement_quantity,
+          date,
+          added_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?,NOW(), ?)`,
+          [
+            invoice_no,
+            product_id,
+            returned_quantity,
+            return_amount,
+            damaged_refund_quantity,
+            damaged_refund_amount,
+            damaged_replacement_quantity,
+            added_by, // e.g. req.user.name or passed from frontend
+          ]
+        );
+      }
+
+      if (returned_quantity > 0) {
+        await connection.query(
+          `UPDATE stock SET quantity = quantity + ? WHERE product_id = ?`,
+          [returned_quantity, product_id]
+        );
+      }
+       if (damaged_refund_quantity > 0 || damaged_replacement_quantity > 0) {
+        let damaged_count = damaged_refund_quantity + damaged_replacement_quantity;
+        await connection.query(
+          `UPDATE stock SET Damage_Qty = Damage_Qty + ? WHERE product_id = ?`,
+          [damaged_count, product_id]
+        );
+      }
+      if (damaged_replacement_quantity > 0 ) {
+        await connection.query(
+          `UPDATE stock SET quantity = quantity - ? WHERE product_id = ?`,
+          [damaged_replacement_quantity, product_id]
+        );
+      }
+
+    }
+    await connection.commit();
+    res
+      .status(200)
+      .json({ message: "Returns and stock updated successfully." });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
