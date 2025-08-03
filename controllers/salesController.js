@@ -1379,19 +1379,21 @@ exports.fetchSalesDataForPrintByID = async (req, res) => {
 //view all allocation by date
 exports.fetchDirectSaleListByDate = async (req, res) => {
   try {
-    const { date } = req.body;
+    const { date, user } = req.body;
     console.log(`Searching for date: ${date}`);
+    console.log(`Searching for user: ${user}`);
+    const queryParams = [];
+    if (date) {
+      // 1. First check raw data exists
+      const [testCount] = await pool.query(
+        `SELECT COUNT(*) as count FROM final_sale WHERE DateofTransaction = ?`,
+        [date]
+      );
+      console.log(`Raw records for ${date}:`, testCount[0].count);
 
-    // 1. First check raw data exists
-    const [testCount] = await pool.query(
-      `SELECT COUNT(*) as count FROM final_sale WHERE DateofTransaction = ?`,
-      [date]
-    );
-    console.log(`Raw records for ${date}:`, testCount[0].count);
-
-    // 2. Check join conditions
-    const [joinTest] = await pool.query(
-      `SELECT 
+      // 2. Check join conditions
+      const [joinTest] = await pool.query(
+        `SELECT 
          FS.id as fs_id, 
          FS.sale_tracking_Id, 
          S.sale_tracking_Id as s_tracking_id,
@@ -1402,13 +1404,13 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
        LEFT JOIN Customers C ON FS.UserId = C.id
        WHERE FS.DateofTransaction = ?
        LIMIT 5`,
-      [date]
-    );
-    console.log("Join test samples:", joinTest);
-
+        [date]
+      );
+      console.log("Join test samples:", joinTest);
+    }
     // 3. Run modified main query
-    const [sales] = await pool.query(
-      `SELECT 
+
+    let query = `SELECT 
     FS.id, 
     FS.sale_tracking_Id, 
     C.Name, 
@@ -1418,11 +1420,38 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
 FROM sales S
 JOIN final_sale FS ON S.sale_tracking_Id = FS.sale_tracking_Id
 LEFT JOIN Customers C ON FS.UserId = C.id
-WHERE DATE(FS.DateofTransaction) = ?
+WHERE`;
+
+    if (date) {
+      query += ` DATE(FS.DateofTransaction) = ?
     AND S.sale_type != 'marketing'
-GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type`,
-      [date]
-    );
+GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type`;
+      queryParams.push(date);
+    } else if (user) {
+      query += `  C.Name = ?
+    AND S.sale_type != 'marketing'
+GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type`;
+      queryParams.push(user);
+    }
+
+    const [sales] = await pool.query(query, queryParams);
+
+    //     const [sales] = await pool.query(
+    //       `SELECT
+    //     FS.id,
+    //     FS.sale_tracking_Id,
+    //     C.Name,
+    //     FS.TotalAmount,
+    //     FS.isSettled,
+    //     S.sale_type
+    // FROM sales S
+    // JOIN final_sale FS ON S.sale_tracking_Id = FS.sale_tracking_Id
+    // LEFT JOIN Customers C ON FS.UserId = C.id
+    // WHERE DATE(FS.DateofTransaction) = ?
+    //     AND S.sale_type != 'marketing'
+    // GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type`,
+    //       [date]
+    //     );
 
     console.log(`Found ${sales.length} records`);
     res.json(sales);
@@ -1527,8 +1556,11 @@ exports.submitAllProductReturns = async (req, res) => {
         added_by,
       } = item;
 
-
-      if (returned_quantity > 0 || damaged_refund_quantity > 0 || damaged_replacement_quantity > 0) {
+      if (
+        returned_quantity > 0 ||
+        damaged_refund_quantity > 0 ||
+        damaged_replacement_quantity > 0
+      ) {
         await connection.query(
           `INSERT INTO direct_sale_return (
           invoice_no,
@@ -1560,20 +1592,20 @@ exports.submitAllProductReturns = async (req, res) => {
           [returned_quantity, product_id]
         );
       }
-       if (damaged_refund_quantity > 0 || damaged_replacement_quantity > 0) {
-        let damaged_count = damaged_refund_quantity + damaged_replacement_quantity;
+      if (damaged_refund_quantity > 0 || damaged_replacement_quantity > 0) {
+        let damaged_count =
+          damaged_refund_quantity + damaged_replacement_quantity;
         await connection.query(
           `UPDATE stock SET Damage_Qty = Damage_Qty + ? WHERE product_id = ?`,
           [damaged_count, product_id]
         );
       }
-      if (damaged_replacement_quantity > 0 ) {
+      if (damaged_replacement_quantity > 0) {
         await connection.query(
           `UPDATE stock SET quantity = quantity - ? WHERE product_id = ?`,
           [damaged_replacement_quantity, product_id]
         );
       }
-
     }
     await connection.commit();
     res
@@ -1581,6 +1613,64 @@ exports.submitAllProductReturns = async (req, res) => {
       .json({ message: "Returns and stock updated successfully." });
   } catch (error) {
     console.log(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+
+exports.getSaleDetailsForReturn = async (req, res) => {
+  try {
+    const { sale_tracking_id,type } = req.params;
+    console.log( req.params);
+    if (!sale_tracking_id) {
+      return res.status(400).json({ error: "Sale Tracking ID is required." });
+    }
+     if (!type) {
+      return res.status(400).json({ error: "Sale Type is required." });
+    }
+
+    const [salesDetails] = await pool.query(
+      `
+            SELECT
+                s.sale_id,
+                s.sale_type,
+                u.name AS marketing_staff_name,
+                p.product_name,
+                p.product_id,
+                pp.marketing_selling_price AS product_price,
+                s.quantity_sold,
+                s.amount_received,
+                s.is_credit,
+                s.sale_tracking_Id,
+                s.sale_date,
+                s.damaged_count,
+                s.is_settled AS item_settled,
+                s.loss_count,
+                sch.amount AS credit_amount,
+                sch.creditedDate AS credit_date
+            FROM
+                sales s
+            JOIN
+                users u ON s.marketing_staff_id = u.user_id
+            JOIN
+                products p ON s.product_id = p.product_id
+            JOIN
+                product_prices pp ON s.price_id = pp.price_id
+            LEFT JOIN
+                sales_credit_history sch ON s.sale_tracking_Id = sch.sale_tracking_Id AND sch.isActive = 1
+            WHERE
+                s.sale_tracking_Id = ? AND  s.sale_type != ?
+            `,
+      [sale_tracking_id,type]
+    );
+     console.log(salesDetails);
+    if (salesDetails.length === 0) {
+      return res.status(404).json({ message: "Sale details not found." });
+    }
+
+    res.json(salesDetails);
+  } catch (error) {
+    console.error("Error fetching sale details:", error);
     res.status(500).json({ error: "Database error" });
   }
 };

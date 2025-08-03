@@ -1,5 +1,5 @@
 const express = require('express');
-const { fecthAllCreditReportCustomers,fetchDailyDataForPrint,cashReport,incCredit, fecthAllCreditReportUser, fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails, fetchFinalSaleListBySearchValue, fetchSalesDataForPrintByID, fetchDirectSaleListByDate, fetchDirectSalesDataForPrintByID,submitAllProductReturns} = require('../controllers/salesController');
+const { fecthAllCreditReportCustomers,fetchDailyDataForPrint,cashReport,incCredit, fecthAllCreditReportUser, fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails, fetchFinalSaleListBySearchValue, fetchSalesDataForPrintByID, fetchDirectSaleListByDate, fetchDirectSalesDataForPrintByID,submitAllProductReturns,getSaleDetailsForReturn} = require('../controllers/salesController');
 const router = express.Router();
 
 
@@ -25,6 +25,8 @@ router.post('/fetchSalesDataForPrintByID', fetchSalesDataForPrintByID);
 router.post('/fetchDirectSaleListByDate', fetchDirectSaleListByDate);
 router.post('/fetchDirectSalesDataForPrintByID', fetchDirectSalesDataForPrintByID);
 router.post('/submitReturn', submitAllProductReturns);
+router.get('/salesReturnDetails/:sale_tracking_id/:type', getSaleDetailsForReturn);
+
 
 
 module.exports = router;
