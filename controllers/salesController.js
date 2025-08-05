@@ -1538,12 +1538,48 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
 
 exports.submitAllProductReturns = async (req, res) => {
   const { items } = req.body;
-  // console.log(req.body);
+  console.log(req.body);
   let connection;
+  let returnData = [];
+  let returnTableQuery = "";
+  let queryParams = [];
+  let amtToBeToReduced = 0;
+  let qtyToBeToReduced = 0;
+
+
 
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
+
+    if (items && items.length) {
+      let invoice = items[0]?.invoice_no;
+      [returnData] = await pool.query(
+        `SELECT * FROM  direct_sale_return  WHERE invoice_no = ?`,
+        [invoice]
+      );
+    }
+
+    if (returnData && returnData.length > 0) {
+      returnTableQuery = `UPDATE direct_sale_return SET 
+      returned_quantity = returned_quantity + ?, return_amount = return_amount +?,
+      damaged_refund_quantity = damaged_refund_quantity +?, damaged_refund_amount = damaged_refund_amount +?,
+      damaged_replacement_quantity = damaged_replacement_quantity + ?,
+      date = NOW(),added_by=? WHERE product_id = ? AND invoice_no = ?`;
+    } else {
+      returnTableQuery = `INSERT INTO direct_sale_return (
+          invoice_no,
+          product_id,
+          returned_quantity,
+          return_amount,
+          damaged_refund_quantity,
+          damaged_refund_amount,
+          damaged_replacement_quantity,
+          date,
+          added_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?,NOW(), ?)`;
+    }
+
     for (const item of items) {
       const {
         invoice_no,
@@ -1556,24 +1592,22 @@ exports.submitAllProductReturns = async (req, res) => {
         added_by,
       } = item;
 
+      queryParams= [];
+
       if (
         returned_quantity > 0 ||
         damaged_refund_quantity > 0 ||
         damaged_replacement_quantity > 0
       ) {
-        await connection.query(
-          `INSERT INTO direct_sale_return (
-          invoice_no,
-          product_id,
-          returned_quantity,
-          return_amount,
-          damaged_refund_quantity,
-          damaged_refund_amount,
-          damaged_replacement_quantity,
-          date,
-          added_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?,NOW(), ?)`,
-          [
+        if (returnData && returnData.length > 0) {
+          queryParams.push(returned_quantity,
+            return_amount,
+            damaged_refund_quantity,
+            damaged_refund_amount,
+            damaged_replacement_quantity,
+            added_by,product_id, invoice_no);
+        } else {
+          queryParams.push(
             invoice_no,
             product_id,
             returned_quantity,
@@ -1581,9 +1615,35 @@ exports.submitAllProductReturns = async (req, res) => {
             damaged_refund_quantity,
             damaged_refund_amount,
             damaged_replacement_quantity,
-            added_by, // e.g. req.user.name or passed from frontend
-          ]
-        );
+            added_by
+          );
+        }
+      
+        await connection.query(returnTableQuery, queryParams);
+
+        // await connection.query(
+        //   `INSERT INTO direct_sale_return (
+        //   invoice_no,
+        //   product_id,
+        //   returned_quantity,
+        //   return_amount,
+        //   damaged_refund_quantity,
+        //   damaged_refund_amount,
+        //   damaged_replacement_quantity,
+        //   date,
+        //   added_by
+        // ) VALUES (?, ?, ?, ?, ?, ?, ?,NOW(), ?)`,
+        //   [
+        //     invoice_no,
+        //     product_id,
+        //     returned_quantity,
+        //     return_amount,
+        //     damaged_refund_quantity,
+        //     damaged_refund_amount,
+        //     damaged_replacement_quantity,
+        //     added_by,
+        //   ]
+        // );
       }
 
       if (returned_quantity > 0) {
@@ -1606,10 +1666,24 @@ exports.submitAllProductReturns = async (req, res) => {
           [damaged_replacement_quantity, product_id]
         );
       }
+      // if eturn quantity > 0 or damage_refund_qty >0 , reduce the total mt from sale table-amt recived.
+       if (returned_quantity > 0 || damaged_refund_quantity > 0 ) {
+        qtyToBeToReduced =  (returned_quantity ?? 0) + (damaged_refund_quantity ?? 0);
+        amtToBeToReduced =   (return_amount ?? 0) + (damaged_refund_amount ?? 0);
+        await connection.query(
+          `UPDATE sales SET quantity_sold = quantity_sold - ?, amount_received = amount_received - ? WHERE product_id = ? AND sale_tracking_Id= ?`,
+          [qtyToBeToReduced, amtToBeToReduced, product_id, invoice_no]
+        );
+        await connection.query(
+          `UPDATE final_sale SET TotalAmount = TotalAmount - ? WHERE  sale_tracking_Id= ?`,
+          [amtToBeToReduced, invoice_no]
+        );
+
+       }
     }
     await connection.commit();
     res
-      .status(200)
+      .status(200)  
       .json({ message: "Returns and stock updated successfully." });
   } catch (error) {
     console.log(error);
@@ -1620,12 +1694,12 @@ exports.submitAllProductReturns = async (req, res) => {
 
 exports.getSaleDetailsForReturn = async (req, res) => {
   try {
-    const { sale_tracking_id,type } = req.params;
-    console.log( req.params);
+    const { sale_tracking_id, type } = req.params;
+    //console.log(req.params);
     if (!sale_tracking_id) {
       return res.status(400).json({ error: "Sale Tracking ID is required." });
     }
-     if (!type) {
+    if (!type) {
       return res.status(400).json({ error: "Sale Type is required." });
     }
 
@@ -1637,7 +1711,7 @@ exports.getSaleDetailsForReturn = async (req, res) => {
                 u.name AS marketing_staff_name,
                 p.product_name,
                 p.product_id,
-                pp.marketing_selling_price AS product_price,
+                pp.direct_selling_price AS product_price,
                 s.quantity_sold,
                 s.amount_received,
                 s.is_credit,
@@ -1663,7 +1737,7 @@ exports.getSaleDetailsForReturn = async (req, res) => {
             `,
       [sale_tracking_id,type]
     );
-     console.log(salesDetails);
+    console.log(salesDetails);
     if (salesDetails.length === 0) {
       return res.status(404).json({ message: "Sale details not found." });
     }
