@@ -4,7 +4,7 @@ const bcrypt = require("bcrypt");
 // Get All Customers
 exports.getAllCustomers = async (req, res) => {
     const page = parseInt(req.query.page) || 1; // current page
-    const limit = parseInt(req.query.limit) || 5; // records per page
+    const limit = parseInt(req.query.limit) || 10; // records per page
     const offset = (page - 1) * limit;
 
     try {
