@@ -27,9 +27,9 @@ exports.calculateMarketingSalary = async (req, res) => {
           return res
             .status(400)
             .json({
-              error:
-                "Start and end dates are required for this calculation type.",
-            });
+            error:
+              "Start and end dates are required for this calculation type.",
+          });
         dateCondition = " AND DATE(s.sale_date) BETWEEN ? AND ?";
         queryParams.push(startDate, endDate);
         break;
@@ -99,29 +99,28 @@ exports.addUserSalary = async (req, res) => {
         .status(400)
         .json({ error: "Satff name and amount are required" });
     }
-
-    // Check if email already exists
+    // Check if salary entry already exists
     const [existingAddedSalary] = await pool.query(
-      "SELECT Amount FROM salary WHERE Month = ? AND Year = ?",
-      [month, year]
+      "SELECT Amount FROM salary WHERE Month = ? AND Year = ? AND UserId = ?",
+      [month, year, staff]
     );
 
     if (existingAddedSalary.length > 0) {
       return res
         .status(409)
         .json({ error: "Salary already added for this month and year" });
+    } else {
+      // Insert user salary
+      const [result] = await pool.query(
+        "INSERT into `salary` (`UserId`, `Date`, `Amount`, `Remarks`, `AddedDate`, `Month`, `Year`) VALUES (?, now(), ?, ?, ?, ?,?)",
+        [staff, amount, remarks, date, month, year]
+      );
+
+      res.json({
+        message: "User Salary added successfully",
+        user_id: result.insertId,
+      });
     }
-
-    // Insert user with hashed password
-    const [result] = await pool.query(
-      "INSERT into `salary` (`UserId`, `Date`, `Amount`, `Remarks`, `AddedDate`, `Month`, `Year`) VALUES (?, now(), ?, ?, ?, ?,?)",
-      [staff, amount, remarks, date, month, year]
-    );
-
-    res.json({
-      message: "User Salary added successfully",
-      user_id: result.insertId,
-    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Database error" });
@@ -140,7 +139,7 @@ exports.updateStaffSalary = async (req, res) => {
     if (!id || !Amount) {
       return res
         .status(400)
-        .json({ error: "Satff name and amount are required" });
+        .json({ error: "Staff name and amount are required" });
     }
 
     const [result] = await pool.query(
@@ -165,11 +164,34 @@ exports.searchUserSalaryDetails = async (req, res) => {
       return res.status(400).json({ error: "User data is required" });
 
     const [result] = await pool.query(
-      `SELECT u.name, s.id,s.Amount, s.Month, s.Year, DATE_FORMAT(s.AddedDate, '%Y-%m-%d') AS AddedDate,s.Remarks FROM salary s JOIN users u ON s.UserId= u.user_id WHERE  (u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR u.Place_Of_Allocation LIKE ?) AND u.isActive = 1`,
+      `SELECT u.name,s.UserId, s.id,s.Amount, s.Month, s.Year, DATE_FORMAT(s.AddedDate, '%Y-%m-%d') AS AddedDate,s.Remarks FROM salary s JOIN users u ON s.UserId= u.user_id WHERE  (u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR u.Place_Of_Allocation LIKE ?) AND u.isActive = 1`,
       [`%${user_data}%`, `%${user_data}%`, `%${user_data}%`, `%${user_data}%`]
     );
 
     res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+exports.checkForSalaryExist = async (req, res) => {
+  try {
+    const { month, year, userId } = req.body;
+    if (!userId || !month || !year) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const [rows] = await pool.query(
+      "SELECT Amount FROM salary WHERE Month = ? AND Year = ? AND UserId = ?",
+      [month, year, userId]
+    );
+
+    if (rows.length > 0) {
+      return res.json({ exists: true });
+    } else {
+      return res.json({ exists: false });
+    }
+
   } catch (error) {
     res.status(500).json({ error: "Database error" });
   }
