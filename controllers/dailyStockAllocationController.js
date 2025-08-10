@@ -309,13 +309,26 @@ exports.searchDailyStockAllocationIndividual = async (req, res) => {
 // delete
 exports.deleteDailyStockAllocation = async (req,res)=>{
     try{
-        const { daily_stock_id } = req.body;
-        if (!daily_stock_id) return res.status(400).json({ error: "daily stock id is required" });
-        const [result] = await pool.query('UPDATE `daily_stock_allocation` SET `isActive` = 0 WHERE `daily_stock_id`= ?', [daily_stock_id]);
-        if (result.affectedRows === 0) {
+        const { dailyStockId, productId, allocatedQuantity} = req.body;
+        if (!dailyStockId) return res.status(400).json({ error: "Daily stock id is required" });
+
+        if (!productId) return res.status(400).json({ error: "Product id is required" });
+
+        if (!allocatedQuantity || isNaN(allocatedQuantity)) return res.status(400).json({ error: "Allocated quantity is required and must be a number" });
+
+        const [rseult] = await pool.query('UPDATE `daily_stock_allocation` SET `isActive` = 0 WHERE `daily_stock_id` = ? AND `product_id` = ?', [dailyStockId, productId]);
+        
+        if (rseult.affectedRows === 0 ) {
             return res.status(404).json({ error: 'Record not found or already deleted' });
+        }else{
+         await pool.query('UPDATE `stock` SET `quantity` = `quantity` + ? WHERE `product_id` = ?', [allocatedQuantity, productId]);                   
         }
-        res.json({ message: 'daily stock deleted successfully', daily_stock_id: result.insertId });
+      res.json({
+        message:"Daily stock allocation deleted and stock updated successfully",
+        dailyStockId,
+        productId,
+        allocatedQuantity,
+      });
 
     }catch (error) {
         console.error(error);
