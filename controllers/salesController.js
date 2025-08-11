@@ -1305,7 +1305,7 @@ exports.fetchFinalSaleListBySearchValue = async (req, res) => {
   }
 };
 
-//fetch data for print with allocation ID - final sale -ID
+//fetch data for with allocation ID - final sale -ID
 exports.fetchSalesDataForPrintByID = async (req, res) => {
   try {
     let { allocationID } = req.body;
@@ -1371,7 +1371,7 @@ exports.fetchSalesDataForPrintByID = async (req, res) => {
       payments: transactionData[0] || {}, // handle no data scenario
     });
   } catch (error) {
-    console.error("Error fetching daily data for print:", error);
+    console.error("Error fetching daily data:", error);
     res.status(500).json({ success: false, message: "Failed to fetch data" });
   }
 };
