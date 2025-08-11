@@ -10,13 +10,13 @@ exports.getAllCustomers = async (req, res) => {
     try {
         // Get paginated data
         const [customers] = await pool.query(
-        "SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `customers` WHERE `isActive`= 1 LIMIT ? OFFSET ?",
+        "SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE `isActive`= 1 LIMIT ? OFFSET ?",
         [limit, offset]
         );
 
         // Get total count for pagination
         const [countResult] = await pool.query(
-        "SELECT COUNT(*) as total FROM `customers` WHERE `isActive`= 1"
+        "SELECT COUNT(*) as total FROM `Customers` WHERE `isActive`= 1"
         );
         const total = countResult[0].total;
 
@@ -52,7 +52,6 @@ exports.getCustomers = async (req, res) => {
 // Search Customer
 exports.searchCustomer = async (req, res) => {
   try {
-    console.log("test")
     const { user_data } = req.body;
     if (!user_data)
       return res.status(400).json({ error: "Customer data is required" });
@@ -88,7 +87,7 @@ exports.deleteCustomer = async (req, res) => {
       return res.status(400).json({ error: "Customer cannot be deleted as it is linked to other records" });
     }
 
-    await pool.query("UPDATE customers SET isActive = 0 WHERE id = ?", [
+    await pool.query("UPDATE Customers SET isActive = 0 WHERE id = ?", [
       customer_id,
     ]);
     res.json({ message: "Customer deleted successfully" });
@@ -107,14 +106,13 @@ exports.editCustomer = async (req, res) => {
       Mobile,
       EmailId
     } = req.body;
-    console.log(req.body);
 
     if (!id) {
       return res.status(400).json({ error: "Customer ID is required" });
     }
 
     const query = `
-            UPDATE customers 
+            UPDATE Customers 
             SET Name = ?, 
                 Place = ?, 
                 Mobile = ?, 
