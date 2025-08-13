@@ -496,8 +496,12 @@ exports.addDirectSales = async (req, res) => {
 
   const connection = await pool.getConnection();
 
+    // Convert amount_paying_now to number and handle empty/undefined cases
+  const amountPayingNow = parseFloat(amount_paying_now || 0);
+
   const isSettledItem =
     parseFloat(amount_paying_now) >= parseFloat(totalAmount) ? 1 : 0;
+
 
   try {
     await connection.beginTransaction();
