@@ -535,14 +535,14 @@ exports.addDirectSales = async (req, res) => {
         customer_id,
         sale_date,
         isSettledItem,
-        amount_paying_now,
+        amountPayingNow,
       ]
     );
 
     await connection.query(
       `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate,isActive)
              VALUES (?, ?, ?, ?)`,
-      [sale_tracking_id, amount_paying_now, sale_date, 1]
+      [sale_tracking_id, amountPayingNow, sale_date, 1]
     );
 
     for (const item of products) {
