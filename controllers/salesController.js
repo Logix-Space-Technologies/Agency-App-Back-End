@@ -104,7 +104,7 @@ exports.cashReport = async (req, res) => {
                 SUM(VehcileServiceExpenses) AS totalServiceExpenses,
                 SUM(OtherExpenses) AS totalOtherExpenses
             FROM final_sale
-            WHERE isSettled = 1
+            WHERE isSettled = 1 AND isActive = 1 
               AND DateofTransaction BETWEEN ? AND ?
         `,
       [startDateTime, endDateTime]
@@ -237,16 +237,16 @@ FROM
     final_sale fs
 JOIN 
     (
-        SELECT sale_tracking_Id, MIN(sale_type) AS sale_type
+        SELECT sale_tracking_Id, MIN(sale_type) AS sale_typeSELECT FS.id, FS.sale_tracking_Id
         FROM sales
         GROUP BY sale_tracking_Id
-    ) s ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type != 'marketing'
+    ) s ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type != 'marketing' AND fs.isActive = 1 
 LEFT JOIN 
     users u ON u.user_id = fs.UserId
 LEFT JOIN 
     Customers c ON c.id = fs.UserId
 WHERE 
-    fs.UserId = ?
+    fs.UserId = ? AND fs.isActive = 1 
     AND (
         ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) > 0
         OR ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) < 0
@@ -272,7 +272,7 @@ JOIN
         WHERE sale_type != 'marketing'
     ) s ON fs.sale_tracking_Id = s.sale_tracking_Id
 WHERE 
-    fs.UserId = ?
+    fs.UserId = ? AND fs.isActive = 1 
     AND (
         ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) <> 0
     )
@@ -330,7 +330,7 @@ LEFT JOIN
 LEFT JOIN 
     Customers c ON c.id = fs.UserId
 WHERE 
-    fs.UserId = ?
+    fs.UserId = ? AND fs.isActive = 1 
     AND (
         ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) > 0
         OR ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) < 0
@@ -356,7 +356,7 @@ JOIN
         WHERE sale_type = 'marketing'
     ) s ON fs.sale_tracking_Id = s.sale_tracking_Id
 WHERE 
-    fs.UserId = ?
+    fs.UserId = ? AND fs.isActive = 1 
     AND (
         ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) <> 0
     )
@@ -421,7 +421,7 @@ LEFT JOIN
 LEFT JOIN 
     Customers c ON c.id = fs.UserId AND s.sale_type != 'marketing'
 WHERE 
-    fs.DateofTransaction BETWEEN ? AND ? AND fs.isSettled=0 
+    fs.DateofTransaction BETWEEN ? AND ? AND fs.isSettled=0 AND fs.isActive = 1 
 
         `,
       [fromDate, dateToUse]
@@ -527,8 +527,8 @@ exports.addDirectSales = async (req, res) => {
     const sale_tracking_id = generateUniqueSaleTrackingId();
 
     await connection.query(
-      `INSERT INTO final_sale ( sale_tracking_Id, TotalAmount, UserId, DateofTransaction, isSettled, AmountPaid )
-             VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO final_sale ( sale_tracking_Id, TotalAmount, UserId, DateofTransaction, isSettled, AmountPaid, isActive)
+             VALUES (?, ?, ?, ?, ?, ?, 1)`,
       [
         sale_tracking_id,
         totalAmount,
@@ -1236,10 +1236,10 @@ WHERE
     const queryParams = [];
 
     if (sale_date) {
-      query += `DATE(f.DateofTransaction) = ?`;
+      query += `DATE(f.DateofTransaction) = ? AND f.isActive = 1`;
       queryParams.push(sale_date);
     } else if (from_date && to_date) {
-      query += `DATE(f.DateofTransaction) >= ? AND DATE(f.DateofTransaction) <= ?`;
+      query += `DATE(f.DateofTransaction) >= ? AND DATE(f.DateofTransaction) <= ? AND f.isActive = 1`;
       queryParams.push(from_date, to_date);
     } else {
       return res
@@ -1291,13 +1291,13 @@ exports.fetchFinalSaleListBySearchValue = async (req, res) => {
       " ";
     if (date) {
       query +=
-        "FS.`DateofTransaction`= ? AND S.sale_type='marketing' " +
-        "GROUP BY FS.`sale_tracking_Id`, FS.id, U.name, FS.TotalAmount, FS.isSettled";
+        "FS.DateofTransaction= ? AND S.sale_type='marketing' AND FS.isActive = 1 " +
+        "GROUP BY FS.sale_tracking_Id, FS.id, U.name, FS.TotalAmount, FS.isSettled";
       queryParams.push(date);
     } else if (user) {
       query +=
-        "U.name= ? AND S.sale_type='marketing' " +
-        "GROUP BY FS.`sale_tracking_Id`, FS.id, U.name, FS.TotalAmount, FS.isSettled";
+        "U.name= ? AND S.sale_type='marketing' AND FS.isActive = 1 " +
+        "GROUP BY FS.sale_tracking_Id, FS.id, U.name, FS.TotalAmount, FS.isSettled";
       queryParams.push(user);
     }
 
@@ -1315,7 +1315,7 @@ exports.fetchSalesDataForPrintByID = async (req, res) => {
     let { allocationID } = req.body;
     // Step 1: Get final sale data
     const [finalSalerows] = await pool.query(
-      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses` FROM `final_sale` WHERE  `id` = ?",
+      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses` FROM `final_sale` WHERE  `id` = ? AND `isActive` = 1",
       [allocationID]
     );
 
@@ -1335,7 +1335,8 @@ exports.fetchSalesDataForPrintByID = async (req, res) => {
                 s.sale_id, 
                 s.sale_type, 
                 s.marketing_staff_id, 
-                p.product_name, 
+                p.product_name,
+                p.product_id,
                 pp.marketing_selling_price, 
                 s.quantity_sold, 
                 s.amount_received, 
@@ -1346,6 +1347,7 @@ exports.fetchSalesDataForPrintByID = async (req, res) => {
                 s.is_settled, 
                 s.loss_count, 
                 s.isActive,
+                fs.id  AS final_sale_id,
                 u.name
             FROM 
                 sales s
@@ -1358,7 +1360,7 @@ exports.fetchSalesDataForPrintByID = async (req, res) => {
             JOIN 
                 users u ON s.marketing_staff_id = u.user_id        
             WHERE 
-                 fs.id = ?`,
+                 fs.id = ?  AND s.isActive = 1 AND fs.isActive = 1`,
       [allocationID]
     );
 
@@ -1406,7 +1408,7 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
        FROM final_sale FS
        LEFT JOIN sales S ON FS.sale_tracking_Id = S.sale_tracking_Id
        LEFT JOIN Customers C ON FS.UserId = C.id
-       WHERE FS.DateofTransaction = ?
+       WHERE FS.DateofTransaction = ? AND FS.isActive = 1
        LIMIT 5`,
         [date]
       );
@@ -1428,12 +1430,12 @@ WHERE`;
 
     if (date) {
       query += ` DATE(FS.DateofTransaction) = ?
-    AND S.sale_type != 'marketing'
+    AND S.sale_type != 'marketing' AND FS.isActive = 1
 GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type`;
       queryParams.push(date);
     } else if (user) {
       query += `  C.Name = ?
-    AND S.sale_type != 'marketing'
+    AND S.sale_type != 'marketing' AND FS.isActive = 1
 GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type`;
       queryParams.push(user);
     }
@@ -1471,7 +1473,7 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
     console.log(allocationID);
     // Step 1: Get final sale data
     const [finalSalerows] = await pool.query(
-      "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ?",
+      "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ? AND final_sale.isActive = 1",
       [allocationID]
     );
 
@@ -1518,7 +1520,7 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
             JOIN
                 final_sale fs ON s.sale_tracking_Id = fs.sale_tracking_Id   
             WHERE 
-                 fs.id = ?`,
+                 fs.id = ? AND s.isActive = 1 AND fs.isActive = 1`,
       [allocationID]
     );
 
@@ -1752,3 +1754,144 @@ exports.getSaleDetailsForReturn = async (req, res) => {
     res.status(500).json({ error: "Database error" });
   }
 };
+
+
+exports.deleteDirectSaleProduct = async (req, res) => {
+  try {
+    //console.log(req.body);
+    const { product_id, sale_id, sale_tracking_id } = req.body;
+    if (!product_id)  return res.status(400).json({ error: "Product ID is required." });  
+    if (!sale_id) return res.status(400).json({ error: "Sale ID is required." });
+    if (!sale_tracking_id) return res.status(400).json({ error: "Sale Tracking ID  ID is required." });
+
+    const [result] =  await pool.query(
+          "UPDATE `sales` SET `isActive` = 0 WHERE `product_id`= ? AND `sale_tracking_Id`=?",
+          [product_id, sale_tracking_id]
+        );
+    if (result.affectedRows === 0){
+        return res.status(400).json({ error: "Sales data not updated" });
+    }else{
+      const [product] =  await pool.query(
+          "SELECT quantity_sold, amount_received from `sales` WHERE `product_id`= ? AND `sale_tracking_Id`=? AND `isActive` = 0",
+          [product_id, sale_tracking_id]
+        );
+        const { quantity_sold, amount_received } = product[0] ?? {};
+        const [stockUpdate] =  await pool.query(
+            "UPDATE `stock` SET quantity = quantity +  ? WHERE `product_id` = ?",
+            [quantity_sold, product_id]
+        );
+        const [finalSaleUpdate] =  await pool.query(
+            "UPDATE `final_sale` SET TotalAmount = TotalAmount - ? WHERE `sale_tracking_Id`= ?",
+            [amount_received, sale_tracking_id]
+        );
+
+        const [count] =  await pool.query(
+          "SELECT COUNT(*) AS productCount FROM `sales` WHERE `sale_tracking_Id`= ? AND isActive = 1",
+          [sale_tracking_id]
+        );
+        const{ productCount } =  count[0];
+        //console.log(productCount);
+        if(productCount === 0 ){
+        const [finalSaleUpdate] =  await pool.query(
+            "UPDATE `final_sale` SET isActive = 0 WHERE `sale_tracking_Id`= ?",
+            [sale_tracking_id]
+        );          
+        }
+        
+      return res.status(200).json({ message: "Product deleted successfully." , productCount });    
+    }
+     } catch (error) {
+    console.error("Error fetching sale details:", error);
+    res.status(500).json({ error: "Database error" });
+      }
+
+  };    
+
+
+
+exports.deleteAllDirectSaleProducts = async (req, res) => {
+  try {
+    const { sale_tracking_id } = req.body;
+    if (!sale_tracking_id) {
+      return res.status(400).json({ error: "Sale Tracking ID is required." });
+    }
+    //Update final_sale
+    const [result] = await pool.query(
+      "UPDATE `final_sale` SET `isActive` = 0 WHERE `sale_tracking_Id` = ? AND `isSettled` = 0 AND `isActive` = 1",
+      [sale_tracking_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(400).json({ error: "Sales data not updated" });
+    }else{
+    const [products] = await pool.query(
+      "SELECT `product_id`, `quantity_sold` FROM `sales` WHERE `sale_tracking_Id` = ? AND isActive = 1",
+      [sale_tracking_id]
+    );
+
+    if (products.length === 0) {
+      return res.status(400).json({ error: "No active products found" });
+    }
+    //Update all products
+    await Promise.all(
+      products.map(({ product_id, quantity_sold }) =>
+        (async () => {
+          // Update sales
+          await pool.query(
+            "UPDATE `sales` SET `isActive` = 0 WHERE `sale_tracking_Id` = ? AND `product_id` = ?",
+            [sale_tracking_id, product_id]
+          );
+
+          // Update stock
+          await pool.query(
+            "UPDATE `stock` SET quantity = quantity + ? WHERE `product_id` = ?",
+            [quantity_sold, product_id]
+          );
+        })()
+      )
+    );
+     return res.status(200).json({ message: "All products deleted successfully." });
+  } 
+  } catch (error) {
+    console.error("Error deleting sale details:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};  
+
+  // exports.  deleteAllDirectSaleProducts = async (req, res) => {
+  // try {
+  //   console.log(req.body);
+  //   const {sale_tracking_id } = req.body;
+    
+  //   if (!sale_tracking_id) return res.status(400).json({ error: "Sale Tracking ID  ID is required." });
+
+  //    const [result] =  await pool.query(
+  //          "UPDATE `final_sale` set `TotalAmount`= 0, `isActive` = 0   WHERE `sale_tracking_Id`= ? AND `isSettled`=0 AND `isActive`=1",
+  //         [sale_tracking_id]
+  //        );
+  //    if (result.affectedRows === 0)  return res.status(400).json({ error: "Sales data not updated" });
+  //    else{
+  //      const [products] =  await pool.query(
+  //          "SELECT `product_id`, `quantity_sold`, `amount_received`, `sale_tracking_Id`  FROM `sales` WHERE `sale_tracking_Id` = ? AND isActive =1 ",
+  //          [sale_tracking_id]
+  //        );
+  //       if (products.length === 0)  return res.status(400).json({ error: "No active products found" });
+  //       // Step 3: Update each product individually
+  //       for (const { product_id, quantity_sold } of products) {
+  //         const [saleUpdate] =  await pool.query(
+  //           "UPDATE `sales` SET `quantity_sold` = 0, amount_received = 0, `isActive` = 0 WHERE `sale_tracking_Id` = ? AND `product_id` = ?",
+  //           [sale_tracking_id, product_id])
+
+  //         const [stockUpdate] =  await pool.query(
+  //             "UPDATE `stock` SET quantity = quantity + ? WHERE `product_id` = ?",
+  //             [quantity_sold, product_id]
+  //           );
+  //         }
+  //         return res.status(200).json({ message: "All product deleted successfully." });  
+  //     }       
+  //    }catch (error) {
+  //   console.error("Error fetching sale details:", error);
+  //   res.status(500).json({ error: "Database error" });
+  //     }
+
+  // };    
