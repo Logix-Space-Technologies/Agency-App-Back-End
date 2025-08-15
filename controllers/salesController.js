@@ -490,7 +490,7 @@ exports.addDirectSales = async (req, res) => {
     return res.status(400).json({ message: "Missing or invalid input" });
   }
 
-  const { name, place, mobile, email, amount_paying_now } = customer;
+  const { id, name, place, mobile, email, amount_paying_now, gst_number } = customer;
   const sale_type = req.body.saleType;
   const sale_date = new Date();
 
@@ -506,29 +506,33 @@ exports.addDirectSales = async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    // 1. Insert or fetch customer
-    const [existingCustomer] = await connection.query(
-      `SELECT id FROM Customers WHERE Mobile = ?`,
-      [mobile]
-    );
-
+    // // 1. Insert or fetch customer
+    // const [existingCustomer] = await connection.query(
+    //   `SELECT id FROM Customers WHERE Mobile = ?`,
+    //   [mobile]
+    // );
+    const gstValue = customer?.gst_number != null ? customer.gst_number : null;
     let customer_id;
-
-    if (existingCustomer.length > 0) {
-      customer_id = existingCustomer[0].id;
+    if(id){
+      customer_id = id;
+      const [customerUpdate] = await connection.query(
+        "UPDATE `Customers` SET `GstNumber`= ?  WHERE `id` = ?",
+        [gstValue, customer_id]
+      );  
     } else {
       const [customerResult] = await connection.query(
-        `INSERT INTO Customers (Name, Place, Mobile, EmailId)
-                 VALUES (?, ?, ?, ?)`,
-        [name, place, mobile, email]
+        `INSERT INTO Customers (Name, Place, Mobile, EmailId, GstNumber, WalletAmount, isActive)
+                 VALUES (?, ?, ?, ?, ?, 0, 1)`,
+        [name, place, mobile, email, gstValue]
       );
       customer_id = customerResult.insertId;
     }
     const sale_tracking_id = generateUniqueSaleTrackingId();
+    const isGstBilling = !!customer?.gst_number;
 
     await connection.query(
-      `INSERT INTO final_sale ( sale_tracking_Id, TotalAmount, UserId, DateofTransaction, isSettled, AmountPaid, isActive)
-             VALUES (?, ?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO final_sale ( sale_tracking_Id, TotalAmount, UserId, DateofTransaction, isSettled, AmountPaid, isGstBilling, isActive)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         sale_tracking_id,
         totalAmount,
@@ -536,6 +540,7 @@ exports.addDirectSales = async (req, res) => {
         sale_date,
         isSettledItem,
         amountPayingNow,
+        isGstBilling
       ]
     );
 
@@ -1473,7 +1478,7 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
     console.log(allocationID);
     // Step 1: Get final sale data
     const [finalSalerows] = await pool.query(
-      "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ? AND final_sale.isActive = 1",
+      "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile, C.GstNumber  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ? AND final_sale.isActive = 1",
       [allocationID]
     );
 

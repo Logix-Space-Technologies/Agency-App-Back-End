@@ -35,12 +35,12 @@ exports.getAllCustomers = async (req, res) => {
 // Get Customers
 exports.getCustomers = async (req, res) => {
   try {
-    const { mobile } = req.body;
+    const { name} = req.body;
     
 
     const [customers] = await pool.query(
-      "SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE `Mobile` = ? OR `Name` LIKE ? OR `Place` LIKE ?",
-      [mobile, `%${mobile}%`]
+      "SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId`, `GstNumber` FROM `Customers` WHERE `Name` LIKE ? AND isActive = 1",
+      [`%${name}%`]
     );
 
     res.json(customers);
