@@ -80,7 +80,7 @@ exports.addProduct = async (req, res) => {
              VALUES (?, 0, ?, ?, NOW())`,
             [product_id, mrp, mrp]
         );
-
+damagedProductSearch
         const price_id = priceResult.insertId;
 
         // Insert initial stock (quantity = 0, isActive = 1)
@@ -141,4 +141,58 @@ exports.searchProduct = async (req, res) => {
         console.error(error);
         res.status(500).json({ error: 'Database error' });
     }
+};
+
+exports.damagedProductSearch = async (req, res) => {
+  try {
+    const { productId, filterType, startDate, endDate } = req.body;
+
+    let query = `
+      SELECT 
+        r.invoice_no,
+        r.date,
+        p.product_id,
+        p.product_name,
+        damaged_refund_quantity,
+        damaged_replacement_quantity
+        FROM direct_sale_return r
+        JOIN products p ON r.product_id = p.product_id
+        WHERE  1=1
+        AND (r.damaged_refund_quantity > 0 OR r.damaged_replacement_quantity > 0)
+    `;
+    let queryParams = [];
+
+    // product filter
+    if (productId) {
+      query += ` AND r.product_id = ? `;
+      queryParams.push(productId);
+    }
+
+    // filter type
+    if (filterType === "daily") {
+      query += "  AND DATE(r.date) = ? ";
+      queryParams.push(startDate);
+    } else if (filterType === "listdDateRange") {
+      query += `  AND DATE(r.date) BETWEEN ? AND ? `;
+      queryParams.push(startDate, endDate);
+    }
+
+    // Grouping logic
+    // if (productId) {
+    // // // If productId is not given, group by product
+    //   query += " GROUP BY p.product_id, p.product_name";
+    //  } else {
+    // // // If productId is given, group by invoice to see invoice-wise breakdown
+    //   query += " GROUP BY r.invoice_no";
+    //  }   
+    // query += " GROUP BY r.invoice_no";
+ 
+    //console.log(query);
+    //console.log(queryParams);
+    const [result] = await pool.query(query, queryParams);
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
 };
