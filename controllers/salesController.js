@@ -1861,7 +1861,9 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
     console.error("Error deleting sale details:", error);
     res.status(500).json({ error: "Database error" });
   }
-};  
+}; 
+
+
 
   // exports.  deleteAllDirectSaleProducts = async (req, res) => {
   // try {
@@ -1900,3 +1902,66 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
   //     }
 
   // };    
+
+exports.viewSalesByUser = async (req, res) => {
+  console.log(req.body);
+  try {
+    const { selectedUser, selectedProduct, startDate, endDate } = req.body;
+    //console.log(req.params);
+    if (!selectedUser) {
+      return res.status(400).json({ error: "User ID is required." });
+    }
+    if (!startDate) {
+      return res.status(400).json({ error: "Start date is required." });
+    }
+    if (!endDate) {
+      return res.status(400).json({ error: "End date is required." });
+    }
+
+    // const [salesQtyDetails] = await pool.query(
+    //   `SELECT
+    //    DATE_FORMAT(sale_date, '%Y-%m-%d') AS saleDate,
+    //    COALESCE(SUM(quantity_sold), 0) AS totalQuantitySold
+    //    FROM sales
+    //    WHERE marketing_staff_id = ?
+    //    AND sale_date BETWEEN ? AND ?
+    //    AND isActive = 1
+    //    GROUP BY DATE(sale_date)
+    //    ORDER BY saleDate`,[selectedUser, startDate, endDate]
+    // );
+    // console.log(salesQtyDetails.length);
+
+    let query = `
+    SELECT DATE_FORMAT(sale_date, '%Y-%m-%d') AS saleDate,
+          COALESCE(SUM(quantity_sold), 0) AS totalQuantitySold
+    FROM sales
+    WHERE marketing_staff_id = ?
+      AND sale_date BETWEEN ? AND ?
+      AND isActive = 1
+  `;
+
+    let params = [selectedUser, startDate, endDate];
+
+    // Add condition only if a specific product is selected
+    if (selectedProduct !== "all") {
+      query += " AND product_id = ? ";
+      params.push(selectedProduct);
+    }
+
+    query += `
+    GROUP BY DATE(sale_date)
+    ORDER BY saleDate`;
+    
+    const [salesQtyDetails] = await pool.query(query, params);
+
+    if (salesQtyDetails.length === 0) {
+      return res.status(404).json({ message: "Sale details not found." });
+    }
+    console.log(salesQtyDetails);
+
+    return res.json(salesQtyDetails);
+  } catch (error) {
+    console.error("Error fetching sale quantity details:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};

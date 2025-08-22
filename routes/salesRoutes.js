@@ -1,5 +1,5 @@
 const express = require('express');
-const { fecthAllCreditReportCustomers,fetchDailyDataForPrint,cashReport,incCredit, fecthAllCreditReportUser, fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails, fetchFinalSaleListBySearchValue, fetchSalesDataForPrintByID, fetchDirectSaleListByDate, fetchDirectSalesDataForPrintByID,submitAllProductReturns,getSaleDetailsForReturn, deleteDirectSaleProduct, deleteAllDirectSaleProducts} = require('../controllers/salesController');
+const { fecthAllCreditReportCustomers,fetchDailyDataForPrint,cashReport,incCredit, fecthAllCreditReportUser, fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails, fetchFinalSaleListBySearchValue, fetchSalesDataForPrintByID, fetchDirectSaleListByDate, fetchDirectSalesDataForPrintByID,submitAllProductReturns,getSaleDetailsForReturn, deleteDirectSaleProduct, deleteAllDirectSaleProducts, viewSalesByUser} = require('../controllers/salesController');
 const router = express.Router();
 
 
@@ -28,5 +28,6 @@ router.post('/submitReturn', submitAllProductReturns);
 router.get('/salesReturnDetails/:sale_tracking_id/:type', getSaleDetailsForReturn);
 router.post('/deleteDirectSaleProduct', deleteDirectSaleProduct);
 router.post('/deleteAllDirectSaleProducts', deleteAllDirectSaleProducts);
+router.post('/viewSalesByUser', viewSalesByUser);
 
 module.exports = router;
