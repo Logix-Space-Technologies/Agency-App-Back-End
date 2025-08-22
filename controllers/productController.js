@@ -80,7 +80,7 @@ exports.addProduct = async (req, res) => {
              VALUES (?, 0, ?, ?, NOW())`,
             [product_id, mrp, mrp]
         );
-damagedProductSearch
+
         const price_id = priceResult.insertId;
 
         // Insert initial stock (quantity = 0, isActive = 1)
