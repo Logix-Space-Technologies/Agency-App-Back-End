@@ -147,35 +147,116 @@ exports.damagedProductSearch = async (req, res) => {
   try {
     const { productId, filterType, startDate, endDate } = req.body;
 
-    let query = `
-      SELECT 
-        r.invoice_no,
-        r.date,
-        p.product_id,
-        p.product_name,
-        damaged_refund_quantity,
-        damaged_replacement_quantity
-        FROM direct_sale_return r
-        JOIN products p ON r.product_id = p.product_id
-        WHERE  1=1
-        AND (r.damaged_refund_quantity > 0 OR r.damaged_replacement_quantity > 0)
-    `;
-    let queryParams = [];
+    let returnQuery = `
+  SELECT 
+    'return' AS source,
+    r.invoice_no,
+    r.date,
+    p.product_id,
+    p.product_name,
+    NULL as damagedQty,
+    r.damaged_refund_quantity,
+    r.damaged_replacement_quantity
+  FROM direct_sale_return r
+  JOIN products p ON r.product_id = p.product_id
+  WHERE (r.damaged_refund_quantity > 0 OR r.damaged_replacement_quantity > 0)
+`;
 
-    // product filter
-    if (productId) {
-      query += ` AND r.product_id = ? `;
-      queryParams.push(productId);
-    }
+let salesQuery = `
+  SELECT 
+    'sale' AS source,
+    s.sale_tracking_Id as invoice_no,
+    s.sale_date AS date,
+    p.product_id,
+    p.product_name,
+    s.damaged_count AS damagedQty,
+    NULL AS damaged_refund_quantity,
+    NULL AS damaged_replacement_quantity
+  FROM sales s
+  JOIN products p ON s.product_id = p.product_id
+  WHERE s.isActive = 1 AND s.sale_type = "marketing" AND s.damaged_count > 0
+`;
 
-    // filter type
-    if (filterType === "daily") {
-      query += "  AND DATE(r.date) = ? ";
-      queryParams.push(startDate);
-    } else if (filterType === "listdDateRange") {
-      query += `  AND DATE(r.date) BETWEEN ? AND ? `;
-      queryParams.push(startDate, endDate);
-    }
+let queryParams = [];
+
+// product filter
+if (productId) {
+  returnQuery += " AND r.product_id = ? ";
+  salesQuery += " AND s.product_id = ? ";
+  queryParams.push(productId); // push twice (once for each SELECT)
+}
+
+// filter type
+if (filterType === "daily") {
+  returnQuery += " AND DATE(r.date) = ? ";
+  salesQuery += " AND DATE(s.sale_date) = ? ";
+  queryParams.push(startDate);
+} else if (filterType === "dateRange") {
+  returnQuery += " AND DATE(r.date) BETWEEN ? AND ? ";
+  salesQuery += " AND DATE(s.sale_date) BETWEEN ? AND ? ";
+  queryParams.push(startDate,endDate);
+}
+
+// combine
+// let query = `
+//   ${returnQuery}
+//   UNION ALL
+//   ${salesQuery}
+//   ORDER BY date DESC
+// `;
+
+// Finally, run both queries
+const [returnRows] = await pool.query(returnQuery, queryParams);
+const [saleRows] = await pool.query(salesQuery, queryParams);
+
+// Combine them if needed
+
+
+    // let query = `
+    //   SELECT 
+    //     r.invoice_no,
+    //     r.date,
+    //     p.product_id,
+    //     p.product_name,
+    //     damaged_refund_quantity,
+    //     damaged_replacement_quantity
+    //     FROM direct_sale_return r
+    //     JOIN products p ON r.product_id = p.product_id
+    //     WHERE  1=1
+    //     AND (r.damaged_refund_quantity > 0 OR r.damaged_replacement_quantity > 0)
+
+    //     UNION ALL
+
+    //     SELECT 
+    //        'sale' AS source,
+    //         s.sale_tracking_Id as invoice_no, 
+    //         s.sale_date AS date,
+    //         p.product_id,
+    //         p.product_name,
+    //         s.damaged_count AS damagedQty,
+    //         NULL AS damaged_refund_quantity,
+    //         NULL AS damaged_replacement_quantity
+    //     FROM sales s
+    //     JOIN products p ON s.product_id = p.product_id 
+    //     WHERE s.isActive = 1 AND s.sale_type = "marketing"
+
+    // `;
+    // let queryParams = [];
+
+    // // product filter
+    // if (productId) {
+    //   query += ` AND r.product_id = ? `;
+    //   queryParams.push(productId);
+    // }
+
+    // // filter type
+    // if (filterType === "daily") {
+    //   query += "  AND DATE(r.date) = ? ";
+    //   queryParams.push(startDate);
+    // } else if (filterType === "listdDateRange") {
+    //   query += `  AND DATE(r.date) BETWEEN ? AND ? `;
+    //   queryParams.push(startDate, endDate);
+    // }
 
     // Grouping logic
     // if (productId) {
@@ -188,8 +269,11 @@ exports.damagedProductSearch = async (req, res) => {
     // query += " GROUP BY r.invoice_no";
  
     //console.log(query);
-    //console.log(queryParams);
-    const [result] = await pool.query(query, queryParams);
+    // console.log(queryParams);
+    // const [result] = await pool.query(query, queryParams);
+    const result = [...returnRows, ...saleRows].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    console.log(result);
     res.json(result);
   } catch (error) {
     console.error(error);
