@@ -237,7 +237,7 @@ FROM
     final_sale fs
 JOIN 
     (
-        SELECT sale_tracking_Id, MIN(sale_type) AS sale_typeSELECT FS.id, FS.sale_tracking_Id
+        SELECT sale_tracking_Id, MIN(sale_type) AS sale_type
         FROM sales
         GROUP BY sale_tracking_Id
     ) s ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type != 'marketing' AND fs.isActive = 1 
