@@ -145,7 +145,7 @@ exports.searchProduct = async (req, res) => {
 
 exports.damagedProductSearch = async (req, res) => {
   try {
-    const { productId, filterType, startDate, endDate } = req.body;
+    const { userId, productId, filterType, startDate, endDate } = req.body;
 
     let returnQuery = `
   SELECT 
@@ -159,6 +159,7 @@ exports.damagedProductSearch = async (req, res) => {
     r.damaged_replacement_quantity
   FROM direct_sale_return r
   JOIN products p ON r.product_id = p.product_id
+  JOIN sales s ON s.sale_tracking_Id = r.invoice_no
   WHERE (r.damaged_refund_quantity > 0 OR r.damaged_replacement_quantity > 0)
 `;
 
@@ -179,7 +180,15 @@ let salesQuery = `
 
 let queryParams = [];
 
-// product filter
+// user filter
+if (userId) {
+  //returnQuery += " AND s.marketing_staff_id = ? ";
+  returnQuery += " AND s.sale_type = 'marketing'";
+  salesQuery += " AND s.marketing_staff_id = ? ";
+  queryParams.push(userId); // push twice (once for each SELECT)
+}
+
+// product filters
 if (productId) {
   returnQuery += " AND r.product_id = ? ";
   salesQuery += " AND s.product_id = ? ";
@@ -197,84 +206,34 @@ if (filterType === "daily") {
   queryParams.push(startDate,endDate);
 }
 
-// combine
-// let query = `
-//   ${returnQuery}
-//   UNION ALL
-//   ${salesQuery}
-//   ORDER BY date DESC
-// `;
-
 // Finally, run both queries
 const [returnRows] = await pool.query(returnQuery, queryParams);
 const [saleRows] = await pool.query(salesQuery, queryParams);
 
-// Combine them if needed
-
-
-    // let query = `
-    //   SELECT 
-    //     r.invoice_no,
-    //     r.date,
-    //     p.product_id,
-    //     p.product_name,
-    //     damaged_refund_quantity,
-    //     damaged_replacement_quantity
-    //     FROM direct_sale_return r
-    //     JOIN products p ON r.product_id = p.product_id
-    //     WHERE  1=1
-    //     AND (r.damaged_refund_quantity > 0 OR r.damaged_replacement_quantity > 0)
-
-    //     UNION ALL
-
-    //     SELECT 
-    //        'sale' AS source,
-    //         s.sale_tracking_Id as invoice_no, 
-    //         s.sale_date AS date,
-    //         p.product_id,
-    //         p.product_name,
-    //         s.damaged_count AS damagedQty,
-    //         NULL AS damaged_refund_quantity,
-    //         NULL AS damaged_replacement_quantity
-    //     FROM sales s
-    //     JOIN products p ON s.product_id = p.product_id 
-    //     WHERE s.isActive = 1 AND s.sale_type = "marketing"
-
-    // `;
-    // let queryParams = [];
-
-    // // product filter
-    // if (productId) {
-    //   query += ` AND r.product_id = ? `;
-    //   queryParams.push(productId);
-    // }
-
-    // // filter type
-    // if (filterType === "daily") {
-    //   query += "  AND DATE(r.date) = ? ";
-    //   queryParams.push(startDate);
-    // } else if (filterType === "listdDateRange") {
-    //   query += `  AND DATE(r.date) BETWEEN ? AND ? `;
-    //   queryParams.push(startDate, endDate);
-    // }
-
-    // Grouping logic
-    // if (productId) {
-    // // // If productId is not given, group by product
-    //   query += " GROUP BY p.product_id, p.product_name";
-    //  } else {
-    // // // If productId is given, group by invoice to see invoice-wise breakdown
-    //   query += " GROUP BY r.invoice_no";
-    //  }   
-    // query += " GROUP BY r.invoice_no";
- 
-    //console.log(query);
-    // console.log(queryParams);
-    // const [result] = await pool.query(query, queryParams);
     const result = [...returnRows, ...saleRows].sort((a, b) => new Date(b.date) - new Date(a.date));
 
-    console.log(result);
-    res.json(result);
+    // ✅ Calculate separate totals
+    let totalDamagedQty = 0;
+    let totalDamagedRefund = 0;
+    let totalDamagedReplace = 0;
+
+    result.forEach((row) => {
+      totalDamagedQty += row.damagedQty || 0;
+      totalDamagedRefund += row.damaged_refund_quantity || 0;
+      totalDamagedReplace += row.damaged_replacement_quantity || 0;
+    });
+
+    //console.log(result);
+    //res.json(result);
+  res.json({
+    summary: {
+      totalDamagedQty,
+      totalDamagedRefund,
+      totalDamagedReplace,
+      recordCount: result.length,
+    },
+    data: result,
+  });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Database error" });
