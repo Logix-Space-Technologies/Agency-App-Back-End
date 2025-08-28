@@ -551,7 +551,7 @@ exports.addDirectSales = async (req, res) => {
     );
 
     for (const item of products) {
-      const { product_id, quantity, price_id = null } = item;
+      const { product_id, quantity,selling_price,isPriceChanged, price_id = null } = item;
 
       const [priceRows] = await pool.query(
         `SELECT price_id, direct_selling_price, whole_sale_price
@@ -568,7 +568,7 @@ exports.addDirectSales = async (req, res) => {
 
       var marketing_selling_price = 0;
 
-      console.log(priceRows[0]);
+      //console.log(priceRows[0]);
 
       if (sale_type == "direct") {
         marketing_selling_price = priceRows[0].direct_selling_price;
@@ -577,7 +577,8 @@ exports.addDirectSales = async (req, res) => {
       }
 
       // 3. Calculate total amount
-      const amount__ = quantity * marketing_selling_price;
+      //const amount__ = quantity * marketing_selling_price;
+       const amount__ = quantity * selling_price;
 
       console.log(amount__);
 
@@ -587,8 +588,8 @@ exports.addDirectSales = async (req, res) => {
       const [salesResult] = await connection.query(
         `INSERT INTO sales (
                     sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, 
-                    is_credit, sale_tracking_Id, sale_date, damaged_count, is_settled, loss_count, isActive
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    is_credit, sale_tracking_Id, sale_date, damaged_count, is_settled, loss_count,is_price_changed, isActive
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)`,
         [
           sale_type,
           employee_id,
@@ -602,6 +603,7 @@ exports.addDirectSales = async (req, res) => {
           0, // damaged_count
           isSettledItem, // is_settled
           0, // loss_count
+          isPriceChanged, // selling price edited or not
           1, // isActive
         ]
       );
@@ -1478,7 +1480,7 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
     console.log(allocationID);
     // Step 1: Get final sale data
     const [finalSalerows] = await pool.query(
-      "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile, C.GstNumber  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ? AND final_sale.isActive = 1",
+      "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`,  DATE_FORMAT(final_sale.DateofTransaction, '%Y-%m-%d') AS DateofTransaction, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile, C.GstNumber  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ? AND final_sale.isActive = 1",
       [allocationID]
     );
 
