@@ -208,11 +208,18 @@ exports.incCredit = async (req, res) => {
 };
 
 exports.fecthAllCreditReportCustomers = async (req, res) => {
-  const { marketing_staff_id } = req.body;
+  const { customer_id , startDate, endDate } = req.body;
 
   console.log(req.body);
 
   try {
+        let dateFilter = "";
+        const params = [customer_id];
+
+        if (startDate && endDate) {
+          dateFilter = " AND fs.DateofTransaction BETWEEN ? AND ? ";
+          params.push(startDate, endDate);
+        }
     const [rows] = await pool.query(
       `
     SELECT 
@@ -251,11 +258,18 @@ WHERE
         ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) > 0
         OR ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) < 0
     )
-
+        ${dateFilter}
         `,
-      [marketing_staff_id]
+      params
     );
 
+    let creditDateFilter = "";
+    const creditParams = [customer_id];
+
+    if (startDate && endDate) {
+      creditDateFilter = " AND fs.DateofTransaction BETWEEN ? AND ? ";
+      creditParams.push(startDate, endDate);
+    }
     const [creditInfo] = await pool.query(
       `
 SELECT 
@@ -276,10 +290,11 @@ WHERE
     AND (
         ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) <> 0
     )
+        ${creditDateFilter}
 GROUP BY 
     fs.UserId
         `,
-      [marketing_staff_id]
+      creditParams
     );
 
     res.json({ success: true, data: rows, creditInfo: creditInfo });
@@ -292,11 +307,17 @@ GROUP BY
 };
 
 exports.fecthAllCreditReportUser = async (req, res) => {
-  const { marketing_staff_id } = req.body;
+  const { marketing_staff_id, startDate, endDate } = req.body;
 
   console.log(req.body);
 
   try {
+    let dateFilter = "";
+    const params = [marketing_staff_id];
+    if (startDate && endDate) {
+      dateFilter = " AND fs.DateofTransaction BETWEEN ? AND ? ";
+      params.push(startDate, endDate);
+    }
     const [rows] = await pool.query(
       `
     SELECT 
@@ -335,11 +356,17 @@ WHERE
         ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) > 0
         OR ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) < 0
     )
-
+        ${dateFilter}
         `,
-      [marketing_staff_id]
+      params
     );
+    const creditParams = [marketing_staff_id];
+    let creditDateFilter = "";
 
+    if (startDate && endDate) {
+      creditDateFilter = " AND fs.DateofTransaction BETWEEN ? AND ? ";
+      creditParams.push(startDate, endDate);
+    }
     const [creditInfo] = await pool.query(
       `
 SELECT 
@@ -360,10 +387,11 @@ WHERE
     AND (
         ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) <> 0
     )
+    ${creditDateFilter}
 GROUP BY 
     fs.UserId
         `,
-      [marketing_staff_id]
+      creditParams
     );
 
     res.json({ success: true, data: rows, creditInfo: creditInfo });
