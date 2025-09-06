@@ -932,6 +932,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
 
       const {
         product_id,
+        dsa_id,
         quantity_sold = 0,
         amount_received = 0,
         damaged_count = 0,
@@ -1059,7 +1060,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
 
       await pool.query(
         `UPDATE daily_stock_allocation SET converted_to_sales = 1 , allocated_quantity = allocated_quantity-?  WHERE daily_stock_id = ?`,
-        [quantity_sold, allocationMap[product_id].daily_stock_id]
+        [quantity_sold, dsa_id]
       );
 
       salesResults.push({
@@ -1096,7 +1097,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
   } catch (error) {
     console.error("Error in addSales:", error);
     res.status(500).json({ error: "Database error" });
-  }
+  } 
 };
 
 function generateUniqueSaleTrackingId() {
