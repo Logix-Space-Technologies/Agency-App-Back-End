@@ -320,9 +320,9 @@ exports.deleteDailyStockAllocation = async (req,res)=>{
         
         if (rseult.affectedRows === 0 ) {
             return res.status(404).json({ error: 'Record not found or already deleted' });
-        }else{
-         await pool.query('UPDATE `stock` SET `quantity` = `quantity` + ? WHERE `product_id` = ?', [allocatedQuantity, productId]);                   
-        }
+        }//else{
+        //  await pool.query('UPDATE `stock` SET `quantity` = `quantity` + ? WHERE `product_id` = ?', [allocatedQuantity, productId]);                   
+        // }
       res.json({
         message:"Daily stock allocation deleted and stock updated successfully",
         dailyStockId,
