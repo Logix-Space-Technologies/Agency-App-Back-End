@@ -1903,14 +1903,9 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
 
   // };    
 
-exports.viewSalesByUser = async (req, res) => {
-  console.log(req.body);
+exports.viewSalesData = async (req, res) => {
   try {
     const { selectedUser, selectedProduct, startDate, endDate } = req.body;
-    //console.log(req.params);
-    if (!selectedUser) {
-      return res.status(400).json({ error: "User ID is required." });
-    }
     if (!startDate) {
       return res.status(400).json({ error: "Start date is required." });
     }
@@ -1918,36 +1913,25 @@ exports.viewSalesByUser = async (req, res) => {
       return res.status(400).json({ error: "End date is required." });
     }
 
-    // const [salesQtyDetails] = await pool.query(
-    //   `SELECT
-    //    DATE_FORMAT(sale_date, '%Y-%m-%d') AS saleDate,
-    //    COALESCE(SUM(quantity_sold), 0) AS totalQuantitySold
-    //    FROM sales
-    //    WHERE marketing_staff_id = ?
-    //    AND sale_date BETWEEN ? AND ?
-    //    AND isActive = 1
-    //    GROUP BY DATE(sale_date)
-    //    ORDER BY saleDate`,[selectedUser, startDate, endDate]
-    // );
-    // console.log(salesQtyDetails.length);
-
     let query = `
     SELECT DATE_FORMAT(sale_date, '%Y-%m-%d') AS saleDate,
           COALESCE(SUM(quantity_sold), 0) AS totalQuantitySold
     FROM sales
-    WHERE marketing_staff_id = ?
-      AND sale_date BETWEEN ? AND ?
+    WHERE 
+      sale_date BETWEEN ? AND ?
       AND isActive = 1
   `;
+    let params = [startDate, endDate];
 
-    let params = [selectedUser, startDate, endDate];
+    if (selectedUser !== "all") {
+      query += " AND marketing_staff_id = ?";
+      params.push(selectedUser);
+    }
 
-    // Add condition only if a specific product is selected
     if (selectedProduct !== "all") {
       query += " AND product_id = ? ";
       params.push(selectedProduct);
     }
-
     query += `
     GROUP BY DATE(sale_date)
     ORDER BY saleDate`;
@@ -1957,9 +1941,76 @@ exports.viewSalesByUser = async (req, res) => {
     if (salesQtyDetails.length === 0) {
       return res.status(404).json({ message: "Sale details not found." });
     }
-    console.log(salesQtyDetails);
+    //console.log(salesQtyDetails);
+    let query1, params1 = [startDate, endDate];
 
-    return res.json(salesQtyDetails);
+    if (selectedUser === "all") {
+      // Top products overall
+      query1 = `
+        SELECT 
+            p.product_id,
+            p.product_name,
+            SUM(s.quantity_sold) AS totalQuantitySold
+        FROM sales s
+        INNER JOIN products p ON s.product_id = p.product_id
+        WHERE 
+            s.sale_date BETWEEN ? AND ?
+            AND s.isActive = 1
+        GROUP BY p.product_id
+        ORDER BY totalQuantitySold DESC
+        LIMIT 10
+      `;
+    } else {
+      // Top products for the specific user
+      query1 = `
+        SELECT 
+            p.product_id,
+            p.product_name,
+            u.user_id AS marketing_staff_id,
+            u.name AS marketing_staff_name,
+            SUM(s.quantity_sold) AS totalQuantitySold
+        FROM sales s
+        INNER JOIN products p ON s.product_id = p.product_id
+        INNER JOIN users u ON s.marketing_staff_id = u.user_id
+        WHERE 
+            s.sale_date BETWEEN ? AND ?
+            AND s.isActive = 1
+            AND u.user_id = ?
+        GROUP BY p.product_id, u.user_id
+        ORDER BY totalQuantitySold DESC
+        LIMIT 10
+      `;
+      params1.push(selectedUser);
+    }
+
+    const [productSold] = await pool.query(query1, params1);
+
+
+    if (productSold.length === 0) {
+      return res.status(404).json({ message: "No sales found in this period." });
+    }
+
+        let userWiseSales = [];
+    if (selectedUser === "all") {
+      const query2 = `
+        SELECT u.user_id, u.name AS userName,
+               SUM(s.quantity_sold) AS totalQuantitySold
+        FROM sales s
+        INNER JOIN users u ON s.marketing_staff_id = u.user_id
+        WHERE s.sale_date BETWEEN ? AND ?
+          AND s.isActive = 1
+        GROUP BY u.user_id, u.name
+        ORDER BY totalQuantitySold DESC
+        LIMIT 10
+      `;
+      [userWiseSales] = await pool.query(query2, [startDate, endDate]);
+    }
+
+    return res.json({
+      salesQtyDetails,
+      productSold,
+      userWiseSales
+    });
   } catch (error) {
     console.error("Error fetching sale quantity details:", error);
     res.status(500).json({ error: "Database error" });
