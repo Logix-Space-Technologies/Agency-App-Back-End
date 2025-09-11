@@ -1964,7 +1964,7 @@ exports.viewSalesData = async (req, res) => {
       params.push(selectedProduct);
     }
     query += `
-    GROUP BY DATE(sale_date)
+    GROUP BY DATE_FORMAT(sale_date, '%Y-%m-%d')
     ORDER BY saleDate`;
     
     const [salesQtyDetails] = await pool.query(query, params);
