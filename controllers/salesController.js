@@ -518,9 +518,15 @@ exports.addDirectSales = async (req, res) => {
     return res.status(400).json({ message: "Missing or invalid input" });
   }
 
-  const { id, name, place, mobile, email, amount_paying_now, gst_number } = customer;
+  const { id, name, place, mobile, email, date, amount_paying_now, gst_number } = customer;
   const sale_type = req.body.saleType;
-  const sale_date = new Date();
+  const current_date = new Date();
+  const sale_date = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Kolkata",  // GMT+5:30
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(current_date);
 
   const connection = await pool.getConnection();
 
@@ -559,12 +565,13 @@ exports.addDirectSales = async (req, res) => {
     const isGstBilling = !!customer?.gst_number;
 
     await connection.query(
-      `INSERT INTO final_sale ( sale_tracking_Id, TotalAmount, UserId, DateofTransaction, isSettled, AmountPaid, isGstBilling, isActive)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO final_sale ( sale_tracking_Id, TotalAmount, UserId, DateofTransaction, addedDate, isSettled, AmountPaid, isGstBilling, isActive)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         sale_tracking_id,
         totalAmount,
         customer_id,
+        date,
         sale_date,
         isSettledItem,
         amountPayingNow,
