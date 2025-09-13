@@ -196,11 +196,11 @@ exports.getAllocationByProductAndDate = async (req, res) => {
 // Multiple 
 exports.addDailyStockAllocation = async (req, res) => {
     try {
-        const { marketing_staff_id, allocations } = req.body;
+        const { marketing_staff_id, saleDate, allocations } = req.body;
         // console.log(Input)
         console.log(req.body)
 
-        if (!marketing_staff_id || !allocations || !Array.isArray(allocations)) {
+        if (!marketing_staff_id || !allocations || !Array.isArray(allocations || !saleDate)) {
             return res.status(400).json({ error: "Missing or invalid inputs" });
         }
 
@@ -208,14 +208,14 @@ exports.addDailyStockAllocation = async (req, res) => {
 
         const insertValues = allocations
             .filter(item => item.product_id && item.allocated_quantity)
-            .map(item => [marketing_staff_id, item.product_id, item.allocated_quantity, date]);
+            .map(item => [marketing_staff_id, item.product_id, item.allocated_quantity, saleDate, date]);
 
         if (insertValues.length === 0) {
             return res.status(400).json({ error: "No valid allocations provided" });
         }
 
         const [result] = await pool.query(
-            'INSERT INTO daily_stock_allocation (marketing_staff_id, product_id, allocated_quantity, date) VALUES ?',
+            'INSERT INTO daily_stock_allocation (marketing_staff_id, product_id, allocated_quantity, date, addedDate) VALUES ?',
             [insertValues]
         );
 
@@ -244,12 +244,14 @@ exports.viewAllDailyStockAllocation = async (req, res) => {
 exports.addDailyStockAllocation = async (req, res) => {
     try {
       console.log(req.body);
-      const { marketing_staff_id, allocations } = req.body;
+      const { marketing_staff_id, saleDate, allocations } = req.body;
   
       if (!marketing_staff_id) {
         return res.status(400).json({ error: "marketing staff id required" });
       }
-  
+      if (!saleDate) {
+        return res.status(400).json({ error: "Sale date required" });
+      }
       if (!Array.isArray(allocations) || allocations.length === 0) {
         return res.status(400).json({ error: "allocations are required" });
       }
@@ -262,8 +264,8 @@ exports.addDailyStockAllocation = async (req, res) => {
         }
   
         await pool.query(
-          'INSERT INTO `daily_stock_allocation` (`marketing_staff_id`, `product_id`, `allocated_quantity`, `date`, `isActive`, `converted_to_sales`) VALUES (?, ?, ?, now(), 1, 0)',
-          [marketing_staff_id, product_id, allocated_quantity]
+          'INSERT INTO `daily_stock_allocation` (`marketing_staff_id`, `product_id`, `allocated_quantity`, `date`, `addedDate`,  `isActive`, `converted_to_sales`) VALUES (?, ?, ?, ? ,now(), 1, 0)',
+          [marketing_staff_id, product_id, allocated_quantity, saleDate]
         );
       }
   
