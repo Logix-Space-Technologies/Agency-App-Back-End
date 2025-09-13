@@ -521,7 +521,7 @@ exports.addDirectSales = async (req, res) => {
   const { id, name, place, mobile, email, date, amount_paying_now, gst_number } = customer;
   const sale_type = req.body.saleType;
   const current_date = new Date();
-  const sale_date = new Intl.DateTimeFormat("en-CA", {
+  const added_date = new Intl.DateTimeFormat("en-CA", {
         timeZone: "Asia/Kolkata",  // GMT+5:30
         year: "numeric",
         month: "2-digit",
@@ -572,7 +572,7 @@ exports.addDirectSales = async (req, res) => {
         totalAmount,
         customer_id,
         date,
-        sale_date,
+        added_date,
         isSettledItem,
         amountPayingNow,
         isGstBilling
@@ -582,7 +582,7 @@ exports.addDirectSales = async (req, res) => {
     await connection.query(
       `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate,isActive)
              VALUES (?, ?, ?, ?)`,
-      [sale_tracking_id, amountPayingNow, sale_date, 1]
+      [sale_tracking_id, amountPayingNow, date, 1]
     );
 
     for (const item of products) {
@@ -593,7 +593,7 @@ exports.addDirectSales = async (req, res) => {
                  FROM product_prices
                  WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
                  ORDER BY effective_date DESC LIMIT 1`,
-        [product_id, sale_date]
+        [product_id, date]
       );
 
       if (priceRows.length === 0) {
@@ -634,7 +634,7 @@ exports.addDirectSales = async (req, res) => {
           amount__, // amount_received
           0, // is_credit
           sale_tracking_id, // sale_tracking_Id
-          sale_date,
+          date,
           0, // damaged_count
           isSettledItem, // is_settled
           0, // loss_count
@@ -668,7 +668,7 @@ exports.addDirectSales = async (req, res) => {
 
       if (stockIdResult.length > 0) {
         const stock_Id = stockIdResult[0].stock_id;
-        const addedDate = new Date();
+        //const addedDate = new Date();
         const addedBy = req.user ? req.user.id : 0;
         const creditOrDebit = "debit";
         const referenceInvoiceOrSale = sale_tracking_id;
@@ -679,7 +679,7 @@ exports.addDirectSales = async (req, res) => {
             stock_Id,
             -quantity,
             "sale",
-            addedDate,
+            added_date,
             addedBy,
             creditOrDebit,
             referenceInvoiceOrSale,
@@ -903,11 +903,17 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       amount_paid,
     });
     console.log("-----------------");
-
+      const current_date = new Date();
+      const addedDate = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Kolkata",  // GMT+5:30
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(current_date);
     await pool.query(
-      `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction,
+      `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction, addedDate, 
              isSettled, AmountPaid)
-             VALUES (?,?,?,?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         fuel,
         vehicle_service,
@@ -916,6 +922,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         0,
         marketing_staff_id,
         sale_date,
+        addedDate,
         isSettledItem1,
         amount_paid,
       ]
@@ -1042,7 +1049,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
 
       if (stockIdResult.length > 0) {
         const stock_Id = stockIdResult[0].stock_id;
-        const addedDate = new Date();
+        //const addedDate = new Date();
         const addedBy = req.user ? req.user.id : 0;
         const creditOrDebit = "debit";
         const referenceInvoiceOrSale = newSaleId;
