@@ -15,6 +15,7 @@ const stockRoutes = require("./routes/stockRoutes")
 const purchaseRouter = require("./routes/purchaseRoutes")
 const salaryRouter = require("./routes/salaryRoutes")
 const customerRouter = require("./routes/customerRoutes")
+const cashFlowRouter = require("./routes/cashFlowRoutes")
 
 
 
@@ -35,6 +36,7 @@ app.use('/api/stock',stockRoutes)
 app.use('/api/purchase',purchaseRouter)
 app.use('/api/salary/',salaryRouter)
 app.use('/api/customers', customerRouter)
+app.use('/api/cashflow', cashFlowRouter)
 
 
 const PORT = process.env.PORT || 5000;
