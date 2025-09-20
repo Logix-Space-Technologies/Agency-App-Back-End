@@ -97,11 +97,11 @@ exports.addUserSalary = async (req, res) => {
     if (!staff || !amount) {
       return res
         .status(400)
-        .json({ error: "Satff name and amount are required" });
+        .json({ error: "Staff name and amount are required" });
     }
     // Check if salary entry already exists
     const [existingAddedSalary] = await pool.query(
-      "SELECT Amount FROM salary WHERE Month = ? AND Year = ? AND UserId = ?",
+      "SELECT Amount FROM Salary WHERE Month = ? AND Year = ? AND UserId = ?",
       [month, year, staff]
     );
 
@@ -112,7 +112,7 @@ exports.addUserSalary = async (req, res) => {
     } else {
       // Insert user salary
       const [result] = await pool.query(
-        "INSERT into `salary` (`UserId`, `Date`, `Amount`, `Remarks`, `AddedDate`, `Month`, `Year`) VALUES (?, now(), ?, ?, ?, ?,?)",
+        "INSERT into `Salary` (`UserId`, `Date`, `Amount`, `Remarks`, `AddedDate`, `Month`, `Year`) VALUES (?, now(), ?, ?, ?, ?,?)",
         [staff, amount, remarks, date, month, year]
       );
 
@@ -143,7 +143,7 @@ exports.updateStaffSalary = async (req, res) => {
     }
 
     const [result] = await pool.query(
-      "UPDATE `salary` SET `Date` = NOW(), `Amount` = ?, `Remarks` = ?, `AddedDate` = ?, `Month` = ?, `Year` = ? WHERE `id` = ?",
+      "UPDATE `Salary` SET `Date` = NOW(), `Amount` = ?, `Remarks` = ?, `AddedDate` = ?, `Month` = ?, `Year` = ? WHERE `id` = ?",
       [Amount, Remarks, formattedDate, Month, Year, id]
     );
 
@@ -164,7 +164,7 @@ exports.searchUserSalaryDetails = async (req, res) => {
       return res.status(400).json({ error: "User data is required" });
 
     const [result] = await pool.query(
-      `SELECT u.name,s.UserId, s.id,s.Amount, s.Month, s.Year, DATE_FORMAT(s.AddedDate, '%Y-%m-%d') AS AddedDate,s.Remarks FROM salary s JOIN users u ON s.UserId= u.user_id WHERE  (u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR u.Place_Of_Allocation LIKE ?) AND u.isActive = 1`,
+      `SELECT u.name,s.UserId, s.id,s.Amount, s.Month, s.Year, DATE_FORMAT(s.AddedDate, '%Y-%m-%d') AS AddedDate,s.Remarks FROM Salary s JOIN users u ON s.UserId= u.user_id WHERE  (u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR u.Place_Of_Allocation LIKE ?) AND u.isActive = 1`,
       [`%${user_data}%`, `%${user_data}%`, `%${user_data}%`, `%${user_data}%`]
     );
 
@@ -182,7 +182,7 @@ exports.checkForSalaryExist = async (req, res) => {
     }
 
     const [rows] = await pool.query(
-      "SELECT Amount FROM salary WHERE Month = ? AND Year = ? AND UserId = ?",
+      "SELECT Amount FROM Salary WHERE Month = ? AND Year = ? AND UserId = ?",
       [month, year, userId]
     );
 
