@@ -19,7 +19,7 @@ exports.getCashFlow = async (req, res) => {
     // Salary (Debit)
     const [salaries] = await pool.query(
       `SELECT Date AS date, Amount AS debit, NULL AS credit, 'Salary' AS type
-       FROM salary
+       FROM Salary
        WHERE Date BETWEEN ? AND ?`,
       [fromDate, toDate]
     );
