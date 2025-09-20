@@ -233,4 +233,56 @@ exports.editUser = async (req, res) => {
   }
 };
 
+// Search User
+exports.getMenuItems = async (req, res) => {
+  try {
+    const { role } = req.body;
+    if (!role) {
+      return res.status(400).json({ error: "Role is required." });
+    }
+  const [rows] = await pool.query(`
+    SELECT 
+      parent.id AS parent_id,
+      parent.name AS parent_name,
+      parent.menu_id AS menu_id,
+      parent.short_name,
+      child.id AS link_id,
+      child.name AS link_text,
+      child.href AS link_href
+    FROM menu_items AS parent
+    LEFT JOIN menu_items AS child ON child.parent_id = parent.id
+    WHERE parent.parent_id IS NULL
+      AND FIND_IN_SET(?, parent.access_roles)
+      AND (child.id IS NULL OR FIND_IN_SET(?, child.access_roles))
+    ORDER BY parent.sort_order, child.sort_order
+  `, [role, role]);
+
+  const navMap = {};
+
+  for (const row of rows) {
+    const pid = row.parent_id;
+
+    if (!navMap[pid]) {
+      navMap[pid] = {
+        id: pid,
+        name: row.parent_name,
+        menuId : row.menu_id,
+        shortName: row.short_name || undefined,
+        links: []
+      };
+    }
+
+    if (row.link_id && row.link_href) {
+      navMap[pid].links.push({
+        href: row.link_href,
+        text: row.link_text
+      });
+    }
+  }
+
+  res.json(Object.values(navMap));
+  } catch (error) {
+    res.status(500).json({ error: "Database error" });
+  }
+};
 
