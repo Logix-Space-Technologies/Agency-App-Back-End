@@ -1,11 +1,12 @@
 const pool = require('../config/db');
-
+const { getISTTimestamp } = require('../utils/dateUtils');
 
 exports.updateProductPrice = async (req, res) => {
     try {
         const {
             price_id,
             product_id,
+            product_mrp,
             purchase_price,
             commision_rate,
             marketing_selling_price,
@@ -21,6 +22,25 @@ exports.updateProductPrice = async (req, res) => {
         if (!price_id) return res.status(400).json({ error: "price_id is required" });
 
         const formattedDate = effective_date?.split("T")[0];
+if(product_mrp){
+const [rows] = await pool.query(
+  "SELECT product_name, mrp FROM `products` WHERE `product_id`= ? AND `isActive`=1",
+  [product_id]
+);
+
+if (rows.length > 0) {
+  const mrp = rows[0].mrp;
+  if (mrp != product_mrp) {
+    const updatedAt = getISTTimestamp();
+    await pool.query(
+      "UPDATE `products` SET `mrp`= ?, `modified`= ? WHERE `product_id` = ?",
+      [product_mrp, updatedAt, product_id]
+    );
+  }
+} else {
+  console.log("No product found with the given ID");
+}
+    }
 
         const [existingRows] = await pool.query(
             `SELECT * FROM product_prices WHERE price_id = ? AND isActive = 1`,

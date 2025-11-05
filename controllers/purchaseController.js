@@ -494,7 +494,7 @@ exports.getAllPurchases = async (req, res) => {
             JOIN
                 products pr ON pr.product_id = p.product_id
             WHERE
-                p.isActive = 1
+                p.isActive = 1 ORDER BY p.purchase_date DESC
         `);
     res.json(purchases);
   } catch (error) {
@@ -511,8 +511,8 @@ exports.getAllPurchases = async (req, res) => {
 // Get All Active Purchases with Supplier and Product Name
 exports.getAllPurchasesByValues = async (req, res) => {
   try {
-    const { date, supplier } = req.body;
-    console.log(req.body);
+    const { supplier, product, fromDate, toDate } = req.body;
+    //console.log(req.body);
     const queryParams = [];
     let query = `SELECT
                 pr.product_name,
@@ -535,15 +535,27 @@ exports.getAllPurchasesByValues = async (req, res) => {
                 suppliers s ON p.supplier_id = s.supplier_id
             JOIN
                 products pr ON pr.product_id = p.product_id
-            WHERE  
+            WHERE  p.isActive = 1
             `;
-    if (date) {
-      query += "p.purchase_date= ? AND p.isActive = 1";
-      queryParams.push(date);
-    } else if (supplier) {
-      query += "s.supplier_name = ? AND p.isActive = 1";
+    if (supplier) {
+      query += " AND s.supplier_name = ?";
       queryParams.push(supplier);
     }
+    if (product) {
+      query += " AND pr.product_name LIKE ?";
+      queryParams.push(`%${product}%`);
+    }
+    if (fromDate && toDate) {
+      query += " AND DATE(p.purchase_date) BETWEEN ? AND ?";
+      queryParams.push(fromDate, toDate);
+    } else if (fromDate) {
+      query += " AND DATE(p.purchase_date) >= ?";
+      queryParams.push(fromDate);
+    } else if (toDate) {
+      query += " AND DATE(p.purchase_date) <= ?";
+      queryParams.push(toDate);
+    }
+     query += " ORDER BY p.purchase_date DESC";
 
     //console.log(query,queryParams);
     const [purchases] = await pool.query(query,queryParams)
