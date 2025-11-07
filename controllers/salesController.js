@@ -1271,7 +1271,8 @@ exports.searchSales = async (req, res) => {
     f.AmountPaid,
     f.FuelExpenses,
     f.VehcileServiceExpenses,
-    f.OtherExpenses
+    f.OtherExpenses,
+    f.isGstBilling
 FROM
     final_sale f
 JOIN (
