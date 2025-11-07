@@ -509,7 +509,7 @@ exports.fecthLatestPrices = async (req, res) => {
 };
 
 exports.addDirectSales = async (req, res) => {
-  const { agency_id, employee_id, customer, products, totalAmount, saleType } =
+  const { agency_id, employee_id, customer, products, totalAmount, saleType,payment_breakdown = {}, } =
     req.body;
 
   console.log(req.body);
@@ -517,6 +517,9 @@ exports.addDirectSales = async (req, res) => {
   if (!agency_id || products.length === 0) {
     return res.status(400).json({ message: "Missing or invalid input" });
   }
+
+  const { cash = 0, card = 0, upi = 0 } = payment_breakdown;
+
 
   const { id, name, place, mobile, email, date, amount_paying_now, gst_number } = customer;
   const sale_type = req.body.saleType;
@@ -579,11 +582,21 @@ exports.addDirectSales = async (req, res) => {
       ]
     );
 
-    await connection.query(
-      `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate,isActive)
-             VALUES (?, ?, ?, ?)`,
-      [sale_tracking_id, amountPayingNow, date, 1]
-    );
+     if (parseFloat(amountPayingNow) > 0) {
+      await pool.query(
+        `INSERT INTO sales_credit_history (UPI, Cash, Card, sale_tracking_Id, amount, creditedDate, isActive)
+                 VALUES (?,?,?,?, ?, now(), ?)`,
+        [upi, cash, card, sale_tracking_id, amountPayingNow, 1]
+      );
+    }
+
+    console.log("sales_credit_history Completed  !!! ");
+
+    // await connection.query(
+    //   `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate,isActive)
+    //          VALUES (?, ?, ?, ?)`,
+    //   [sale_tracking_id, amountPayingNow, date, 1]
+    // );
 
     for (const item of products) {
       const { product_id, quantity,selling_price,isPriceChanged, price_id = null } = item;
@@ -1271,7 +1284,8 @@ exports.searchSales = async (req, res) => {
     f.AmountPaid,
     f.FuelExpenses,
     f.VehcileServiceExpenses,
-    f.OtherExpenses
+    f.OtherExpenses,
+    f.isGstBilling
 FROM
     final_sale f
 JOIN (
