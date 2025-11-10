@@ -136,4 +136,16 @@ exports.editCustomer = async (req, res) => {
   }
 };
 
-
+exports.fetchAllCustomers = async (req, res) => {
+  try {
+    const [customers] = await pool.query(
+      "SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE isActive = 1"
+    );
+    res.json(customers);
+  } catch (error) {
+    console.error("Error fetching customers:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch customers" });
+  }
+};
