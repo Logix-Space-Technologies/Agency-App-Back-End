@@ -1256,49 +1256,59 @@ exports.addSales = async (req, res) => {
 // search
 exports.searchSales = async (req, res) => {
   try {
-    const { sale_date, from_date, to_date } = req.body;
+    //console.log(req.body);
+    const { sale_date, from_date, to_date, user_type, user_id } = req.body;
+
     let query = `
-            SELECT
-    f.id,
-    f.sale_tracking_Id,
-    f.TotalAmount,
-    CASE
-        WHEN s.sale_type = 'marketing' THEN u.name
-        ELSE c.Name
-    END AS name,
-    f.DateofTransaction,
-    f.isSettled,
-    f.AmountPaid,
-    f.FuelExpenses,
-    f.VehcileServiceExpenses,
-    f.OtherExpenses,
-    f.isGstBilling
-FROM
-    final_sale f
-JOIN (
-    SELECT sale_tracking_Id, MAX(sale_type) AS sale_type
-    FROM sales
-    GROUP BY sale_tracking_Id
-) s ON f.sale_tracking_Id = s.sale_tracking_Id
-LEFT JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id
-LEFT JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id
-WHERE
-        `;
+      SELECT
+        f.id,
+        f.sale_tracking_Id,
+        f.TotalAmount,
+        CASE
+          WHEN s.sale_type = 'marketing' THEN u.name
+          ELSE c.Name
+        END AS name,
+        f.DateofTransaction,
+        f.isSettled,
+        f.AmountPaid,
+        f.FuelExpenses,
+        f.VehcileServiceExpenses,
+        f.OtherExpenses,
+        f.isGstBilling
+      FROM final_sale f
+      JOIN (
+        SELECT sale_tracking_Id, MAX(sale_type) AS sale_type
+        FROM sales
+        GROUP BY sale_tracking_Id
+      ) s ON f.sale_tracking_Id = s.sale_tracking_Id
+      LEFT JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id
+      LEFT JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id
+      WHERE f.isActive = 1
+    `;
+
     const queryParams = [];
 
+    // --- Date or Range filter ---
     if (sale_date) {
-      query += `DATE(f.DateofTransaction) = ? AND f.isActive = 1`;
+      query += ` AND DATE(f.DateofTransaction) = ?`;
       queryParams.push(sale_date);
     } else if (from_date && to_date) {
-      query += `DATE(f.DateofTransaction) >= ? AND DATE(f.DateofTransaction) <= ? AND f.isActive = 1`;
+      query += ` AND DATE(f.DateofTransaction) BETWEEN ? AND ?`;
       queryParams.push(from_date, to_date);
     } else {
-      return res
-        .status(400)
-        .json({ error: "Please provide a sale date or a date range." });
+      return res.status(400).json({ error: "Please provide a sale date or a date range." });
     }
 
-    query += ` ORDER BY f.DateofTransaction`;
+    // --- Optional User Filter ---
+    if (user_type === "marketing" && user_id) {
+      query += ` AND s.sale_type = 'marketing' AND u.user_id = ?`;
+      queryParams.push(user_id);
+    } else if (user_type === "customer" && user_id) {
+      query += ` AND s.sale_type != 'marketing' AND c.id = ?`;
+      queryParams.push(user_id);
+    }
+
+    query += ` ORDER BY f.DateofTransaction DESC`;
 
     const [result] = await pool.query(query, queryParams);
     res.json(result);
@@ -1307,6 +1317,7 @@ WHERE
     res.status(500).json({ error: "Database error" });
   }
 };
+
 //delete
 exports.deleteSales = async (req, res) => {
   try {
