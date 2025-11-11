@@ -1256,18 +1256,31 @@ exports.addSales = async (req, res) => {
 // search
 exports.searchSales = async (req, res) => {
   try {
-    //console.log(req.body);
     const { sale_date, from_date, to_date, user_type, user_id } = req.body;
+
+     let subquery =  "";
+     let nameField = "";
+      if (user_type === "marketing") {
+            subquery = `JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id`;
+            nameField = "u.name AS name";
+      }
+       else if (user_type === "customer") {
+            subquery = `JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id`;
+            nameField = "c.Name AS name";
+      }
+       else if (user_type === "all") {
+            subquery = `LEFT JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id
+                        LEFT JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id`;
+            nameField = `CASE WHEN s.sale_type = 'marketing' THEN u.name ELSE c.Name END AS name`;
+      }
+
 
     let query = `
       SELECT
         f.id,
         f.sale_tracking_Id,
         f.TotalAmount,
-        CASE
-          WHEN s.sale_type = 'marketing' THEN u.name
-          ELSE c.Name
-        END AS name,
+        ${nameField},
         f.DateofTransaction,
         f.isSettled,
         f.AmountPaid,
@@ -1280,9 +1293,7 @@ exports.searchSales = async (req, res) => {
         SELECT sale_tracking_Id, MAX(sale_type) AS sale_type
         FROM sales
         GROUP BY sale_tracking_Id
-      ) s ON f.sale_tracking_Id = s.sale_tracking_Id
-      LEFT JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id
-      LEFT JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id
+      ) s ON f.sale_tracking_Id = s.sale_tracking_Id ${subquery}
       WHERE f.isActive = 1
     `;
 
@@ -1300,14 +1311,15 @@ exports.searchSales = async (req, res) => {
     }
 
     // --- Optional User Filter ---
-    if (user_type === "marketing" && user_id) {
-      query += ` AND s.sale_type = 'marketing' AND u.user_id = ?`;
-      queryParams.push(user_id);
-    } else if (user_type === "customer" && user_id) {
-      query += ` AND s.sale_type != 'marketing' AND c.id = ?`;
-      queryParams.push(user_id);
+    if (user_type && user_type !== "all" && user_id && user_id !== "all") {
+      if (user_type === "marketing") {
+        query += ` AND s.sale_type = 'marketing' AND u.user_id = ?`;
+        queryParams.push(user_id);
+      } else if (user_type === "customer") {
+        query += ` AND s.sale_type != 'marketing' AND c.id = ?`;
+        queryParams.push(user_id);
+      }
     }
-
     query += ` ORDER BY f.DateofTransaction DESC`;
 
     const [result] = await pool.query(query, queryParams);
