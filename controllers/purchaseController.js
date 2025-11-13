@@ -805,3 +805,24 @@ exports.getTransactionTypes = async (req, res) => {
       .json({ error: "Database error while fetching transaction types" });
   }
 };
+
+
+// Delete purchase
+exports.deletePurchase = async (req, res) => {
+  try {
+    const { purchase_id } = req.body;
+    if (!purchase_id)
+      return res.status(400).json({ error: "Purchase Id is required" });
+
+    const [result] = await pool.query(
+      "UPDATE `purchase` SET `isActive` = 0 WHERE `id`=?",
+      [purchase_id]
+    );
+    res.json({
+      message: "Purchase deleted successfully",
+      purchase_id: result.insertId,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Database error" });
+  }
+};
