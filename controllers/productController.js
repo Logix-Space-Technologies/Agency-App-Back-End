@@ -10,6 +10,7 @@ exports.updateProduct = async (req, res) => {
             category_id,
             brand_id,
             mrp,
+            hsn_code,
             description,
             expiry_date,
             product_image
@@ -22,9 +23,9 @@ exports.updateProduct = async (req, res) => {
         // Update product table only
         await pool.query(
             `UPDATE products 
-             SET product_name = ?,category_id= ?,brand_id= ?, mrp = ?, description = ?, expiry_date = ?, product_image = ?
+             SET product_name = ?,category_id= ?,brand_id= ?, hsn_code=?, mrp = ?, description = ?, expiry_date = ?, product_image = ?
              WHERE product_id = ? AND isActive = 1`,
-            [product_name,category_id,brand_id, mrp, description, expiry_date, product_image, product_id]
+            [product_name,category_id,brand_id, hsn_code, mrp, description, expiry_date, product_image, product_id]
         );
 
         res.json({ message: 'Product details updated successfully' });
@@ -40,7 +41,7 @@ exports.updateProduct = async (req, res) => {
 //get all products
 exports.getProduct = async (req, res) => {
     try {
-        const [products] = await pool.query('SELECT p.product_id, product_name, c.category_name,c.category_id, p.mrp,b.brand_name,b.brand_id, pp.marketing_selling_price,pp.direct_selling_price, description, expiry_date, product_image, created_at FROM products p join categories c on c.category_id=p.category_id join brands b on b.brand_id=p.brand_id  JOIN product_prices pp ON pp.product_id=p.product_id  WHERE p.isActive = 1 and pp.isActive=1');
+        const [products] = await pool.query('SELECT p.product_id, product_name, c.category_name,c.category_id, p.mrp, p.hsn_code, b.brand_name,b.brand_id, pp.marketing_selling_price,pp.direct_selling_price, description, expiry_date, product_image, created_at FROM products p join categories c on c.category_id=p.category_id join brands b on b.brand_id=p.brand_id  JOIN product_prices pp ON pp.product_id=p.product_id  WHERE p.isActive = 1 and pp.isActive=1');
         res.json(products);
 
 
@@ -55,6 +56,7 @@ exports.addProduct = async (req, res) => {
             product_name,
             category_id,
             brand_id,
+            hsn_code,
             mrp,
             description,
             expiry_date,
@@ -67,9 +69,9 @@ exports.addProduct = async (req, res) => {
 
         // Insert into products
         const [productResult] = await pool.query(
-            `INSERT INTO products (product_name, category_id, brand_id, mrp, description, expiry_date, product_image)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [product_name, category_id, brand_id, mrp, description, expiry_date, product_image]
+            `INSERT INTO products (product_name, category_id, brand_id, hsn_code, mrp, description, expiry_date, product_image)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [product_name, category_id, brand_id, hsn_code, mrp, description, expiry_date, product_image]
         );
 
         const product_id = productResult.insertId;
@@ -128,7 +130,7 @@ exports.searchProduct = async (req, res) => {
         const searchTerm = `%${product_name}%`;
 
         const [result] = await pool.query(
-            `SELECT p.product_id, p.product_name, c.category_name,c.category_id,b.brand_id, b.brand_name, p.mrp, p.description, p.expiry_date, p.product_image, p.created_at
+            `SELECT p.product_id, p.product_name, c.category_name,c.category_id,b.brand_id, b.brand_name, p.mrp, p.hsn_code, p.description, p.expiry_date, p.product_image, p.created_at
             FROM products p
             JOIN categories c ON c.category_id = p.category_id
             JOIN brands b ON b.brand_id = p.brand_id
