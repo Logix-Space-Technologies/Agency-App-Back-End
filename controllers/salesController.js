@@ -567,7 +567,7 @@ exports.addDirectSales = async (req, res) => {
     const sale_tracking_id = generateUniqueSaleTrackingId();
     const isGstBilling = !!customer?.gst_number;
 
-    await connection.query(
+     const [insertResult]  = await connection.query(
       `INSERT INTO final_sale ( sale_tracking_Id, TotalAmount, UserId, DateofTransaction, addedDate, isSettled, AmountPaid, isGstBilling, isActive)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
@@ -580,6 +580,28 @@ exports.addDirectSales = async (req, res) => {
         amountPayingNow,
         isGstBilling
       ]
+    );
+    const insertedId = insertResult.insertId;
+
+  // 2. UPDATE invoiceNumber
+    const [updateResult] = await connection.query(
+      `UPDATE final_sale
+      SET invoiceNumber = CONCAT(
+          'SK',
+          DATE_FORMAT(DateofTransaction, '%Y%m'),
+          LPAD(id, 5, '0')
+      )
+      WHERE id = ?`,
+      [insertedId]
+    );
+
+    if (updateResult.affectedRows === 0) {
+    throw new Error("Invoice number update failed for ID " + insertedId);
+  }
+
+  const [finalSaleRecord] = await connection.query(
+      `SELECT invoiceNumber FROM final_sale WHERE sale_tracking_Id = ?`,
+      [sale_tracking_id]
     );
 
      if (parseFloat(amountPayingNow) > 0) {
@@ -710,7 +732,7 @@ exports.addDirectSales = async (req, res) => {
 
     res
       .status(201)
-      .json({ message: "Direct sales recorded with customer info" });
+      .json({ message: "Direct sales recorded with customer info",finalSaleRecord:finalSaleRecord });
   } catch (err) {
     await connection.rollback();
     connection.release();
@@ -923,7 +945,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         month: "2-digit",
         day: "2-digit",
       }).format(current_date);
-    await pool.query(
+    const [insertResult] = await pool.query(
       `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction, addedDate, 
              isSettled, AmountPaid)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -940,6 +962,25 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         amount_paid,
       ]
     );
+
+    const insertedId = insertResult.insertId;
+
+  // 2. UPDATE invoiceNumber
+  const [updateResult] = await pool.query(
+    `UPDATE final_sale
+     SET invoiceNumber = CONCAT(
+         'SK',
+         DATE_FORMAT(DateofTransaction, '%Y%m'),
+         LPAD(id, 5, '0')
+     )
+     WHERE id = ?`,
+    [insertedId]
+  );
+
+  if (updateResult.affectedRows === 0) {
+    throw new Error("Invoice number update failed for ID " + insertedId);
+  }
+
 
     console.log("Final Sale Completed !!! ");
 
@@ -1107,7 +1148,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
     );
 
     const [finalSaleRecord] = await pool.query(
-      `SELECT AmountPaid, TotalAmount FROM final_sale WHERE sale_tracking_Id = ?`,
+      `SELECT AmountPaid, TotalAmount, invoiceNumber FROM final_sale WHERE sale_tracking_Id = ?`,
       [sale_tracking_id]
     );
 
@@ -1120,7 +1161,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       // const isSettledItemNew = amount_paid >= (amount_received - totalDeductions) ? 1 : 0;
     }
 
-    res.json({ message: "Sales added successfully", sales: salesResults });
+    res.json({ message: "Sales added successfully", sales: salesResults,finalSaleRecord: finalSaleRecord });
   } catch (error) {
     console.error("Error in addSales:", error);
     res.status(500).json({ error: "Database error" });
@@ -1402,7 +1443,7 @@ exports.fetchSalesDataForPrintByID = async (req, res) => {
     let { allocationID } = req.body;
     // Step 1: Get final sale data
     const [finalSalerows] = await pool.query(
-      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses` FROM `final_sale` WHERE  `id` = ? AND `isActive` = 1",
+      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses`, `invoiceNumber` FROM `final_sale` WHERE  `id` = ? AND `isActive` = 1",
       [allocationID]
     );
 
@@ -1560,7 +1601,7 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
     console.log(allocationID);
     // Step 1: Get final sale data
     const [finalSalerows] = await pool.query(
-      "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`,  DATE_FORMAT(final_sale.DateofTransaction, '%Y-%m-%d') AS DateofTransaction, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile, C.GstNumber  FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ? AND final_sale.isActive = 1",
+      "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`,  DATE_FORMAT(final_sale.DateofTransaction, '%Y-%m-%d') AS DateofTransaction, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile, C.GstNumber, invoiceNumber FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ? AND final_sale.isActive = 1",
       [allocationID]
     );
 
