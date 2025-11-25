@@ -521,7 +521,7 @@ exports.addDirectSales = async (req, res) => {
   const { cash = 0, card = 0, upi = 0 } = payment_breakdown;
 
 
-  const { id, name, place, mobile, email, date, amount_paying_now, gst_number } = customer;
+  const { id, name, place, mobile, email, date, invoiceNumber, amount_paying_now, gst_number } = customer;
   const sale_type = req.body.saleType;
   const current_date = new Date();
   const added_date = new Intl.DateTimeFormat("en-CA", {
@@ -568,10 +568,11 @@ exports.addDirectSales = async (req, res) => {
     const isGstBilling = !!customer?.gst_number;
 
      const [insertResult]  = await connection.query(
-      `INSERT INTO final_sale ( sale_tracking_Id, TotalAmount, UserId, DateofTransaction, addedDate, isSettled, AmountPaid, isGstBilling, isActive)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO final_sale ( sale_tracking_Id, invoiceNumber, TotalAmount, UserId, DateofTransaction, addedDate, isSettled, AmountPaid, isGstBilling, isActive)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         sale_tracking_id,
+        invoiceNumber,
         totalAmount,
         customer_id,
         date,
@@ -581,28 +582,29 @@ exports.addDirectSales = async (req, res) => {
         isGstBilling
       ]
     );
-    const insertedId = insertResult.insertId;
+  //  commented on removing dynamic invoice number 
+  //   const insertedId = insertResult.insertId;
 
-  // 2. UPDATE invoiceNumber
-    const [updateResult] = await connection.query(
-      `UPDATE final_sale
-      SET invoiceNumber = CONCAT(
-          'SK',
-          DATE_FORMAT(DateofTransaction, '%Y%m'),
-          LPAD(id, 5, '0')
-      )
-      WHERE id = ?`,
-      [insertedId]
-    );
+  // // 2. UPDATE invoiceNumber
+  //   const [updateResult] = await connection.query(
+  //     `UPDATE final_sale
+  //     SET invoiceNumber = CONCAT(
+  //         'SK',
+  //         DATE_FORMAT(DateofTransaction, '%Y%m'),
+  //         LPAD(id, 5, '0')
+  //     )
+  //     WHERE id = ?`,
+  //     [insertedId]
+  //   );
 
-    if (updateResult.affectedRows === 0) {
-    throw new Error("Invoice number update failed for ID " + insertedId);
-  }
+  //   if (updateResult.affectedRows === 0) {
+  //   throw new Error("Invoice number update failed for ID " + insertedId);
+  // }
 
-  const [finalSaleRecord] = await connection.query(
-      `SELECT invoiceNumber FROM final_sale WHERE sale_tracking_Id = ?`,
-      [sale_tracking_id]
-    );
+  // const [finalSaleRecord] = await connection.query(
+  //     `SELECT invoiceNumber FROM final_sale WHERE sale_tracking_Id = ?`,
+  //     [sale_tracking_id]
+  //   );
 
      if (parseFloat(amountPayingNow) > 0) {
       await pool.query(
@@ -732,7 +734,9 @@ exports.addDirectSales = async (req, res) => {
 
     res
       .status(201)
-      .json({ message: "Direct sales recorded with customer info",finalSaleRecord:finalSaleRecord });
+      //commented on removing dynamic invoice number
+      //.json({ message: "Direct sales recorded with customer info",finalSaleRecord:finalSaleRecord });
+      .json({ message: "Direct sales recorded with customer info"});
   } catch (err) {
     await connection.rollback();
     connection.release();
@@ -2280,3 +2284,69 @@ exports.getUserwiseDetailsForPrint = async (req, res) => {
     res.status(500).json({ error: "Database error" });
   }
 };
+
+exports.checkInvoiceExists = async (req, res) => {
+  try {
+   const { invoiceNumber} = req.body;
+    const [rows] = await pool.query(
+      `
+      SELECT invoiceNumber 
+      FROM final_sale 
+      WHERE invoiceNumber = ?
+      LIMIT 1
+      `,
+      [invoiceNumber]
+    );
+    console.log(rows)
+    if (rows.length > 0) {
+      return res.json({ exists: true });
+    } else {
+      return res.json({ exists: false });
+    }
+
+  } catch (err) {
+    console.error("Error checking invoice:", err);
+    res.status(500).json({ error: "Database error" });
+
+  }
+
+  
+};
+
+exports.getLastInvoiceNum = async (req, res) => {
+  try {
+
+   const [[nonGst]] = await pool.query(
+      `
+      SELECT invoiceNumber 
+      FROM final_sale 
+      WHERE isGstBilling = 0 
+      ORDER BY id DESC 
+      LIMIT 1
+      `
+    );
+
+    const [[gst]] = await pool.query(
+      `
+      SELECT invoiceNumber 
+      FROM final_sale 
+      WHERE isGstBilling = 1 
+      ORDER BY id DESC 
+      LIMIT 1
+      `
+    );
+     return res.json( {
+      lastNonGstInvoice: nonGst ? nonGst.invoiceNumber : null,
+      lastGstInvoice: gst ? gst.invoiceNumber : null
+    });
+
+  } catch (err) {
+    console.error("Error checking invoice:", err);
+    res.status(500).json({ error: "Database error" });
+
+  }
+
+  
+};
+
+
