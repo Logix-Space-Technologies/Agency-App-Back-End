@@ -257,3 +257,52 @@ exports.damagedProductSearch = async (req, res) => {
     res.status(500).json({ error: "Database error" });
   }
 };
+
+exports.addMiscDamagedProduct = async (req, res) => {
+  try {
+    const { productId, productName,damagedQty,damagedRefund,damagedReplace,loggedInUserId } = req.body;
+    console.log(req.body);
+
+    if (!productId) {
+      return res.status(400).json({ error: "Product ID is required" });
+    }
+
+    const sql = "INSERT INTO `miscellaneous_damage` (`product_id`, `quantity`, `addedDate`, `addedBy`, `isActive`) VALUES (?,?,NOW(),?,1)";
+    const [result] = await pool.query(sql, [productId, damagedQty,loggedInUserId ]);
+
+    const updatesql = "UPDATE stock SET Damage_Qty = Damage_Qty + ?, modified_date = NOW() WHERE product_id = ?";
+    await pool.query(updatesql, [damagedQty,productId]);
+
+    res.json({
+      message: "Misc damaged quantity added successfully",
+      brand_id: result.insertId,
+    });
+  } catch (error) {
+    console.log(error)
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+exports.getMiscDamagedProduct = async (req, res) => {
+  try {
+    const { productId} = req.body;
+    console.log(req.body);
+
+    if (!productId) {
+      return res.status(400).json({ error: "Product ID is required" });
+    }
+
+    const sql = "SELECT  * FROM `miscellaneous_damage` WHERE product_id = ?";
+    const [result] = await pool.query(sql, [productId]);
+    console.log(result)
+
+
+    res.json({
+      message: "Misc damaged quantity added successfully",
+      details: result,
+    });
+  } catch (error) {
+    console.log(error)
+    res.status(500).json({ error: "Database error" });
+  }
+};
