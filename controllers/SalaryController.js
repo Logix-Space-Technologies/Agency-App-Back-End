@@ -92,8 +92,9 @@ exports.getAllMarketingStaff = async (req, res) => {
 
 exports.addUserSalary = async (req, res) => {
   try {
-    const { staff, month, year, date, amount, remarks } = req.body;
-    const now = new Date();
+    const { staff, month, year, date, amount, remarks, loggedInUserId} = req.body;
+    // Create IST time manually
+    const istDate = new Date(new Date().getTime() + (5.5 * 60 * 60 * 1000));
     if (!staff || !amount) {
       return res
         .status(400)
@@ -112,8 +113,8 @@ exports.addUserSalary = async (req, res) => {
     } else {
       // Insert user salary
       const [result] = await pool.query(
-        "INSERT into `Salary` (`UserId`, `Date`, `Amount`, `Remarks`, `AddedDate`, `Month`, `Year`) VALUES (?, now(), ?, ?, ?, ?,?)",
-        [staff, amount, remarks, date, month, year]
+        "INSERT into `Salary` (`UserId`, `Date`, `Amount`, `Remarks`, `AddedDate`, `Month`, `Year`, `addedBy`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [staff, istDate, amount, remarks, date, month, year, loggedInUserId]
       );
 
       res.json({
@@ -133,9 +134,9 @@ exports.updateStaffSalary = async (req, res) => {
     console.log(req.body);
     console.log(AddedDate);
     const formattedDate = AddedDate.split("T")[0];
-    console.log(formattedDate);
-
-    const now = new Date();
+    console.log(formattedDate); 
+    const istDate = new Date(new Date().getTime() + (5.5 * 60 * 60 * 1000));
+//    const now = new Date();
     if (!id || !Amount) {
       return res
         .status(400)
@@ -143,8 +144,8 @@ exports.updateStaffSalary = async (req, res) => {
     }
 
     const [result] = await pool.query(
-      "UPDATE `Salary` SET `Date` = NOW(), `Amount` = ?, `Remarks` = ?, `AddedDate` = ?, `Month` = ?, `Year` = ? WHERE `id` = ?",
-      [Amount, Remarks, formattedDate, Month, Year, id]
+      "UPDATE `Salary` SET `modified` = ?, `Amount` = ?, `Remarks` = ?, `AddedDate` = ?, `Month` = ?, `Year` = ? WHERE `id` = ?",
+      [istDate, Amount, Remarks, formattedDate, Month, Year, id]
     );
 
     res.json({
@@ -164,8 +165,8 @@ exports.searchUserSalaryDetails = async (req, res) => {
       return res.status(400).json({ error: "User data is required" });
 
     const [result] = await pool.query(
-      `SELECT u.name,s.UserId, s.id,s.Amount, s.Month, s.Year, DATE_FORMAT(s.AddedDate, '%Y-%m-%d') AS AddedDate,s.Remarks FROM Salary s JOIN users u ON s.UserId= u.user_id WHERE  (u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR u.Place_Of_Allocation LIKE ?) AND u.isActive = 1`,
-      [`%${user_data}%`, `%${user_data}%`, `%${user_data}%`, `%${user_data}%`]
+       "SELECT u.name,s.UserId, s.id,s.Amount, s.Month, s.Year, DATE_FORMAT(s.AddedDate, '%Y-%m-%d') AS AddedDate,s.Remarks FROM Salary s JOIN users u ON s.UserId= u.user_id WHERE s.UserId = ? AND u.isActive = 1 ORDER BY s.id DESC",
+      [user_id]
     );
 
     res.json(result);
