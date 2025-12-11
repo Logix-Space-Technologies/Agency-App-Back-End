@@ -171,3 +171,60 @@ exports.deleteStock = async (req, res) => {
         res.status(500).json({ error: 'Database error' });
     }
 }
+
+
+exports.stockHistory = async (req, res) => {
+  try {
+    const { product_id, fromDate, toDate } = req.body;
+    //console.log(req.body);
+
+    // --- Product is mandatory ---
+    if (!product_id) {
+      return res.status(400).json({ error: "product_id is required" });
+    }
+
+    // Base query
+    let query = `
+      SELECT 
+        h.stock_History_Id,
+        h.stock_Id,
+        h.Qty,
+        h.stock_type,
+        h.AddedDate,
+        h.AddedBy,
+        h.CreditOrDebit,
+        h.ReferenceInvoiceOrSale,
+        s.quantity,
+        s.Damage_Qty,
+        s.Loss_Qty
+      FROM stock_history h
+      JOIN stock s ON h.stock_Id = s.stock_id
+      WHERE s.product_id = ?
+        AND s.isActive = 1
+    `;
+
+    const queryParams = [product_id];
+
+    // --- Optional Date Range ---
+    if (fromDate && toDate) {
+      query += ` AND DATE(h.AddedDate) BETWEEN ? AND ?`;
+      queryParams.push(fromDate, toDate);
+    }
+
+    // Order results
+    query += ` ORDER BY h.AddedDate DESC`;
+
+    //console.log(query);
+    //console.log(queryParams);
+
+
+    // Execute
+    const [result] = await pool.query(query, queryParams);
+
+    res.json(result);
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
