@@ -142,7 +142,7 @@ exports.getAllocationByProductAndDate = async (req, res) => {
             FROM daily_stock_allocation dsa
             JOIN products p ON dsa.product_id = p.product_id
             JOIN users u ON dsa.marketing_staff_id = u.user_id
-            WHERE dsa.product_id = ? AND dsa.date = ? AND dsa.converted_to_sales =0
+            WHERE dsa.product_id = ? AND dsa.date = ? AND dsa.converted_to_sales = 0 AND dsa.isActive = 1 
         `, [product_id, date]);
 
         // 2. Sales details
