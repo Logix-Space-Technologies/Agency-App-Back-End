@@ -197,7 +197,7 @@ exports.stockHistory = async (req, res) => {
         s.quantity,
         s.Damage_Qty,
         s.Loss_Qty
-      FROM stock_history h
+      FROM stock_History h
       JOIN stock s ON h.stock_Id = s.stock_id
       WHERE s.product_id = ?
         AND s.isActive = 1
