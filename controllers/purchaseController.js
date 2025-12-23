@@ -91,6 +91,9 @@ exports.createEnhancedPurchase = async (req, res) => {
         ]
       );
 
+      const purchaseId = purchaseResult.insertId;
+
+
       // Handle stock updates based on purchase type
       if (isReplacement) {
         // For replacements, reduce damaged quantity
@@ -128,8 +131,8 @@ exports.createEnhancedPurchase = async (req, res) => {
       await connection.execute(
         `INSERT INTO stock_History (
                     stock_Id, Qty, stock_type, AddedDate, AddedBy,
-                    CreditOrDebit, ReferenceInvoiceOrSale
-                ) VALUES (?, ?, ?, NOW(), ?, ?, ?)`,
+                    CreditOrDebit, ReferenceInvoiceOrSale, purchase_id
+                ) VALUES (?, ?, ?, NOW(), ?, ?, ?,?)`,
         [
           productId,
           quantity,
@@ -137,6 +140,7 @@ exports.createEnhancedPurchase = async (req, res) => {
           0,
           isReplacement || isDamaged ? "Debit" : "Credit",
           invoiceNumber,
+          purchaseId
         ]
       );
     }
@@ -474,6 +478,7 @@ exports.getAllPurchases = async (req, res) => {
     const [purchases] = await pool.execute(`
             SELECT
                 pr.product_name,
+                pr.product_id,
                 p.purchase_date,
                 p.purchase_price,
                 p.total_amount,
@@ -516,6 +521,7 @@ exports.getAllPurchasesByValues = async (req, res) => {
     const queryParams = [];
     let query = `SELECT
                 pr.product_name,
+                pr.product_id,
                 p.purchase_date,
                 p.purchase_price,
                 p.total_amount,
@@ -810,19 +816,49 @@ exports.getTransactionTypes = async (req, res) => {
 // Delete purchase
 exports.deletePurchase = async (req, res) => {
   try {
-    const { purchase_id } = req.body;
-    if (!purchase_id)
-      return res.status(400).json({ error: "Purchase Id is required" });
+    const { purchase_id, product_id, quantity } = req.body;
 
-    const [result] = await pool.query(
-      "UPDATE `purchase` SET `isActive` = 0 WHERE `id`=?",
+    if (!purchase_id || !product_id || !quantity) {
+      return res.status(400).json({
+        error: "purchase_id, product_id and quantity are required",
+      });
+    }
+
+    await connection.beginTransaction();
+
+    // 1️⃣ Soft delete purchase
+    const [purchaseResult] = await connection.execute(
+      "UPDATE purchase SET isActive = 0 WHERE id = ?",
       [purchase_id]
     );
+
+    if (purchaseResult.affectedRows === 0) {
+      throw new Error("Purchase not found");
+    }
+
+    // 2️⃣ Reduce stock quantity
+    await connection.execute(
+      "UPDATE stock SET quantity = quantity - ? WHERE product_id = ?",
+      [quantity, product_id]
+    );
+
+    // 3️⃣ Delete stock history for this purchase
+    await connection.execute(
+      "DELETE FROM stock_history WHERE purchase_id = ?",
+      [purchase_id]
+    );
+
+    await connection.commit();
+
     res.json({
       message: "Purchase deleted successfully",
-      purchase_id: result.insertId,
+      purchase_id,
     });
   } catch (error) {
+    await connection.rollback();
+    console.error(error);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    connection.release();
   }
 };
