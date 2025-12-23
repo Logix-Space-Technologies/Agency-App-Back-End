@@ -844,7 +844,7 @@ exports.deletePurchase = async (req, res) => {
 
     // 3️⃣ Delete stock history for this purchase
     await connection.execute(
-      "DELETE FROM stock_history WHERE purchase_id = ?",
+      "DELETE FROM stock_History WHERE purchase_id = ?",
       [purchase_id]
     );
 
