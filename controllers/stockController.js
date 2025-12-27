@@ -53,6 +53,7 @@ exports.viewAllStocks = async (req, res) => {
 
 
 const query = `
+
 SELECT 
     p.product_id,
     p.product_name,
@@ -62,7 +63,7 @@ SELECT
     s.stock_id,
     s.quantity AS stock_quantity,
 
-    -- Damage reporting
+    -- Damage (reporting only)
     COALESCE(MAX(sd_today.today_damage_qty), 0) AS today_damage_qty,
     COALESCE(MAX(sd_total.total_damage_qty), 0) AS total_damage_qty,
 
@@ -76,10 +77,9 @@ SELECT
 
     COALESCE(SUM(dsa.allocated_quantity), 0) AS allocated_stock,
 
-    -- ✅ Current stock (subtract TOTAL damage)
+    -- ✅ EXACT SAME LOGIC AS ORIGINAL QUERY
     s.quantity
-      - COALESCE(SUM(dsa.allocated_quantity), 0)
-      - COALESCE(MAX(sd_total.total_damage_qty), 0) AS current_stock
+      - COALESCE(SUM(dsa.allocated_quantity), 0) AS current_stock
 
 FROM stock s
 JOIN products p ON s.product_id = p.product_id
@@ -123,6 +123,7 @@ GROUP BY
     c.category_name
 
 ORDER BY current_stock DESC;
+
 
 
     `
