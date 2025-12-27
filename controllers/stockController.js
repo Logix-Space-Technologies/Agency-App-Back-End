@@ -63,11 +63,15 @@ SELECT
     s.stock_id,
     s.quantity AS stock_quantity,
 
-    -- Damage (reporting only)
-    COALESCE(MAX(sd_today.today_damage_qty), 0) AS today_damage_qty,
-    COALESCE(MAX(sd_total.total_damage_qty), 0) AS total_damage_qty,
-
+    -- Original stock-affecting fields
+    COALESCE(s.Damage_Qty, 0) AS Damage_Qty,
     COALESCE(s.Loss_Qty, 0) AS Loss_Qty,
+
+    -- ✅ Today’s damage (DISPLAY ONLY)
+    COALESCE(MAX(sd_today.today_damage_qty), 0) AS today_damage_qty,
+
+    -- (Optional) total sales damage – display only
+    COALESCE(MAX(sd_total.total_damage_qty), 0) AS total_damage_qty,
 
     pp.price_id,
     COALESCE(pp.purchase_price, 0) AS purchase_price,
@@ -77,20 +81,22 @@ SELECT
 
     COALESCE(SUM(dsa.allocated_quantity), 0) AS allocated_stock,
 
-    -- ✅ EXACT SAME LOGIC AS ORIGINAL QUERY
+    -- 🔒 EXACT SAME STOCK LOGIC AS ORIGINAL QUERY
     s.quantity
-      - COALESCE(SUM(dsa.allocated_quantity), 0) AS current_stock
+      - COALESCE(SUM(dsa.allocated_quantity), 0)
+      - COALESCE(s.Damage_Qty, 0) AS current_stock
 
 FROM stock s
 JOIN products p ON s.product_id = p.product_id
 JOIN product_prices pp ON s.price_id = pp.price_id
 LEFT JOIN categories c ON p.category_id = c.category_id
 
-LEFT JOIN daily_stock_allocation dsa
-    ON s.product_id = dsa.product_id
-    AND dsa.converted_to_sales = 0
+LEFT JOIN daily_stock_allocation dsa 
+    ON s.product_id = dsa.product_id 
+    AND dsa.converted_to_sales = 0 
     AND dsa.isActive = 1
 
+-- 🔹 Today’s damage (DISPLAY ONLY)
 LEFT JOIN (
     SELECT 
         product_id,
@@ -101,6 +107,7 @@ LEFT JOIN (
     GROUP BY product_id
 ) sd_today ON sd_today.product_id = s.product_id
 
+-- 🔹 Total damage from sales (DISPLAY ONLY)
 LEFT JOIN (
     SELECT 
         product_id,
@@ -117,6 +124,7 @@ GROUP BY
     p.product_id,
     pp.price_id,
     s.quantity,
+    s.Damage_Qty,
     s.Loss_Qty,
     p.product_name,
     p.category_id,
