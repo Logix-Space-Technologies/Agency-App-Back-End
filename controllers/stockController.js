@@ -63,8 +63,13 @@ SELECT
     s.stock_id,
     s.quantity AS stock_quantity,
 
-    -- Original stock-affecting fields
-    COALESCE(s.Damage_Qty, 0) AS Damage_Qty,
+    COALESCE(sd_today.today_damage_qty, 0) AS today_damage_qty,
+    COALESCE(sd_total.total_damage_qty, 0) AS total_damage_qty,
+
+    -- Loss
+    COALESCE(sl_today.today_loss_qty, 0) AS today_loss_qty,
+    COALESCE(sl_total.total_loss_qty, 0) AS total_loss_qty,
+
     COALESCE(s.Loss_Qty, 0) AS Loss_Qty,
 
     -- ✅ Today’s damage (DISPLAY ONLY)
@@ -81,10 +86,11 @@ SELECT
 
     COALESCE(SUM(dsa.allocated_quantity), 0) AS allocated_stock,
 
-    -- 🔒 EXACT SAME STOCK LOGIC AS ORIGINAL QUERY
+    -- Current stock (subtract ONLY today's damage & loss)
     s.quantity
-      - COALESCE(SUM(dsa.allocated_quantity), 0)
-      - COALESCE(s.Damage_Qty, 0) AS current_stock
+    - COALESCE(SUM(dsa.allocated_quantity), 0)
+    - COALESCE(sd_today.today_damage_qty, 0)
+    - COALESCE(sl_today.today_loss_qty, 0) AS current_stock
 
 FROM stock s
 JOIN products p ON s.product_id = p.product_id
@@ -96,7 +102,7 @@ LEFT JOIN daily_stock_allocation dsa
     AND dsa.converted_to_sales = 0 
     AND dsa.isActive = 1
 
--- 🔹 Today’s damage (DISPLAY ONLY)
+-- TODAY DAMAGE
 LEFT JOIN (
     SELECT 
         product_id,
@@ -107,7 +113,7 @@ LEFT JOIN (
     GROUP BY product_id
 ) sd_today ON sd_today.product_id = s.product_id
 
--- 🔹 Total damage from sales (DISPLAY ONLY)
+-- TOTAL DAMAGE
 LEFT JOIN (
     SELECT 
         product_id,
@@ -116,6 +122,27 @@ LEFT JOIN (
     WHERE isActive = 1
     GROUP BY product_id
 ) sd_total ON sd_total.product_id = s.product_id
+
+-- TODAY LOSS
+LEFT JOIN (
+    SELECT 
+        product_id,
+        SUM(loss_count) AS today_loss_qty
+    FROM sales
+    WHERE isActive = 1
+      AND sale_date = CURDATE()
+    GROUP BY product_id
+) sl_today ON sl_today.product_id = s.product_id
+
+-- TOTAL LOSS
+LEFT JOIN (
+    SELECT 
+        product_id,
+        SUM(loss_count) AS total_loss_qty
+    FROM sales
+    WHERE isActive = 1
+    GROUP BY product_id
+) sl_total ON sl_total.product_id = s.product_id
 
 WHERE s.isActive = 1
 
