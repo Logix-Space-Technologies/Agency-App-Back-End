@@ -52,7 +52,9 @@ exports.viewAllStocks = async (req, res) => {
 //         `;
 
 
-const query = `SELECT 
+const query = `
+
+SELECT 
     p.product_id,
     p.product_name,
     p.category_id,
@@ -61,7 +63,6 @@ const query = `SELECT
     s.stock_id,
     s.quantity AS stock_quantity,
 
-    -- Damage
     COALESCE(sd_today.today_damage_qty, 0) AS today_damage_qty,
     COALESCE(sd_total.total_damage_qty, 0) AS total_damage_qty,
 
@@ -70,6 +71,12 @@ const query = `SELECT
     COALESCE(sl_total.total_loss_qty, 0) AS total_loss_qty,
 
     COALESCE(s.Loss_Qty, 0) AS Loss_Qty,
+
+    -- ✅ Today’s damage (DISPLAY ONLY)
+    COALESCE(MAX(sd_today.today_damage_qty), 0) AS today_damage_qty,
+
+    -- (Optional) total sales damage – display only
+    COALESCE(MAX(sd_total.total_damage_qty), 0) AS total_damage_qty,
 
     pp.price_id,
     COALESCE(pp.purchase_price, 0) AS purchase_price,
@@ -90,9 +97,9 @@ JOIN products p ON s.product_id = p.product_id
 JOIN product_prices pp ON s.price_id = pp.price_id
 LEFT JOIN categories c ON p.category_id = c.category_id
 
-LEFT JOIN daily_stock_allocation dsa
-    ON s.product_id = dsa.product_id
-    AND dsa.converted_to_sales = 0
+LEFT JOIN daily_stock_allocation dsa 
+    ON s.product_id = dsa.product_id 
+    AND dsa.converted_to_sales = 0 
     AND dsa.isActive = 1
 
 -- TODAY DAMAGE
@@ -144,12 +151,16 @@ GROUP BY
     p.product_id,
     pp.price_id,
     s.quantity,
+    s.Damage_Qty,
     s.Loss_Qty,
     p.product_name,
     p.category_id,
     c.category_name
 
 ORDER BY current_stock DESC;
+
+
+
     `
 ;
 
