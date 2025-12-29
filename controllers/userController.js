@@ -213,12 +213,19 @@ exports.editUser = async (req, res) => {
       role,
       phone,
       email,
+      password,
+      password_hash,
       Place_Of_Allocation,
+      loggedInUserId
     } = req.body;
 
     if (!user_id) {
       return res.status(400).json({ error: "User ID is required" });
     }
+
+    // Hash the password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
 
     const query = `
             UPDATE users 
@@ -226,8 +233,11 @@ exports.editUser = async (req, res) => {
                 name = ?, 
                 role = ?, 
                 phone = ?, 
-                email = ?, 
-                Place_Of_Allocation = ? 
+                email = ?,
+                password_hash = ?, 
+                Place_Of_Allocation = ?,
+                modified_date = now(),
+                addedBy = ? 
             WHERE user_id = ?
         `;
 
@@ -237,7 +247,9 @@ exports.editUser = async (req, res) => {
       role,
       phone,
       email,
+      hashedPassword,
       Place_Of_Allocation,
+      loggedInUserId,
       user_id,
     ];
 
