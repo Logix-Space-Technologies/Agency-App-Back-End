@@ -63,20 +63,15 @@ SELECT
     s.stock_id,
     s.quantity AS stock_quantity,
 
-    COALESCE(sd_today.today_damage_qty, 0) AS today_damage_qty,
-    COALESCE(sd_total.total_damage_qty, 0) AS total_damage_qty,
+    -- Damage
+    COALESCE(MAX(sd_today.today_damage_qty), 0) AS today_damage_qty,
+    COALESCE(MAX(sd_total.total_damage_qty), 0) AS total_damage_qty,
 
     -- Loss
-    COALESCE(sl_today.today_loss_qty, 0) AS today_loss_qty,
-    COALESCE(sl_total.total_loss_qty, 0) AS total_loss_qty,
+    COALESCE(MAX(sl_today.today_loss_qty), 0) AS today_loss_qty,
+    COALESCE(MAX(sl_total.total_loss_qty), 0) AS total_loss_qty,
 
     COALESCE(s.Loss_Qty, 0) AS Loss_Qty,
-
-    -- ✅ Today’s damage (DISPLAY ONLY)
-    COALESCE(MAX(sd_today.today_damage_qty), 0) AS today_damage_qty,
-
-    -- (Optional) total sales damage – display only
-    COALESCE(MAX(sd_total.total_damage_qty), 0) AS total_damage_qty,
 
     pp.price_id,
     COALESCE(pp.purchase_price, 0) AS purchase_price,
@@ -88,9 +83,9 @@ SELECT
 
     -- Current stock (subtract ONLY today's damage & loss)
     s.quantity
-    - COALESCE(SUM(dsa.allocated_quantity), 0)
-    - COALESCE(sd_today.today_damage_qty, 0)
-    - COALESCE(sl_today.today_loss_qty, 0) AS current_stock
+      - COALESCE(SUM(dsa.allocated_quantity), 0)
+      - COALESCE(MAX(sd_today.today_damage_qty), 0)
+      - COALESCE(MAX(sl_today.today_loss_qty), 0) AS current_stock
 
 FROM stock s
 JOIN products p ON s.product_id = p.product_id
