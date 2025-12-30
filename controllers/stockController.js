@@ -84,8 +84,8 @@ SELECT
     -- Current stock (subtract ONLY today's damage & loss)
     s.quantity
       - COALESCE(SUM(dsa.allocated_quantity), 0)
-      - COALESCE(MAX(sd_today.today_damage_qty), 0)
-      - COALESCE(MAX(sl_today.today_loss_qty), 0) AS current_stock
+       - COALESCE(MAX(sd_total.total_damage_qty), 0)
+  - COALESCE(MAX(sl_total.total_loss_qty), 0)  AS current_stock
 
 FROM stock s
 JOIN products p ON s.product_id = p.product_id
