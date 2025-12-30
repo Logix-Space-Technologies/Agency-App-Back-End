@@ -815,6 +815,8 @@ exports.getTransactionTypes = async (req, res) => {
 
 // Delete purchase
 exports.deletePurchase = async (req, res) => {
+  let connection;
+
   try {
     const { purchase_id, product_id, quantity } = req.body;
 
@@ -824,6 +826,8 @@ exports.deletePurchase = async (req, res) => {
       });
     }
 
+    // ✅ GET CONNECTION
+    connection = await pool.getConnection();
     await connection.beginTransaction();
 
     // 1️⃣ Soft delete purchase
@@ -854,11 +858,14 @@ exports.deletePurchase = async (req, res) => {
       message: "Purchase deleted successfully",
       purchase_id,
     });
+
   } catch (error) {
-    await connection.rollback();
-    console.error(error);
+    if (connection) await connection.rollback();
+    console.error("Delete purchase error:", error);
     res.status(500).json({ error: "Database error" });
+
   } finally {
-    connection.release();
+    if (connection) connection.release();
   }
 };
+
