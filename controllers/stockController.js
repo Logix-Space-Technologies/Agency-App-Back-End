@@ -63,58 +63,51 @@ SELECT
     s.stock_id,
     s.quantity AS stock_quantity,
 
-    /* ---------- DAMAGE & LOSS ---------- */
-    COALESCE(sa.today_damage_qty, 0) AS today_damage_qty,
-    COALESCE(sa.total_damage_qty, 0) AS total_damage_qty,
+    /* ---------- DAMAGE & LOSS FROM STOCK (AUTHORITATIVE) ---------- */
+    COALESCE(s.Damage_Qty, 0) AS Damage_Qty,
+    COALESCE(s.Loss_Qty, 0) AS Loss_Qty,
 
-    COALESCE(sa.today_loss_qty, 0) AS today_loss_qty,
-    COALESCE(sa.total_loss_qty, 0) AS total_loss_qty,
+    /* ---------- DAMAGE & LOSS FROM SALES (REPORTING) ---------- */
+    COALESCE(MAX(sa.today_damage_qty), 0) AS today_damage_qty,
+    COALESCE(MAX(sa.total_damage_qty), 0) AS total_damage_qty,
+    COALESCE(MAX(sa.today_loss_qty), 0) AS today_loss_qty,
+    COALESCE(MAX(sa.total_loss_qty), 0) AS total_loss_qty,
 
     pp.price_id,
-    COALESCE(pp.purchase_price, 0) AS purchase_price,
-    COALESCE(pp.marketing_selling_price, 0) AS marketing_selling_price,
-    COALESCE(pp.direct_selling_price, 0) AS direct_selling_price,
-    COALESCE(pp.whole_sale_price, 0) AS whole_sale_price,
+    pp.purchase_price,
+    pp.marketing_selling_price,
+    pp.direct_selling_price,
+    pp.whole_sale_price,
 
     /* ---------- ALLOCATION ---------- */
     COALESCE(SUM(dsa.allocated_quantity), 0) AS allocated_stock,
 
-    /* ---------- CURRENT STOCK ---------- */
+    /* ---------- CORRECT CURRENT STOCK ---------- */
     (
         s.quantity
         - COALESCE(SUM(dsa.allocated_quantity), 0)
-        - COALESCE(sa.total_damage_qty, 0)
-        - COALESCE(sa.total_loss_qty, 0)
+        - COALESCE(s.Damage_Qty, 0)
     ) AS current_stock
 
 FROM stock s
-JOIN products p
-    ON s.product_id = p.product_id
-JOIN product_prices pp
-    ON s.price_id = pp.price_id
-LEFT JOIN categories c
-    ON p.category_id = c.category_id
+JOIN products p ON s.product_id = p.product_id
+JOIN product_prices pp ON s.price_id = pp.price_id
+LEFT JOIN categories c ON p.category_id = c.category_id
 
-/* ---------- DAILY ALLOCATION ---------- */
 LEFT JOIN daily_stock_allocation dsa
     ON s.product_id = dsa.product_id
     AND dsa.converted_to_sales = 0
     AND dsa.isActive = 1
 
-/* ---------- SINGLE SALES AGGREGATION (FIX) ---------- */
 LEFT JOIN (
     SELECT
         product_id,
         SUM(damaged_count) AS total_damage_qty,
         SUM(loss_count) AS total_loss_qty,
-        SUM(
-            CASE WHEN sale_date = CURDATE()
-                 THEN damaged_count ELSE 0 END
-        ) AS today_damage_qty,
-        SUM(
-            CASE WHEN sale_date = CURDATE()
-                 THEN loss_count ELSE 0 END
-        ) AS today_loss_qty
+        SUM(CASE WHEN sale_date = CURDATE()
+                 THEN damaged_count ELSE 0 END) AS today_damage_qty,
+        SUM(CASE WHEN sale_date = CURDATE()
+                 THEN loss_count ELSE 0 END) AS today_loss_qty
     FROM sales
     WHERE isActive = 1
     GROUP BY product_id
@@ -131,12 +124,11 @@ GROUP BY
     c.category_name,
     pp.price_id,
     s.quantity,
-    sa.today_damage_qty,
-    sa.total_damage_qty,
-    sa.today_loss_qty,
-    sa.total_loss_qty
+    s.Damage_Qty,
+    s.Loss_Qty
 
 ORDER BY current_stock DESC;
+
 
 
 
