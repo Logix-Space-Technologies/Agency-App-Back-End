@@ -54,7 +54,7 @@ exports.viewAllStocks = async (req, res) => {
 
 const query = `
 
-SELECT 
+SELECT
     p.product_id,
     p.product_name,
     p.category_id,
@@ -63,15 +63,12 @@ SELECT
     s.stock_id,
     s.quantity AS stock_quantity,
 
-    -- Damage
-    COALESCE(MAX(sd_today.today_damage_qty), 0) AS today_damage_qty,
-    COALESCE(MAX(sd_total.total_damage_qty), 0) AS total_damage_qty,
+    /* ---------- DAMAGE & LOSS ---------- */
+    COALESCE(sa.today_damage_qty, 0) AS today_damage_qty,
+    COALESCE(sa.total_damage_qty, 0) AS total_damage_qty,
 
-    -- Loss
-    COALESCE(MAX(sl_today.today_loss_qty), 0) AS today_loss_qty,
-    COALESCE(MAX(sl_total.total_loss_qty), 0) AS total_loss_qty,
-
-    COALESCE(s.Loss_Qty, 0) AS Loss_Qty,
+    COALESCE(sa.today_loss_qty, 0) AS today_loss_qty,
+    COALESCE(sa.total_loss_qty, 0) AS total_loss_qty,
 
     pp.price_id,
     COALESCE(pp.purchase_price, 0) AS purchase_price,
@@ -79,80 +76,68 @@ SELECT
     COALESCE(pp.direct_selling_price, 0) AS direct_selling_price,
     COALESCE(pp.whole_sale_price, 0) AS whole_sale_price,
 
+    /* ---------- ALLOCATION ---------- */
     COALESCE(SUM(dsa.allocated_quantity), 0) AS allocated_stock,
 
-    -- Current stock (subtract ONLY today's damage & loss)
-    s.quantity
-      - COALESCE(SUM(dsa.allocated_quantity), 0)
-       - COALESCE(MAX(sd_total.total_damage_qty), 0)
-  - COALESCE(MAX(sl_total.total_loss_qty), 0)  AS current_stock
+    /* ---------- CURRENT STOCK ---------- */
+    (
+        s.quantity
+        - COALESCE(SUM(dsa.allocated_quantity), 0)
+        - COALESCE(sa.total_damage_qty, 0)
+        - COALESCE(sa.total_loss_qty, 0)
+    ) AS current_stock
 
 FROM stock s
-JOIN products p ON s.product_id = p.product_id
-JOIN product_prices pp ON s.price_id = pp.price_id
-LEFT JOIN categories c ON p.category_id = c.category_id
+JOIN products p
+    ON s.product_id = p.product_id
+JOIN product_prices pp
+    ON s.price_id = pp.price_id
+LEFT JOIN categories c
+    ON p.category_id = c.category_id
 
-LEFT JOIN daily_stock_allocation dsa 
-    ON s.product_id = dsa.product_id 
-    AND dsa.converted_to_sales = 0 
+/* ---------- DAILY ALLOCATION ---------- */
+LEFT JOIN daily_stock_allocation dsa
+    ON s.product_id = dsa.product_id
+    AND dsa.converted_to_sales = 0
     AND dsa.isActive = 1
 
--- TODAY DAMAGE
+/* ---------- SINGLE SALES AGGREGATION (FIX) ---------- */
 LEFT JOIN (
-    SELECT 
+    SELECT
         product_id,
-        SUM(damaged_count) AS today_damage_qty
-    FROM sales
-    WHERE isActive = 1
-      AND sale_date = CURDATE()
-    GROUP BY product_id
-) sd_today ON sd_today.product_id = s.product_id
-
--- TOTAL DAMAGE
-LEFT JOIN (
-    SELECT 
-        product_id,
-        SUM(damaged_count) AS total_damage_qty
-    FROM sales
-    WHERE isActive = 1
-    GROUP BY product_id
-) sd_total ON sd_total.product_id = s.product_id
-
--- TODAY LOSS
-LEFT JOIN (
-    SELECT 
-        product_id,
-        SUM(loss_count) AS today_loss_qty
-    FROM sales
-    WHERE isActive = 1
-      AND sale_date = CURDATE()
-    GROUP BY product_id
-) sl_today ON sl_today.product_id = s.product_id
-
--- TOTAL LOSS
-LEFT JOIN (
-    SELECT 
-        product_id,
-        SUM(loss_count) AS total_loss_qty
+        SUM(damaged_count) AS total_damage_qty,
+        SUM(loss_count) AS total_loss_qty,
+        SUM(
+            CASE WHEN sale_date = CURDATE()
+                 THEN damaged_count ELSE 0 END
+        ) AS today_damage_qty,
+        SUM(
+            CASE WHEN sale_date = CURDATE()
+                 THEN loss_count ELSE 0 END
+        ) AS today_loss_qty
     FROM sales
     WHERE isActive = 1
     GROUP BY product_id
-) sl_total ON sl_total.product_id = s.product_id
+) sa
+    ON sa.product_id = s.product_id
 
 WHERE s.isActive = 1
 
-GROUP BY 
+GROUP BY
     s.stock_id,
     p.product_id,
-    pp.price_id,
-    s.quantity,
-    s.Damage_Qty,
-    s.Loss_Qty,
     p.product_name,
     p.category_id,
-    c.category_name
+    c.category_name,
+    pp.price_id,
+    s.quantity,
+    sa.today_damage_qty,
+    sa.total_damage_qty,
+    sa.today_loss_qty,
+    sa.total_loss_qty
 
 ORDER BY current_stock DESC;
+
 
 
 
