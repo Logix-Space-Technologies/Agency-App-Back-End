@@ -475,106 +475,144 @@ exports.getReplacementHistory = async (req, res) => {
 // Get All Active Purchases with Supplier and Product Name
 exports.getAllPurchases = async (req, res) => {
   try {
-    const [purchases] = await pool.execute(`
-            SELECT
-                pr.product_name,
-                pr.product_id,
-                p.purchase_date,
-                p.purchase_price,
-                p.total_amount,
-                p.quantity,
-                p.Invoice_Number,
-                s.supplier_name,
-                p.AddedDate,
-                p.is_damaged,
-                p.damage_description,
-                p.replacement_provided,
-                p.replacement_date,
-                p.is_free_replacement,
-                p.id AS purchase_id
-            FROM
-                purchase p
-            JOIN
-                suppliers s ON p.supplier_id = s.supplier_id
-            JOIN
-                products pr ON pr.product_id = p.product_id
-            WHERE
-                p.isActive = 1 ORDER BY p.purchase_date DESC
-        `);
-    res.json(purchases);
-  } catch (error) {
-    console.error(
-      "Error fetching active purchases with supplier and product:",
-      error
+    const page = parseInt(req.body.page) || 1;
+    const limit = parseInt(req.body.limit) || 15;
+    const offset = (page - 1) * limit;
+
+    // Count query
+    const [[{ total }]] = await pool.execute(`
+      SELECT COUNT(*) AS total
+      FROM purchase
+      WHERE isActive = 1
+    `);
+
+    // Data query
+    const [purchases] = await pool.execute(
+      `
+      SELECT
+        pr.product_name,
+        pr.product_id,
+        p.purchase_date,
+        p.purchase_price,
+        p.total_amount,
+        p.quantity,
+        p.Invoice_Number,
+        s.supplier_name,
+        p.AddedDate,
+        p.is_damaged,
+        p.damage_description,
+        p.replacement_provided,
+        p.replacement_date,
+        p.is_free_replacement,
+        p.id AS purchase_id
+      FROM purchase p
+      JOIN suppliers s ON p.supplier_id = s.supplier_id
+      JOIN products pr ON pr.product_id = p.product_id
+      WHERE p.isActive = 1
+      ORDER BY p.purchase_date DESC
+      LIMIT ? OFFSET ?
+      `,
+      [limit, offset]
     );
-    res
-      .status(500)
-      .json({ error: "Database error while fetching active purchases." });
+
+    res.json({
+      data: purchases,
+      pagination: {
+        page,
+        limit,
+        totalRecords: total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching purchases:", error);
+    res.status(500).json({ error: "Database error." });
   }
 };
 
 // Get All Active Purchases with Supplier and Product Name
 exports.getAllPurchasesByValues = async (req, res) => {
   try {
-    const { supplier, product, fromDate, toDate } = req.body;
-    //console.log(req.body);
-    const queryParams = [];
-    let query = `SELECT
-                pr.product_name,
-                pr.product_id,
-                p.purchase_date,
-                p.purchase_price,
-                p.total_amount,
-                p.quantity,
-                p.Invoice_Number,
-                s.supplier_name,
-                p.AddedDate,
-                p.is_damaged,
-                p.damage_description,
-                p.replacement_provided,
-                p.replacement_date,
-                p.is_free_replacement,
-                p.id AS purchase_id
-            FROM
-                purchase p
-            JOIN
-                suppliers s ON p.supplier_id = s.supplier_id
-            JOIN
-                products pr ON pr.product_id = p.product_id
-            WHERE  p.isActive = 1
-            `;
+    const { supplier, product, fromDate, toDate, page = 1, limit = 15 } = req.body;
+    const offset = (page - 1) * limit;
+
+    let whereClause = "WHERE p.isActive = 1";
+    const params = [];
+
     if (supplier) {
-      query += " AND s.supplier_name = ?";
-      queryParams.push(supplier);
+      whereClause += " AND s.supplier_name = ?";
+      params.push(supplier);
     }
+
     if (product) {
-      query += " AND pr.product_name LIKE ?";
-      queryParams.push(`%${product}%`);
+      whereClause += " AND pr.product_name LIKE ?";
+      params.push(`%${product}%`);
     }
+
     if (fromDate && toDate) {
-      query += " AND DATE(p.purchase_date) BETWEEN ? AND ?";
-      queryParams.push(fromDate, toDate);
+      whereClause += " AND DATE(p.purchase_date) BETWEEN ? AND ?";
+      params.push(fromDate, toDate);
     } else if (fromDate) {
-      query += " AND DATE(p.purchase_date) >= ?";
-      queryParams.push(fromDate);
+      whereClause += " AND DATE(p.purchase_date) >= ?";
+      params.push(fromDate);
     } else if (toDate) {
-      query += " AND DATE(p.purchase_date) <= ?";
-      queryParams.push(toDate);
+      whereClause += " AND DATE(p.purchase_date) <= ?";
+      params.push(toDate);
     }
-     query += " ORDER BY p.purchase_date DESC";
 
-    //console.log(query,queryParams);
-    const [purchases] = await pool.query(query,queryParams)
-    res.json(purchases);
-
-  } catch (error) {
-    console.error(
-      "Error fetching active purchases with supplier and product:",
-      error
+    // Count
+    const [[{ total }]] = await pool.query(
+      `
+      SELECT COUNT(*) AS total
+      FROM purchase p
+      JOIN suppliers s ON p.supplier_id = s.supplier_id
+      JOIN products pr ON pr.product_id = p.product_id
+      ${whereClause}
+      `,
+      params
     );
-    res
-      .status(500)
-      .json({ error: "Database error while fetching active purchases." });
+
+    // Data
+    const [purchases] = await pool.query(
+      `
+      SELECT
+        pr.product_name,
+        pr.product_id,
+        p.purchase_date,
+        p.purchase_price,
+        p.total_amount,
+        p.quantity,
+        p.Invoice_Number,
+        s.supplier_name,
+        p.AddedDate,
+        p.is_damaged,
+        p.damage_description,
+        p.replacement_provided,
+        p.replacement_date,
+        p.is_free_replacement,
+        p.id AS purchase_id
+      FROM purchase p
+      JOIN suppliers s ON p.supplier_id = s.supplier_id
+      JOIN products pr ON pr.product_id = p.product_id
+      ${whereClause}
+      ORDER BY p.purchase_date DESC
+      LIMIT ? OFFSET ?
+      `,
+      [...params, parseInt(limit), offset]
+    );
+
+    res.json({
+      data: purchases,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalRecords: total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching filtered purchases:", error);
+    res.status(500).json({ error: "Database error." });
   }
 };
 
