@@ -510,9 +510,9 @@ exports.getAllPurchases = async (req, res) => {
       JOIN products pr ON pr.product_id = p.product_id
       WHERE p.isActive = 1
       ORDER BY p.purchase_date DESC
-      LIMIT ? OFFSET ?
+        LIMIT ${limit} OFFSET ${offset}
       `,
-      [limit, offset]
+ 
     );
 
     res.json({
