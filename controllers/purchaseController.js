@@ -596,7 +596,7 @@ exports.getAllPurchasesByValues = async (req, res) => {
       JOIN products pr ON pr.product_id = p.product_id
       ${whereClause}
       ORDER BY p.purchase_date DESC
-      LIMIT ? OFFSET ?
+  LIMIT ${limit} OFFSET ${offset}
       `,
       [...params, parseInt(limit), offset]
     );
