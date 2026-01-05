@@ -623,7 +623,7 @@ exports.addDirectSales = async (req, res) => {
     // );
 
     for (const item of products) {
-      const { product_id, quantity,selling_price,isPriceChanged, price_id = null } = item;
+      const { product_id, quantity,damaged_quantity,selling_price,isPriceChanged, price_id = null } = item;
 
       const [priceRows] = await pool.query(
         `SELECT price_id, direct_selling_price, whole_sale_price
@@ -650,7 +650,7 @@ exports.addDirectSales = async (req, res) => {
 
       // 3. Calculate total amount
       //const amount__ = quantity * marketing_selling_price;
-       const amount__ = quantity * selling_price;
+       const amount__ = (quantity * selling_price) - (damaged_quantity* selling_price);
 
       console.log(amount__);
 
@@ -672,7 +672,7 @@ exports.addDirectSales = async (req, res) => {
           0, // is_credit
           sale_tracking_id, // sale_tracking_Id
           date,
-          0, // damaged_count
+          damaged_quantity, // damaged_count
           isSettledItem, // is_settled
           0, // loss_count
           isPriceChanged, // selling price edited or not
@@ -688,10 +688,8 @@ exports.addDirectSales = async (req, res) => {
 
       // Update stock
       await connection.query(
-        `UPDATE stock 
-                 SET quantity = quantity - ? 
-                 WHERE  product_id = ?`,
-        [quantity, product_id]
+        `UPDATE stock SET quantity = quantity - ?, Damage_Qty= Damage_Qty + ? WHERE  product_id = ?`,
+        [quantity, damaged_quantity, product_id]
       );
 
       console.log("Price ----- ");
@@ -2348,5 +2346,61 @@ exports.getLastInvoiceNum = async (req, res) => {
 
   
 };
+
+exports.fetchCustomerCreditAmount = async (req, res) => {
+  const { customerId } = req.body;
+
+  if (!customerId) {
+    return res
+      .status(400)
+      .json({ success: false, message: "customerId is required." });
+  }
+
+  try {
+    const [rows] = await pool.query(
+      `
+      SELECT 
+        c.id AS customerId,
+        c.Name AS customerName,
+        SUM(
+          (fs.TotalAmount 
+            - fs.FuelExpenses 
+            + fs.VehcileServiceExpenses 
+            + fs.OtherExpenses
+          ) - fs.AmountPaid
+        ) AS totalCredit
+      FROM final_sale fs
+      JOIN (
+        SELECT sale_tracking_Id, MIN(sale_type) AS sale_type
+        FROM sales
+        GROUP BY sale_tracking_Id
+      ) s ON fs.sale_tracking_Id = s.sale_tracking_Id
+      JOIN Customers c ON c.id = fs.UserId
+      WHERE 
+        fs.isActive = 1
+        AND fs.isSettled = 0
+        AND s.sale_type != 'marketing'
+        AND c.id = ?
+      `,
+      [customerId]
+    );
+
+    res.json({
+      success: true,
+      data: rows[0] || {
+        customerId,
+        customerName: null,
+        totalCredit: 0,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching customer credit:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch customer credit amount",
+    });
+  }
+};
+
 
 
