@@ -38,16 +38,16 @@ exports.loginUser = async (req, res) => {
     let redirectPage = "";
     switch (user.role) {
       case "admin":
-        redirectPage = "/add-category";
+        redirectPage = "/admin-home";
         break;
       case "manager":
         redirectPage = "/manager/home";
         break;
       case "staff":
-        redirectPage = "/add-category";
+        redirectPage = "/user-home";
         break;
       case "marketing_staff":
-        redirectPage = "/add-category";
+        redirectPage = "/user-home";
         break;  
       default:
         redirectPage = "/";
