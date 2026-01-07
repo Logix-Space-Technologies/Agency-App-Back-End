@@ -73,7 +73,7 @@ SELECT
     COALESCE(MAX(sa.today_loss_qty), 0) AS today_loss_qty,
     COALESCE(MAX(sa.total_loss_qty), 0) AS total_loss_qty,
 
-    /* ---------- PRICE (ONLY ACTIVE PRICE) ---------- */
+    /* ---------- PRICE (ACTIVE PRICE ONLY, WITHOUT FILTERING STOCK) ---------- */
     pp.price_id,
     pp.purchase_price,
     pp.marketing_selling_price,
@@ -94,9 +94,9 @@ FROM stock s
 JOIN products p 
     ON s.product_id = p.product_id
 
-/* 🔒 SAFETY FIX: ONLY ACTIVE PRICE */
-JOIN product_prices pp 
-    ON s.price_id = pp.price_id
+/* ✅ IMPORTANT FIX: LEFT JOIN + isActive condition */
+LEFT JOIN product_prices pp 
+    ON pp.price_id = s.price_id
     AND pp.isActive = 1
 
 LEFT JOIN categories c 
@@ -136,12 +136,13 @@ GROUP BY
     p.product_name,
     p.category_id,
     c.category_name,
-    pp.price_id,
     s.quantity,
     s.Damage_Qty,
-    s.Loss_Qty
+    s.Loss_Qty,
+    pp.price_id
 
 ORDER BY current_stock DESC;
+
 
 
 
