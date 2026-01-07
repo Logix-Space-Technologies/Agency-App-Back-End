@@ -63,16 +63,17 @@ SELECT
     s.stock_id,
     s.quantity AS stock_quantity,
 
-    /* ---------- DAMAGE & LOSS FROM STOCK (AUTHORITATIVE) ---------- */
+    /* ---------- DAMAGE & LOSS FROM STOCK ---------- */
     COALESCE(s.Damage_Qty, 0) AS Damage_Qty,
     COALESCE(s.Loss_Qty, 0) AS Loss_Qty,
 
-    /* ---------- DAMAGE & LOSS FROM SALES (REPORTING) ---------- */
+    /* ---------- DAMAGE & LOSS FROM SALES ---------- */
     COALESCE(MAX(sa.today_damage_qty), 0) AS today_damage_qty,
     COALESCE(MAX(sa.total_damage_qty), 0) AS total_damage_qty,
     COALESCE(MAX(sa.today_loss_qty), 0) AS today_loss_qty,
     COALESCE(MAX(sa.total_loss_qty), 0) AS total_loss_qty,
 
+    /* ---------- ACTIVE PRICE (PRODUCT LEVEL) ---------- */
     pp.price_id,
     pp.purchase_price,
     pp.marketing_selling_price,
@@ -82,7 +83,7 @@ SELECT
     /* ---------- ALLOCATION ---------- */
     COALESCE(SUM(dsa.allocated_quantity), 0) AS allocated_stock,
 
-    /* ---------- CORRECT CURRENT STOCK ---------- */
+    /* ---------- CURRENT STOCK ---------- */
     (
         s.quantity
         - COALESCE(SUM(dsa.allocated_quantity), 0)
@@ -90,9 +91,16 @@ SELECT
     ) AS current_stock
 
 FROM stock s
-JOIN products p ON s.product_id = p.product_id
-JOIN product_prices pp ON s.price_id = pp.price_id
-LEFT JOIN categories c ON p.category_id = c.category_id
+JOIN products p 
+    ON s.product_id = p.product_id
+
+/* ✅ FIX: ACTIVE PRICE BY PRODUCT (NOT FILTERING STOCK) */
+LEFT JOIN product_prices pp
+    ON pp.product_id = s.product_id
+    AND pp.isActive = 1
+
+LEFT JOIN categories c 
+    ON p.category_id = c.category_id
 
 LEFT JOIN daily_stock_allocation dsa
     ON s.product_id = dsa.product_id
@@ -122,12 +130,15 @@ GROUP BY
     p.product_name,
     p.category_id,
     c.category_name,
-    pp.price_id,
     s.quantity,
     s.Damage_Qty,
-    s.Loss_Qty
+    s.Loss_Qty,
+    pp.price_id
 
 ORDER BY current_stock DESC;
+
+
+
 
 
 
