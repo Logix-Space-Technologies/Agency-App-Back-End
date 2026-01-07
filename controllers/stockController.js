@@ -73,6 +73,7 @@ SELECT
     COALESCE(MAX(sa.today_loss_qty), 0) AS today_loss_qty,
     COALESCE(MAX(sa.total_loss_qty), 0) AS total_loss_qty,
 
+    /* ---------- PRICE (ONLY ACTIVE PRICE) ---------- */
     pp.price_id,
     pp.purchase_price,
     pp.marketing_selling_price,
@@ -90,9 +91,16 @@ SELECT
     ) AS current_stock
 
 FROM stock s
-JOIN products p ON s.product_id = p.product_id
-JOIN product_prices pp ON s.price_id = pp.price_id
-LEFT JOIN categories c ON p.category_id = c.category_id
+JOIN products p 
+    ON s.product_id = p.product_id
+
+/* 🔒 SAFETY FIX: ONLY ACTIVE PRICE */
+JOIN product_prices pp 
+    ON s.price_id = pp.price_id
+    AND pp.isActive = 1
+
+LEFT JOIN categories c 
+    ON p.category_id = c.category_id
 
 LEFT JOIN daily_stock_allocation dsa
     ON s.product_id = dsa.product_id
@@ -104,10 +112,16 @@ LEFT JOIN (
         product_id,
         SUM(damaged_count) AS total_damage_qty,
         SUM(loss_count) AS total_loss_qty,
-        SUM(CASE WHEN sale_date = CURDATE()
-                 THEN damaged_count ELSE 0 END) AS today_damage_qty,
-        SUM(CASE WHEN sale_date = CURDATE()
-                 THEN loss_count ELSE 0 END) AS today_loss_qty
+        SUM(CASE 
+                WHEN sale_date = CURDATE() 
+                THEN damaged_count 
+                ELSE 0 
+            END) AS today_damage_qty,
+        SUM(CASE 
+                WHEN sale_date = CURDATE() 
+                THEN loss_count 
+                ELSE 0 
+            END) AS today_loss_qty
     FROM sales
     WHERE isActive = 1
     GROUP BY product_id
@@ -128,6 +142,7 @@ GROUP BY
     s.Loss_Qty
 
 ORDER BY current_stock DESC;
+
 
 
 
