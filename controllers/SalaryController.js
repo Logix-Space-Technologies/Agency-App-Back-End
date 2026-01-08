@@ -160,8 +160,8 @@ exports.updateStaffSalary = async (req, res) => {
 // Salary
 exports.searchUserSalaryDetails = async (req, res) => {
   try {
-    const { user_data } = req.body;
-    if (!user_data)
+    const { user_id } = req.body;
+    if (!user_id)
       return res.status(400).json({ error: "User data is required" });
 
     const [result] = await pool.query(
