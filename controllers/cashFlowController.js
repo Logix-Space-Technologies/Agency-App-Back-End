@@ -145,7 +145,7 @@ const [salesDamage] = await pool.query(query2, params);
           Amount AS debit, 
           NULL AS credit, 
           'Salary' AS type
-       FROM salary
+       FROM Salary
        WHERE AddedDate BETWEEN ? AND ?`,
       [fromDate, toDate]
     );
