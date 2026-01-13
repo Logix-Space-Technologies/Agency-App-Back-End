@@ -97,38 +97,38 @@ SELECT
 
 const query2 = `
 SELECT
-        sd.sale_date AS date,
-    SUM(
+    sd.sale_date AS date,
+    (
         (sd.total_damaged - COALESCE(fr.free_replacement_count, 0))
         * sd.selling_price
     ) AS debit,
     'Sales Damaged' AS type
 FROM
-    (
-        SELECT
-            product_id,
-            sale_date,
-            SUM(damaged_count) AS total_damaged,
-            SUM(amount_received) / NULLIF(SUM(quantity_sold), 0) AS selling_price
-        FROM sales
-        WHERE sale_date BETWEEN ? AND ?
-          AND isActive = 1
-        GROUP BY product_id
-    ) sd
+(
+    SELECT
+        product_id,
+        sale_date,
+        SUM(damaged_count) AS total_damaged,
+        SUM(amount_received) / NULLIF(SUM(quantity_sold), 0) AS selling_price
+    FROM sales
+    WHERE sale_date BETWEEN ? AND ?
+      AND isActive = 1
+    GROUP BY product_id, sale_date
+) sd
 LEFT JOIN
-    (
-        SELECT
-            product_id,
-            SUM(quantity) AS free_replacement_count
-        FROM purchase
-        WHERE is_free_replacement = 1
-          AND purchase_date BETWEEN ? AND ?
-        GROUP BY product_id
-    ) fr
-    ON fr.product_id = sd.product_id
-    GROUP BY sd.product_id, sd.sale_date
-    HAVING debit <> 0
-    ORDER BY sd.product_id, sd.sale_date;
+(
+    SELECT
+        product_id,
+        SUM(quantity) AS free_replacement_count
+    FROM purchase
+    WHERE is_free_replacement = 1
+      AND purchase_date BETWEEN ? AND ?
+    GROUP BY product_id
+) fr
+ON fr.product_id = sd.product_id
+WHERE (sd.total_damaged - COALESCE(fr.free_replacement_count, 0)) > 0
+ORDER BY sd.product_id, sd.sale_date;
+
 `;
 
 const params = [
