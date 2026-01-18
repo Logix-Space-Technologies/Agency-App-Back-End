@@ -9,7 +9,7 @@ exports.fetchDailyDataForPrint = async (req, res) => {
   try {
     // Step 1: Get final sale data
     const [finalSalerows] = await pool.query(
-      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses` FROM `final_sale` WHERE `UserId` = ? AND `DateofTransaction` = ?",
+      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses`, `name` FROM `final_sale` JOIN `users` ON `final_sale`.`addedBy` = `users`.`user_id`  WHERE `UserId` = ? AND `DateofTransaction` = ?",
       [marketing_staff_id, date]
     );
 
@@ -568,8 +568,8 @@ exports.addDirectSales = async (req, res) => {
     const isGstBilling = !!customer?.gst_number;
 
      const [insertResult]  = await connection.query(
-      `INSERT INTO final_sale ( sale_tracking_Id, invoiceNumber, TotalAmount, UserId, DateofTransaction, addedDate, isSettled, AmountPaid, isGstBilling, isActive)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO final_sale ( sale_tracking_Id, invoiceNumber, TotalAmount, UserId, DateofTransaction, addedDate, isSettled, AmountPaid, isGstBilling, addedBy, isActive)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         sale_tracking_id,
         invoiceNumber,
@@ -579,7 +579,8 @@ exports.addDirectSales = async (req, res) => {
         added_date,
         isSettledItem,
         amountPayingNow,
-        isGstBilling
+        isGstBilling,
+        employee_id
       ]
     );
   //  commented on removing dynamic invoice number 
@@ -880,6 +881,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       amount_paid = 0,
       expenses = {}, // Destructure expenses
       payment_breakdown = {}, // Destructure payment breakdown
+      user_id = ""
     } = req.body;
 
     console.log(req.body);
@@ -949,8 +951,8 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       }).format(current_date);
     const [insertResult] = await pool.query(
       `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction, addedDate, 
-             isSettled, AmountPaid)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             isSettled, AmountPaid, addedBy)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         fuel,
         vehicle_service,
@@ -962,6 +964,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         addedDate,
         isSettledItem1,
         amount_paid,
+        user_id,
       ]
     );
 
@@ -1445,7 +1448,7 @@ exports.fetchSalesDataForPrintByID = async (req, res) => {
     let { allocationID } = req.body;
     // Step 1: Get final sale data
     const [finalSalerows] = await pool.query(
-      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses`, `invoiceNumber` FROM `final_sale` WHERE  `id` = ? AND `isActive` = 1",
+      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses`, `invoiceNumber`, `users`.`name` as addedBy  FROM `final_sale` JOIN `users` ON `final_sale`.`addedBy` = `users`.`user_id` WHERE   `id` = ? AND `final_sale`.`isActive` = 1",
       [allocationID]
     );
 
@@ -1603,7 +1606,7 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
     console.log(allocationID);
     // Step 1: Get final sale data
     const [finalSalerows] = await pool.query(
-      "SELECT final_sale.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`,  DATE_FORMAT(final_sale.DateofTransaction, '%Y-%m-%d') AS DateofTransaction, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile, C.GstNumber, invoiceNumber FROM `final_sale` JOIN Customers C ON UserId = C.id WHERE  final_sale.`id` = ? AND final_sale.isActive = 1",
+      "SELECT FS.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`,  DATE_FORMAT(FS.DateofTransaction, '%Y-%m-%d') AS DateofTransaction, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile, C.GstNumber, invoiceNumber, U.name FROM final_sale FS JOIN Customers C ON FS.UserId = C.id JOIN users U ON FS.addedBy = U.user_id WHERE  FS.`id` = ? AND FS.isActive = 1",
       [allocationID]
     );
 
