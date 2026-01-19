@@ -1448,7 +1448,7 @@ exports.fetchSalesDataForPrintByID = async (req, res) => {
     let { allocationID } = req.body;
     // Step 1: Get final sale data
     const [finalSalerows] = await pool.query(
-      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses`, `invoiceNumber`, `users`.`name` as addedBy  FROM `final_sale` JOIN `users` ON `final_sale`.`addedBy` = `users`.`user_id` WHERE   `id` = ? AND `final_sale`.`isActive` = 1",
+      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses`, `invoiceNumber`, COALESCE(`users`.`name`, 'Admin') as addedBy  FROM `final_sale` LEFT JOIN `users` ON `final_sale`.`addedBy` = `users`.`user_id` WHERE   `id` = ? AND `final_sale`.`isActive` = 1",
       [allocationID]
     );
 
@@ -1606,7 +1606,7 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
     console.log(allocationID);
     // Step 1: Get final sale data
     const [finalSalerows] = await pool.query(
-      "SELECT FS.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`,  DATE_FORMAT(FS.DateofTransaction, '%Y-%m-%d') AS DateofTransaction, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile, C.GstNumber, invoiceNumber, U.name FROM final_sale FS JOIN Customers C ON FS.UserId = C.id JOIN users U ON FS.addedBy = U.user_id WHERE  FS.`id` = ? AND FS.isActive = 1",
+      "SELECT FS.`id`, `sale_tracking_Id`, `TotalAmount`, `UserId`,  DATE_FORMAT(FS.DateofTransaction, '%Y-%m-%d') AS DateofTransaction, `isSettled`, `AmountPaid`, isGstBilling, customerGstNumber, C.Name, C.Place, C.Mobile, C.GstNumber, invoiceNumber, COALESCE(U.name, 'Admin') AS AddedBy FROM final_sale FS JOIN Customers C ON FS.UserId = C.id LEFT JOIN users U ON FS.addedBy = U.user_id WHERE  FS.`id` = ? AND FS.isActive = 1",
       [allocationID]
     );
 
