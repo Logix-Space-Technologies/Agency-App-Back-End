@@ -208,10 +208,11 @@ exports.incCredit = async (req, res) => {
 };
 
 exports.fecthAllCreditReportCustomers = async (req, res) => {
-  const { customer_id , startDate, endDate } = req.body;
+  const { customer_id, startDate, endDate, page = 1, limit = 15 } = req.body;
 
-  console.log(req.body);
-
+  //console.log(req.body);
+  const offset = (page - 1) * limit;
+    
   try {
         let dateFilter = "";
         const params = [customer_id];
@@ -220,6 +221,29 @@ exports.fecthAllCreditReportCustomers = async (req, res) => {
           dateFilter = " AND fs.DateofTransaction BETWEEN ? AND ? ";
           params.push(startDate, endDate);
         }
+
+      //count
+      const [countResult] = await pool.query(
+      `
+      SELECT COUNT(*) AS total
+      FROM final_sale fs
+      JOIN (
+        SELECT DISTINCT sale_tracking_Id
+        FROM sales
+        WHERE sale_type != 'marketing'
+      ) s ON fs.sale_tracking_Id = s.sale_tracking_Id
+      WHERE fs.UserId = ?
+        AND fs.isActive = 1
+        AND ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) <> 0
+        ${dateFilter}
+      `,
+      params
+    );
+
+    const totalRecords = countResult[0].total;
+    const totalPages = Math.ceil(totalRecords / limit);    
+    
+    //ResulTData
     const [rows] = await pool.query(
       `
     SELECT 
@@ -259,10 +283,12 @@ WHERE
         OR ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) < 0
     )
         ${dateFilter}
+         ORDER BY fs.DateofTransaction DESC
+         LIMIT ? OFFSET ?
         `,
-      params
+       [...params, Number(limit), Number(offset)]
     );
-
+    //credit summary
     let creditDateFilter = "";
     const creditParams = [customer_id];
 
@@ -297,7 +323,17 @@ GROUP BY
       creditParams
     );
 
-    res.json({ success: true, data: rows, creditInfo: creditInfo });
+    res.json({
+      success: true,
+      data: rows,
+      creditInfo : creditInfo,
+      pagination: {
+        page: Number(page),
+        limit: Number(limit),
+        totalRecords,
+        totalPages
+      }
+    });
   } catch (error) {
     console.error("Error fetching credit report:", error);
     res
@@ -307,10 +343,10 @@ GROUP BY
 };
 
 exports.fecthAllCreditReportUser = async (req, res) => {
-  const { marketing_staff_id, startDate, endDate } = req.body;
+  const { marketing_staff_id, startDate, endDate, page = 1, limit = 15 } = req.body;
 
   console.log(req.body);
-
+  const offset = (page - 1) * limit;
   try {
     let dateFilter = "";
     const params = [marketing_staff_id];
@@ -318,6 +354,33 @@ exports.fecthAllCreditReportUser = async (req, res) => {
       dateFilter = " AND fs.DateofTransaction BETWEEN ? AND ? ";
       params.push(startDate, endDate);
     }
+
+    //count 
+    
+    /* ---------- TOTAL COUNT ---------- */
+    const [countResult] = await pool.query(
+      `
+SELECT COUNT(*) AS total
+FROM final_sale fs
+JOIN (
+    SELECT DISTINCT sale_tracking_Id
+    FROM sales
+    WHERE sale_type = 'marketing'
+) s ON fs.sale_tracking_Id = s.sale_tracking_Id
+WHERE fs.UserId = ?
+  AND fs.isActive = 1
+  AND (
+      ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) <> 0
+  )
+${dateFilter}
+`,
+      params
+    );
+
+    const totalRecords = countResult[0].total;
+    const totalPages = Math.ceil(totalRecords / limit);
+    
+    //resultSet
     const [rows] = await pool.query(
       `
     SELECT 
@@ -357,9 +420,12 @@ WHERE
         OR ((fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses)) - fs.AmountPaid) < 0
     )
         ${dateFilter}
+        ORDER BY fs.DateofTransaction DESC
+        LIMIT ? OFFSET ?
         `,
-      params
+      [...params, Number(limit), Number(offset)]
     );
+    //crditINfo
     const creditParams = [marketing_staff_id];
     let creditDateFilter = "";
 
@@ -394,7 +460,19 @@ GROUP BY
       creditParams
     );
 
-    res.json({ success: true, data: rows, creditInfo: creditInfo });
+   // res.json({ success: true, data: rows, creditInfo: creditInfo });
+  
+    res.json({
+      success: true,
+      data: rows,
+      creditInfo: creditInfo,
+      pagination: {
+        totalRecords,
+        totalPages,
+        currentPage: page,
+        limit
+      }
+    });
   } catch (error) {
     console.error("Error fetching credit report:", error);
     res
