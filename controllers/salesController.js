@@ -1706,6 +1706,7 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
                 s.marketing_staff_id,
                 p.product_id, 
                 p.product_name,
+                p.mrp,
                 p.hsn_code, 
                 pp.marketing_selling_price,
                 pp.direct_selling_price,
