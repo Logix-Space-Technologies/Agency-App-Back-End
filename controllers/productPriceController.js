@@ -181,12 +181,26 @@ if (rows.length > 0) {
 
 exports.getProductPrice = async(req,res)=>{
     try{
+            const page = parseInt(req.body.page) || 1;
+            const limit = parseInt(req.body.limit) || 15;
+            const offset = (page - 1) * limit;
+            
+            // Total count
+            const [[{ total }]] = await pool.query(`
+            SELECT COUNT(*) AS total
+            FROM products p
+            JOIN product_prices pp ON p.product_id = pp.product_id
+            WHERE pp.isActive = 1
+            `);
+            
+            // Paginated data
         const [product_prices]=await pool.query(`
             SELECT
                 pp.price_id,
                 b.brand_name,
                 p.product_id,
                 p.product_name,
+                p.hsn_code,
                 c.category_name,
                 p.mrp,
                 p.description,
@@ -209,13 +223,60 @@ exports.getProductPrice = async(req,res)=>{
             JOIN brands b ON b.brand_id = p.brand_id
             JOIN categories c ON c.category_id = p.category_id
             WHERE pp.isActive = 1
-        `);
-        res.json(product_prices);
+            ORDER BY p.product_name
+            LIMIT ? OFFSET ?
+        `,
+        [limit, offset]);
+        //res.json(product_prices);
+        
+        res.json({
+        data: product_prices,
+        pagination: {
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit),
+        },
+        });
     }catch(error){
         console.error(error);
         res.status(500).json({ error: 'Database error' });
     }
 }
+
+// get all product prices for PRINT (no pagination)
+exports.getProductPriceForPrint = async (req, res) => {
+  try {
+    const [product_prices] = await pool.query(`
+      SELECT
+        pp.price_id,
+        b.brand_name,
+        p.product_id,
+        p.product_name,
+        p.hsn_code,
+        c.category_name,
+        p.mrp,
+        pp.purchase_price,
+        pp.commision_rate,
+        pp.marketing_selling_price,
+        pp.direct_selling_price,
+        pp.whole_sale_price,
+        pp.effective_date
+      FROM products p
+      JOIN product_prices pp ON p.product_id = pp.product_id
+      JOIN brands b ON b.brand_id = p.brand_id
+      JOIN categories c ON c.category_id = p.category_id
+      WHERE pp.isActive = 1
+      ORDER BY p.product_name
+    `);
+
+    res.json(product_prices);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
 
 // add
 
