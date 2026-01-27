@@ -180,6 +180,22 @@ exports.damagedProductSearch = async (req, res) => {
   WHERE s.isActive = 1 AND s.sale_type = "marketing" AND s.damaged_count > 0
 `;
 
+let miscQuery = `
+  SELECT
+    'misc' AS source,
+    NULL AS invoice_no,
+    md.addedDate AS date,
+    p.product_id,
+    p.product_name,
+    md.quantity AS damagedQty,
+    NULL AS damaged_refund_quantity,
+    NULL AS damaged_replacement_quantity,
+    md.addedBy AS user_id
+  FROM miscellaneous_damage md
+  JOIN products p ON md.product_id = p.product_id
+  WHERE md.isActive = 1
+`;
+
     let queryParams = [];
 
     // user filter
@@ -187,6 +203,7 @@ exports.damagedProductSearch = async (req, res) => {
       //returnQuery += " AND s.marketing_staff_id = ? ";
       returnQuery += " AND s.sale_type = 'marketing'";
       salesQuery += " AND s.marketing_staff_id = ? ";
+      miscQuery += " AND md.addedBy = ? ";
       queryParams.push(userId); // push twice (once for each SELECT)
     }
 
@@ -194,6 +211,7 @@ exports.damagedProductSearch = async (req, res) => {
     if (productId) {
       returnQuery += " AND r.product_id = ? ";
       salesQuery += " AND s.product_id = ? ";
+      miscQuery += " AND md.product_id = ? ";
       queryParams.push(productId); // push twice (once for each SELECT)
     }
 
@@ -201,25 +219,28 @@ exports.damagedProductSearch = async (req, res) => {
     if (filterType === "daily") {
       returnQuery += " AND DATE(r.date) = ? ";
       salesQuery += " AND DATE(s.sale_date) = ? ";
+      miscQuery += " AND DATE(md.addedDate) = ? ";
       queryParams.push(startDate);
     } else if (filterType === "listdDateRange") {
       returnQuery += " AND DATE(r.date) BETWEEN ? AND ? ";
       salesQuery += " AND DATE(s.sale_date) BETWEEN ? AND ? ";
+      miscQuery += " AND DATE(md.addedDate) BETWEEN ? AND ? ";
       queryParams.push(startDate, endDate);
     }
 
 
     const [returnRows] = await pool.query(returnQuery, queryParams);
     const [saleRows] = await pool.query(salesQuery, queryParams);
-
+    const [miscRows]   = await pool.query(miscQuery, queryParams);
     // console.log(returnRows)
     // console.log(saleRows)
-    const result = [...returnRows, ...saleRows].sort(
+    //console.log(miscRows)
+    const result = [...returnRows, ...saleRows,  ...miscRows].sort(
       (a, b) => new Date(b.date) - new Date(a.date)
     );
 
     let productSummaryMap = {};
-    let grandTotal = { damagedQty: 0, damagedRefund: 0, damagedReplace: 0 };
+    let grandTotal = { damagedQty: 0, damagedRefund: 0, damagedReplace: 0, miscDamagedQty: 0 };
 
     result.forEach((row) => {
       const pid = row.product_id;
@@ -230,17 +251,22 @@ exports.damagedProductSearch = async (req, res) => {
           damagedQty: 0,
           damagedRefund: 0,
           damagedReplace: 0,
+          miscDamagedQty: 0,
         };
       }
+      if (row.source === "misc") {
+        productSummaryMap[pid].miscDamagedQty += row.damagedQty || 0;
+        grandTotal.miscDamagedQty += row.damagedQty || 0;
+      } else {
       productSummaryMap[pid].damagedQty += row.damagedQty || 0;
       productSummaryMap[pid].damagedRefund += row.damaged_refund_quantity || 0;
-      productSummaryMap[pid].damagedReplace +=
-        row.damaged_replacement_quantity || 0;
+      productSummaryMap[pid].damagedReplace += row.damaged_replacement_quantity || 0;
 
       // also add to grand totals
       grandTotal.damagedQty += row.damagedQty || 0;
       grandTotal.damagedRefund += row.damaged_refund_quantity || 0;
       grandTotal.damagedReplace += row.damaged_replacement_quantity || 0;
+      }
     });
 
     const productSummary = Object.values(productSummaryMap);
