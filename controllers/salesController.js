@@ -1494,7 +1494,7 @@ exports.fetchFinalSaleListBySearchValue = async (req, res) => {
     // console.log(req.body);
     const queryParams = [];
     let query =
-      "SELECT FS.id, FS.sale_tracking_Id, U.name, FS.TotalAmount, FS.isSettled " +
+      "SELECT FS.id, FS.sale_tracking_Id, U.name, FS.DateofTransaction, FS.invoiceNumber, FS.TotalAmount, FS.isSettled " +
       "FROM `final_sale` as FS " +
       "JOIN `sales` as S ON FS.`sale_tracking_Id` = S.sale_tracking_Id " +
       "JOIN `users` as U ON FS.`UserId` = U.`user_id` " +
@@ -1503,12 +1503,12 @@ exports.fetchFinalSaleListBySearchValue = async (req, res) => {
     if (date) {
       query +=
         "FS.DateofTransaction= ? AND S.sale_type='marketing' AND FS.isActive = 1 " +
-        "GROUP BY FS.sale_tracking_Id, FS.id, U.name, FS.TotalAmount, FS.isSettled";
+        "GROUP BY FS.sale_tracking_Id, FS.id, U.name, FS.TotalAmount, FS.isSettled ORDER BY U.name ASC";
       queryParams.push(date);
     } else if (user) {
       query +=
         "U.name= ? AND S.sale_type='marketing' AND FS.isActive = 1 " +
-        "GROUP BY FS.sale_tracking_Id, FS.id, U.name, FS.TotalAmount, FS.isSettled";
+        "GROUP BY FS.sale_tracking_Id, FS.id, U.name, FS.TotalAmount, FS.isSettled ORDER BY FS.DateofTransaction DESC";
       queryParams.push(user);
     }
 
@@ -1612,7 +1612,8 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
       const [joinTest] = await pool.query(
         `SELECT 
          FS.id as fs_id, 
-         FS.sale_tracking_Id, 
+         FS.sale_tracking_Id,
+         FS.DateofTransaction, 
          S.sale_tracking_Id as s_tracking_id,
          S.sale_type,
          C.Name
@@ -1629,7 +1630,9 @@ exports.fetchDirectSaleListByDate = async (req, res) => {
 
     let query = `SELECT 
     FS.id, 
-    FS.sale_tracking_Id, 
+    FS.sale_tracking_Id,
+    FS.invoiceNumber,
+    FS.DateofTransaction,  
     C.Name, 
     FS.TotalAmount, 
     FS.isSettled,
@@ -1642,12 +1645,12 @@ WHERE`;
     if (date) {
       query += ` DATE(FS.DateofTransaction) = ?
     AND S.sale_type != 'marketing' AND FS.isActive = 1
-GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type`;
+GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type  ORDER BY C.Name ASC`;
       queryParams.push(date);
     } else if (user) {
       query += `  C.Name = ?
     AND S.sale_type != 'marketing' AND FS.isActive = 1
-GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type`;
+GROUP BY FS.sale_tracking_Id, FS.id, C.Name, FS.TotalAmount, FS.isSettled, S.sale_type ORDER BY FS.DateofTransaction DESC`;
       queryParams.push(user);
     }
 
