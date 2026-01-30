@@ -2001,6 +2001,22 @@ exports.deleteDirectSaleProduct = async (req, res) => {
             "UPDATE `final_sale` SET TotalAmount = TotalAmount - ? WHERE `sale_tracking_Id`= ?",
             [amount_received, sale_tracking_id]
         );
+        //Stock ID from stock table 
+        const [stockRows] = await pool.query(
+        "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND isActive = 1",
+        [product_id]
+      ); 
+        // Check if stock exists
+        if (stockRows.length === 0) {
+          return res.status(400).json({ error: "Stock not found for this product" });
+        }
+
+        const stockId = stockRows[0].stock_id;
+        //Delete stock history
+        await pool.query(
+          "DELETE FROM `stock_History` WHERE `ReferenceInvoiceOrSale` = ? AND `stock_Id` = ?",
+          [sale_tracking_id, stockId]
+        );
 
         const [count] =  await pool.query(
           "SELECT COUNT(*) AS productCount FROM `sales` WHERE `sale_tracking_Id`= ? AND isActive = 1",
@@ -2034,7 +2050,7 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
     }
     //Update final_sale
     const [result] = await pool.query(
-      "UPDATE `final_sale` SET `isActive` = 0 WHERE `sale_tracking_Id` = ? AND `isSettled` = 0 AND `isActive` = 1",
+      "UPDATE `final_sale` SET `isActive` = 0 WHERE `sale_tracking_Id` = ? AND `isActive` = 1",
       [sale_tracking_id]
     );
 
@@ -2049,6 +2065,11 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
     if (products.length === 0) {
       return res.status(400).json({ error: "No active products found" });
     }
+    //Delete stock history
+    await pool.query(
+      "DELETE FROM `stock_History` WHERE `ReferenceInvoiceOrSale` = ?",
+      [sale_tracking_id]
+    );
     //Update all products
     await Promise.all(
       products.map(({ product_id, quantity_sold }) =>
