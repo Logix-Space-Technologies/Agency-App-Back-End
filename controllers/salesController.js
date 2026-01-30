@@ -626,6 +626,14 @@ exports.addDirectSales = async (req, res) => {
     //   `SELECT id FROM Customers WHERE Mobile = ?`,
     //   [mobile]
     // );
+    const [rows] = await connection.query(
+      "SELECT 1 FROM final_sale WHERE invoiceNumber = ? LIMIT 1",
+      [customer?.invoiceNumber]
+    );
+
+    if (rows.length) {
+      return res.status(400).json({ message: "Invoice number already exists" });
+    }
     const gstValue = customer?.gst_number != null ? customer.gst_number : null;
     let customer_id;
     if(id){
