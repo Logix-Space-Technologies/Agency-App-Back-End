@@ -169,7 +169,7 @@ exports.getAllocationByProductAndDate = async (req, res) => {
 
             FROM sales s
             LEFT JOIN users u ON s.marketing_staff_id = u.user_id
-            WHERE s.product_id = ? AND s.sale_date = ? 
+            WHERE s.isActive=1 AND  s.product_id = ? AND s.sale_date = ? 
         `, [product_id, date]);
 
         // 3. Summary totals
