@@ -145,77 +145,233 @@ exports.searchProduct = async (req, res) => {
     }
 };
 
+// exports.damagedProductSearch = async (req, res) => {
+//   try {
+//     const { userId, productId, filterType, startDate, endDate } = req.body;
+
+//     let returnQuery = `
+//   SELECT 
+//     'return' AS source,
+//     r.invoice_no,
+//     r.date,
+//     p.product_id,
+//     p.product_name,
+//     NULL as damagedQty,
+//     r.damaged_refund_quantity,
+//     r.damaged_replacement_quantity
+//   FROM direct_sale_return r
+//   JOIN products p ON r.product_id = p.product_id
+//   JOIN sales s ON (s.sale_tracking_Id = r.invoice_no AND s.product_id = r.product_id)
+//   WHERE 1 = 1
+// `;
+
+//     let salesQuery = `
+//   SELECT 
+//     'sale' AS source,
+//     s.sale_tracking_Id as invoice_no,
+//     s.sale_date AS date,
+//     p.product_id,
+//     p.product_name,
+//     s.damaged_count AS damagedQty,
+//     NULL AS damaged_refund_quantity,
+//     NULL AS damaged_replacement_quantity
+//   FROM sales s
+//   JOIN products p ON s.product_id = p.product_id
+//   WHERE s.isActive = 1 AND s.sale_type = "marketing"
+// `;
+
+// let miscQuery = `
+//   SELECT
+//     'misc' AS source,
+//     NULL AS invoice_no,
+//     md.addedDate AS date,
+//     p.product_id,
+//     p.product_name,
+//     md.quantity AS damagedQty,
+//     NULL AS damaged_refund_quantity,
+//     NULL AS damaged_replacement_quantity,
+//     md.addedBy AS user_id
+//   FROM miscellaneous_damage md
+//   JOIN products p ON md.product_id = p.product_id
+//   WHERE md.isActive = 1
+// `;
+
+//     let queryParams = [];
+
+//     // user filter
+//     if (userId) {
+//       //returnQuery += " AND s.marketing_staff_id = ? ";
+//       returnQuery += " AND s.sale_type = 'marketing'";
+//       salesQuery += " AND s.marketing_staff_id = ? ";
+//       miscQuery += " AND md.addedBy = ? ";
+//       queryParams.push(userId); // push twice (once for each SELECT)
+//     }
+
+//     // product filters
+//     if (productId) {
+//       returnQuery += " AND r.product_id = ? ";
+//       salesQuery += " AND s.product_id = ? ";
+//       miscQuery += " AND md.product_id = ? ";
+//       queryParams.push(productId); // push twice (once for each SELECT)
+//     }
+
+//     // filter type
+//     if (filterType === "daily") {
+//       returnQuery += " AND DATE(r.date) = ? ";
+//       salesQuery += " AND DATE(s.sale_date) = ? ";
+//       miscQuery += " AND DATE(md.addedDate) = ? ";
+//       queryParams.push(startDate);
+//     } else if (filterType === "listdDateRange") {
+//       returnQuery += " AND DATE(r.date) BETWEEN ? AND ? ";
+//       salesQuery += " AND DATE(s.sale_date) BETWEEN ? AND ? ";
+//       miscQuery += " AND DATE(md.addedDate) BETWEEN ? AND ? ";
+//       queryParams.push(startDate, endDate);
+//     }
+
+
+//     const [returnRows] = await pool.query(returnQuery, queryParams);
+//     const [saleRows] = await pool.query(salesQuery, queryParams);
+//     const [miscRows]   = await pool.query(miscQuery, queryParams);
+//     // console.log(returnRows)
+//     // console.log(saleRows)
+//     //console.log(miscRows)
+//     const result = [...returnRows, ...saleRows,  ...miscRows].sort(
+//       (a, b) => new Date(b.date) - new Date(a.date)
+//     );
+
+//     const [allProducts] = await pool.query(`
+//       SELECT 
+//         p.product_id,
+//         p.product_name
+//       FROM products p
+//     `);
+
+//     let productSummaryMap = {};
+
+//     allProducts.forEach(p => {
+//         productSummaryMap[p.product_id] = {
+//           productId: p.product_id,
+//           productName: p.product_name,
+//           damagedQty: 0,
+//           damagedRefund: 0,
+//           damagedReplace: 0,
+//           miscDamagedQty: 0,
+//         };
+//       });
+//     let grandTotal = { damagedQty: 0, damagedRefund: 0, damagedReplace: 0, miscDamagedQty: 0 };
+
+//     result.forEach((row) => {
+//       const pid = row.product_id;
+//       if (!productSummaryMap[pid]) {
+//         productSummaryMap[pid] = {
+//           productId: row.product_id,
+//           productName: row.product_name,
+//           damagedQty: 0,
+//           damagedRefund: 0,
+//           damagedReplace: 0,
+//           miscDamagedQty: 0,
+//         };
+//       }
+//       if (row.source === "misc") {
+//         productSummaryMap[pid].miscDamagedQty += row.damagedQty || 0;
+//         grandTotal.miscDamagedQty += row.damagedQty || 0;
+//       } else {
+//       productSummaryMap[pid].damagedQty += row.damagedQty || 0;
+//       productSummaryMap[pid].damagedRefund += row.damaged_refund_quantity || 0;
+//       productSummaryMap[pid].damagedReplace += row.damaged_replacement_quantity || 0;
+
+//       // also add to grand totals
+//       grandTotal.damagedQty += row.damagedQty || 0;
+//       grandTotal.damagedRefund += row.damaged_refund_quantity || 0;
+//       grandTotal.damagedReplace += row.damaged_replacement_quantity || 0;
+//       }
+//     });
+
+//     const productSummary = Object.values(productSummaryMap);
+
+//     //console.log(result);
+//     //res.json(result);
+//     res.json({
+//       summary: productSummary,
+//       totals: grandTotal,
+//       data: result,
+//     });
+//   } catch (error) {
+//     console.error(error);
+//     res.status(500).json({ error: "Database error" });
+//   }
+// };
+
 exports.damagedProductSearch = async (req, res) => {
   try {
     const { userId, productId, filterType, startDate, endDate } = req.body;
 
     let returnQuery = `
-  SELECT 
-    'return' AS source,
-    r.invoice_no,
-    r.date,
-    p.product_id,
-    p.product_name,
-    NULL as damagedQty,
-    r.damaged_refund_quantity,
-    r.damaged_replacement_quantity
-  FROM direct_sale_return r
-  JOIN products p ON r.product_id = p.product_id
-  JOIN sales s ON (s.sale_tracking_Id = r.invoice_no AND s.product_id = r.product_id)
-  WHERE (r.damaged_refund_quantity > 0 OR r.damaged_replacement_quantity > 0)
-`;
+      SELECT 
+        'return' AS source,
+        r.invoice_no,
+        r.date,
+        p.product_id,
+        p.product_name,
+        NULL AS damagedQty,
+        r.damaged_refund_quantity,
+        r.damaged_replacement_quantity
+      FROM direct_sale_return r
+      JOIN products p ON r.product_id = p.product_id
+      JOIN sales s ON (s.sale_tracking_Id = r.invoice_no AND s.product_id = r.product_id)
+      WHERE 1 = 1
+    `;
 
     let salesQuery = `
-  SELECT 
-    'sale' AS source,
-    s.sale_tracking_Id as invoice_no,
-    s.sale_date AS date,
-    p.product_id,
-    p.product_name,
-    s.damaged_count AS damagedQty,
-    NULL AS damaged_refund_quantity,
-    NULL AS damaged_replacement_quantity
-  FROM sales s
-  JOIN products p ON s.product_id = p.product_id
-  WHERE s.isActive = 1 AND s.sale_type = "marketing" AND s.damaged_count > 0
-`;
+      SELECT 
+        'sale' AS source,
+        s.sale_tracking_Id AS invoice_no,
+        s.sale_date AS date,
+        p.product_id,
+        p.product_name,
+        s.damaged_count AS damagedQty,
+        NULL AS damaged_refund_quantity,
+        NULL AS damaged_replacement_quantity
+      FROM sales s
+      JOIN products p ON s.product_id = p.product_id
+      WHERE s.isActive = 1 AND s.sale_type = "marketing"
+    `;
 
-let miscQuery = `
-  SELECT
-    'misc' AS source,
-    NULL AS invoice_no,
-    md.addedDate AS date,
-    p.product_id,
-    p.product_name,
-    md.quantity AS damagedQty,
-    NULL AS damaged_refund_quantity,
-    NULL AS damaged_replacement_quantity,
-    md.addedBy AS user_id
-  FROM miscellaneous_damage md
-  JOIN products p ON md.product_id = p.product_id
-  WHERE md.isActive = 1
-`;
+    let miscQuery = `
+      SELECT
+        'misc' AS source,
+        NULL AS invoice_no,
+        md.addedDate AS date,
+        p.product_id,
+        p.product_name,
+        md.quantity AS damagedQty,
+        NULL AS damaged_refund_quantity,
+        NULL AS damaged_replacement_quantity,
+        md.addedBy AS user_id
+      FROM miscellaneous_damage md
+      JOIN products p ON md.product_id = p.product_id
+      WHERE md.isActive = 1
+    `;
 
     let queryParams = [];
 
     // user filter
     if (userId) {
-      //returnQuery += " AND s.marketing_staff_id = ? ";
-      returnQuery += " AND s.sale_type = 'marketing'";
+      returnQuery += " AND s.sale_type = 'marketing' ";
       salesQuery += " AND s.marketing_staff_id = ? ";
       miscQuery += " AND md.addedBy = ? ";
-      queryParams.push(userId); // push twice (once for each SELECT)
+      queryParams.push(userId);
     }
 
-    // product filters
+    // product filter
     if (productId) {
       returnQuery += " AND r.product_id = ? ";
       salesQuery += " AND s.product_id = ? ";
       miscQuery += " AND md.product_id = ? ";
-      queryParams.push(productId); // push twice (once for each SELECT)
+      queryParams.push(productId);
     }
 
-    // filter type
+    // date filter
     if (filterType === "daily") {
       returnQuery += " AND DATE(r.date) = ? ";
       salesQuery += " AND DATE(s.sale_date) = ? ";
@@ -228,61 +384,96 @@ let miscQuery = `
       queryParams.push(startDate, endDate);
     }
 
-
     const [returnRows] = await pool.query(returnQuery, queryParams);
-    const [saleRows] = await pool.query(salesQuery, queryParams);
+    const [saleRows]   = await pool.query(salesQuery, queryParams);
     const [miscRows]   = await pool.query(miscQuery, queryParams);
-    // console.log(returnRows)
-    // console.log(saleRows)
-    //console.log(miscRows)
-    const result = [...returnRows, ...saleRows,  ...miscRows].sort(
-      (a, b) => new Date(b.date) - new Date(a.date)
-    );
 
+const result = [...returnRows, ...saleRows, ...miscRows]
+  .filter(row => {
+    const damagedQty = Number(row.damagedQty || 0);
+    const refundQty = row.damaged_refund_quantity;
+    const replaceQty = row.damaged_replacement_quantity;
+
+    // REMOVE rows where everything is zero/null
+    const isAllZeroOrNull =
+      damagedQty === 0 &&
+      (refundQty === null || refundQty === undefined) &&
+      (replaceQty === null || replaceQty === undefined);
+
+    return !isAllZeroOrNull; // keep only meaningful rows
+  })
+  .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+
+    // ⭐ CHANGE: get all products
+    const [allProducts] = await pool.query(`
+      SELECT product_id, product_name FROM products
+    `);
+
+    // ⭐ CHANGE: initialize all products with zero values
     let productSummaryMap = {};
-    let grandTotal = { damagedQty: 0, damagedRefund: 0, damagedReplace: 0, miscDamagedQty: 0 };
+    allProducts.forEach(p => {
+      productSummaryMap[p.product_id] = {
+        productId: p.product_id,
+        productName: p.product_name,
+        damagedQty: 0,
+        damagedRefund: 0,
+        damagedReplace: 0,
+        miscDamagedQty: 0,
+      };
+    });
 
-    result.forEach((row) => {
+    let grandTotal = {
+      damagedQty: 0,
+      damagedRefund: 0,
+      damagedReplace: 0,
+      miscDamagedQty: 0,
+    };
+
+    // ⭐ CHANGE: Number() to avoid string addition
+    result.forEach(row => {
       const pid = row.product_id;
-      if (!productSummaryMap[pid]) {
-        productSummaryMap[pid] = {
-          productId: row.product_id,
-          productName: row.product_name,
-          damagedQty: 0,
-          damagedRefund: 0,
-          damagedReplace: 0,
-          miscDamagedQty: 0,
-        };
-      }
-      if (row.source === "misc") {
-        productSummaryMap[pid].miscDamagedQty += row.damagedQty || 0;
-        grandTotal.miscDamagedQty += row.damagedQty || 0;
-      } else {
-      productSummaryMap[pid].damagedQty += row.damagedQty || 0;
-      productSummaryMap[pid].damagedRefund += row.damaged_refund_quantity || 0;
-      productSummaryMap[pid].damagedReplace += row.damaged_replacement_quantity || 0;
 
-      // also add to grand totals
-      grandTotal.damagedQty += row.damagedQty || 0;
-      grandTotal.damagedRefund += row.damaged_refund_quantity || 0;
-      grandTotal.damagedReplace += row.damaged_replacement_quantity || 0;
+      if (row.source === "misc") {
+        const qty = Number(row.damagedQty || 0);
+        productSummaryMap[pid].miscDamagedQty += qty;
+        grandTotal.miscDamagedQty += qty;
+      } else {
+        const damagedQty = Number(row.damagedQty || 0);
+        const refundQty  = Number(row.damaged_refund_quantity || 0);
+        const replaceQty = Number(row.damaged_replacement_quantity || 0);
+
+        productSummaryMap[pid].damagedQty += damagedQty;
+        productSummaryMap[pid].damagedRefund += refundQty;
+        productSummaryMap[pid].damagedReplace += replaceQty;
+
+        grandTotal.damagedQty += damagedQty;
+        grandTotal.damagedRefund += refundQty;
+        grandTotal.damagedReplace += replaceQty;
       }
     });
 
-    const productSummary = Object.values(productSummaryMap);
+    // ⭐ CHANGE: sort by total damaged qty DESC
+    const productSummary = Object.values(productSummaryMap).sort((a, b) => {
+      const totalA =
+        a.damagedQty + a.damagedRefund + a.damagedReplace + a.miscDamagedQty;
+      const totalB =
+        b.damagedQty + b.damagedRefund + b.damagedReplace + b.miscDamagedQty;
+      return totalB - totalA;
+    });
 
-    //console.log(result);
-    //res.json(result);
     res.json({
       summary: productSummary,
       totals: grandTotal,
-      data: result,
+      data: result, // unchanged (used for details view)
     });
+
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Database error" });
   }
 };
+
 
 exports.addMiscDamagedProduct = async (req, res) => {
   try {

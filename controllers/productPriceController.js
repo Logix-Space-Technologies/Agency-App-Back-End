@@ -312,48 +312,123 @@ exports.addProductPrice = async (req, res) => {
 exports.searchProductPrice = async (req, res) => {
     try {
         const { brandId, productId } = req.body;
-        //if (!product_name) return res.status(400).json({ error: "product name is required" });
-        let query = `SELECT
+        const page = parseInt(req.body.page) || 1;
+        const limit = parseInt(req.body.limit) || 15;
+        const offset = (page - 1) * limit;
+        console.log(page+" test "+limit+" "+offset);
+        let whereClause = ` WHERE pp.isActive = 1 `;
+        const params = [];
+
+        if (productId) {
+            whereClause += ` AND p.product_id = ?`;
+            params.push(productId);
+        }
+
+        if (brandId) {
+            whereClause += ` AND b.brand_id = ?`;
+            params.push(brandId);
+        }
+
+        /* ---------- TOTAL COUNT ---------- */
+        const countQuery = `
+            SELECT COUNT(*) AS total
+            FROM products p
+            JOIN product_prices pp ON p.product_id = pp.product_id
+            JOIN brands b ON b.brand_id = p.brand_id
+            JOIN categories c ON c.category_id = p.category_id
+            ${whereClause}
+        `;
+
+        const [[{ total }]] = await pool.query(countQuery, params);
+
+        /* ---------- PAGINATED DATA ---------- */
+        const dataQuery = `
+            SELECT
                 pp.price_id,
                 b.brand_name,
                 p.product_id,
-                product_name,
+                p.product_name,
+                p.hsn_code,
                 c.category_name,
-                mrp,
-                description,
-                expiry_date,
-                product_image,
-                created_at,
+                p.mrp,
+                p.description,
+                p.expiry_date,
+                p.product_image,
+                p.created_at,
                 pp.purchase_price,
                 pp.commision_rate,
                 pp.marketing_selling_price,
                 pp.direct_selling_price,
                 pp.whole_sale_price,
                 pp.effective_date,
-                    pp.cgst_percentage, 
-                  pp.sgst_percentage,  
-                  pp.igst_percentage, 
-                   pp.cess_percentage
-             FROM products p
-             JOIN product_prices pp ON p.product_id = pp.product_id
-             JOIN brands b ON b.brand_id = p.brand_id
-             JOIN categories c ON c.category_id = p.category_id
-             WHERE pp.isActive=1 `
+                pp.cgst_percentage, 
+                pp.sgst_percentage,  
+                pp.igst_percentage, 
+                pp.cess_percentage
+            FROM products p
+            JOIN product_prices pp ON p.product_id = pp.product_id
+            JOIN brands b ON b.brand_id = p.brand_id
+            JOIN categories c ON c.category_id = p.category_id
+            ${whereClause}
+            ORDER BY p.product_name
+            LIMIT ? OFFSET ?
+        `;
+        const [searchResult] = await pool.query(
+            dataQuery,
+            [...params, limit, offset]
+        );
+        res.json({
+            data: searchResult,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit),
+            },
+        });
+ 
+        //if (!product_name) return res.status(400).json({ error: "product name is required" });
+        // let query = `SELECT
+        //         pp.price_id,
+        //         b.brand_name,
+        //         p.product_id,
+        //         product_name,
+        //         c.category_name,
+        //         mrp,
+        //         description,
+        //         expiry_date,
+        //         product_image,
+        //         created_at,
+        //         pp.purchase_price,
+        //         pp.commision_rate,
+        //         pp.marketing_selling_price,
+        //         pp.direct_selling_price,
+        //         pp.whole_sale_price,
+        //         pp.effective_date,
+        //             pp.cgst_percentage, 
+        //           pp.sgst_percentage,  
+        //           pp.igst_percentage, 
+        //            pp.cess_percentage
+        //      FROM products p
+        //      JOIN product_prices pp ON p.product_id = pp.product_id
+        //      JOIN brands b ON b.brand_id = p.brand_id
+        //      JOIN categories c ON c.category_id = p.category_id
+        //      WHERE pp.isActive=1 `
              
-        const params = [];
+        // const params = [];
 
-        if (productId) {
-            query += " AND p.product_id = ?";
-            params.push(productId);
-        }
+        // if (productId) {
+        //     query += " AND p.product_id = ?";
+        //     params.push(productId);
+        // }
 
-        if (brandId) {
-            query += " AND b.brand_id = ?";
-            params.push(brandId);
-        }
+        // if (brandId) {
+        //     query += " AND b.brand_id = ?";
+        //     params.push(brandId);
+        // }
 
-        const [result] = await pool.query(query, params);
-        res.json(result);
+        // const [result] = await pool.query(query, params);
+        // res.json(result);
 
     } catch (error) {
         console.error(error);
