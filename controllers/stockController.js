@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { getISTTimestamp, getISTDate } = require('../utils/dateUtils');
 
 // View all stocks with complete information
 exports.viewAllStocks = async (req, res) => {
@@ -272,5 +273,141 @@ exports.stockHistory = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Database error" });
+  }
+};
+
+exports.saveOpeningClosingBalance = async (req, res) => {
+  try {
+    //const today = new Date().toISOString().split("T")[0];
+    const today = getISTDate();
+    const now = getISTTimestamp()
+
+    /* 1️⃣ Get all active products */
+    const [products] = await pool.query(`
+      SELECT product_id
+      FROM products
+      WHERE isActive = 1
+    `);
+
+    if (products.length === 0) {
+      return res.json({ message: "No active products found" });
+    }
+
+    for (const product of products) {
+      const productId = product.product_id;
+
+      /* 2️⃣ Opening stock (yesterday closing OR stock table) */
+      const [prev] = await pool.query(
+        `
+        SELECT closing_stock
+        FROM opening_closing_balance
+        WHERE product_id = ?
+        AND date < ?
+        ORDER BY date DESC
+        LIMIT 1
+        `,
+        [productId, today]
+      );
+
+      let openingStock = 0;
+
+      if (prev.length > 0) {
+        openingStock = prev[0].closing_stock;
+      } else {
+        const [[stock]] = await pool.query(
+          `
+          SELECT quantity
+          FROM stock
+          WHERE product_id = ?
+          AND isActive = 1
+          `,
+          [productId]
+        );
+        openingStock = stock ? stock.quantity : 0;
+      }
+
+      /* 3️⃣ Sales, damage, loss (today) */
+      const [[sales]] = await pool.query(
+        `
+        SELECT 
+          IFNULL(SUM(quantity_sold),0) AS sold_qty,
+          IFNULL(SUM(damaged_count),0) AS damage_qty,
+          IFNULL(SUM(loss_count),0) AS loss_qty
+        FROM sales
+        WHERE product_id = ?
+        AND sale_date = ?
+        AND isActive = 1
+        `,
+        [productId, today]
+      );
+
+      /* 4️⃣ Misc damage (today) */
+      const [[misc]] = await pool.query(
+        `
+        SELECT IFNULL(SUM(quantity),0) AS misc_damage_qty
+        FROM miscellaneous_damage
+        WHERE product_id = ?
+        AND DATE(addedDate) = ?
+        AND isActive = 1
+        `,
+        [productId, today]
+      );
+      
+      /* 5️⃣ Closing stock */
+      const closingStock =
+        openingStock -
+        sales.sold_qty -
+        sales.damage_qty -
+        sales.loss_qty -
+        misc.misc_damage_qty;
+
+      /* 6️⃣ Insert / Update */
+      await pool.query(
+        `
+        INSERT INTO opening_closing_balance
+        (
+          product_id,
+          date,
+          opening_stock,
+          closing_stock,
+          sold_qty,
+          damage_qty,
+          loss_qty,
+          misc_damage_qty,
+          created
+        )
+        VALUES (?,?,?,?,?,?,?,?,?)
+        ON DUPLICATE KEY UPDATE
+          opening_stock = VALUES(opening_stock),
+          closing_stock = VALUES(closing_stock),
+          sold_qty = VALUES(sold_qty),
+          damage_qty = VALUES(damage_qty),
+          loss_qty = VALUES(loss_qty),
+          misc_damage_qty = VALUES(misc_damage_qty),
+          created = VALUES(created)
+        `,
+        [
+          productId,
+          today,
+          openingStock,
+          closingStock,
+          sales.sold_qty,
+          sales.damage_qty,
+          sales.loss_qty,
+          misc.misc_damage_qty,
+          now
+        ]
+      );
+    }
+
+    res.json({
+      message: "Daily opening & closing balance generated successfully",
+      date: today,
+      totalProducts: products.length
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
   }
 };
