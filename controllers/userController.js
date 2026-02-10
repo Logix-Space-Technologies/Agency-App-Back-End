@@ -1,6 +1,9 @@
 const pool = require("../config/db");
 const bcrypt = require("bcrypt");
 
+const { getISTTimestamp } = require('../utils/dateUtils');
+const { logUserActivity } = require("../utils/logUserActivity");
+
 // User Login
 exports.loginUser = async (req, res) => {
   try {
@@ -52,6 +55,12 @@ exports.loginUser = async (req, res) => {
       default:
         redirectPage = "/";
     }
+    
+    await logUserActivity({
+        req,
+        user_id :user.user_id,
+        action: `The user ${user.name} is logined`
+      });
 
     res.json({
       message: "Login successful",
@@ -165,11 +174,12 @@ exports.addUser = async (req, res) => {
     // Hash the password
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password_hash, saltRounds);
+    const now = getISTTimestamp()
 
     // Insert user with hashed password
     const [result] = await pool.query(
       `INSERT INTO users (profile_avathar, name, role, phone, email, password_hash, created_at, Place_Of_Allocation)
-             VALUES (?, ?, ?, ?, ?, ?, now(), ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         profile_avathar,
         name,
@@ -177,6 +187,7 @@ exports.addUser = async (req, res) => {
         phone,
         email,
         hashedPassword,
+        now,
         Place_Of_Allocation,
       ]
     );
@@ -224,9 +235,13 @@ exports.editUser = async (req, res) => {
     }
 
     // Hash the password
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    let hashedPassword = null;
 
+    if (password && password.trim() !== "") {
+      const saltRounds = 10;
+      hashedPassword = await bcrypt.hash(password, saltRounds);
+    }
+    const now = getISTTimestamp()
     const query = `
             UPDATE users 
             SET profile_avathar = ?, 
@@ -236,7 +251,7 @@ exports.editUser = async (req, res) => {
                 email = ?,
                 password_hash = ?, 
                 Place_Of_Allocation = ?,
-                modified_date = now(),
+                modified_date = ?,
                 addedBy = ? 
             WHERE user_id = ?
         `;
@@ -249,12 +264,16 @@ exports.editUser = async (req, res) => {
       email,
       hashedPassword,
       Place_Of_Allocation,
+      now,
       loggedInUserId,
       user_id,
     ];
-
     await pool.query(query, values);
-
+    await logUserActivity({
+            req,
+            user_id :loggedInUserId,
+            action: `User ${name}'s data is edited`
+          });
     res.json({ message: "User updated successfully" });
   } catch (error) {
     console.error("Edit User Error:", error);
