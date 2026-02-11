@@ -1,0 +1,165 @@
+/**
+ * Daily Opening & Closing Stock Cron
+ * Run once per day (or multiple times – safe)
+ */
+
+const pool = require("../config/db");
+/* ---------------- DATE UTILS ---------------- */
+function getISTDate(date = new Date()) {
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istTime = new Date(date.getTime() + istOffset);
+
+  const year = istTime.getUTCFullYear();
+  const month = String(istTime.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(istTime.getUTCDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`; // YYYY-MM-DD
+}
+
+/* ---------------- MAIN LOGIC ---------------- */
+async function runDailyOpeningClosing() {
+  //const connection = await mysql.createConnection(dbConfig);
+  const today = getISTDate();
+
+  console.log("Running Opening/Closing Stock for:", today);
+
+  try {
+    /* 1️⃣ Get all active products */
+    const [products] = await pool.query(`
+      SELECT product_id
+      FROM products
+      WHERE isActive = 1
+    `);
+
+    if (!products.length) {
+      console.log("No active products found.");
+      return;
+    }
+
+    for (const { product_id } of products) {
+      /* 2️⃣ Opening Stock */
+      const [prev] = await pool.query(
+        `
+        SELECT closing_stock
+        FROM opening_closing_balance
+        WHERE product_id = ?
+        AND date < ?
+        ORDER BY date DESC
+        LIMIT 1
+        `,
+        [product_id, today]
+      );
+
+      let openingStock = 0;
+
+        if (prev.length) {
+        openingStock = prev[0].closing_stock;
+        } else {
+        const [[stock]] = await pool.query(
+            `
+            SELECT
+            (
+                s.quantity
+                - COALESCE(SUM(dsa.allocated_quantity), 0)
+                - COALESCE(s.Damage_Qty, 0)
+            ) AS available_qty
+            FROM stock s
+            LEFT JOIN daily_stock_allocation dsa
+            ON s.product_id = dsa.product_id
+            AND dsa.converted_to_sales = 0
+            AND dsa.isActive = 1
+            WHERE s.product_id = ?
+            AND s.isActive = 1
+            GROUP BY s.stock_id
+            `,
+            [product_id]
+        );
+
+        openingStock = stock ? Number(stock.available_qty) : 0;
+        }
+
+      /* 3️⃣ Sales / Damage / Loss */
+      const [[sales]] = await pool.query(
+        `
+        SELECT
+          IFNULL(SUM(quantity_sold),0) AS sold_qty,
+          IFNULL(SUM(damaged_count),0) AS damage_qty,
+          IFNULL(SUM(loss_count),0) AS loss_qty
+        FROM sales
+        WHERE product_id = ?
+        AND sale_date = ?
+        AND isActive = 1
+        `,
+        [product_id, today]
+      );
+
+      /* 4️⃣ Miscellaneous Damage */
+      const [[misc]] = await pool.query(
+        `
+        SELECT IFNULL(SUM(quantity),0) AS misc_damage_qty
+        FROM miscellaneous_damage
+        WHERE product_id = ?
+        AND addedDate >= CONCAT(?, ' 00:00:00')
+        AND addedDate <= CONCAT(?, ' 23:59:59')
+        AND isActive = 1
+        `,
+        [product_id, today, today]
+      );
+
+      /* 5️⃣ Closing Stock */
+      const closingStock =
+        openingStock -
+        sales.sold_qty -
+        sales.damage_qty -
+        sales.loss_qty -
+        misc.misc_damage_qty;
+
+      /* 6️⃣ Insert / Update */
+      await pool.query(
+        `
+        INSERT INTO opening_closing_balance
+        (
+          product_id,
+          date,
+          opening_stock,
+          closing_stock,
+          sold_qty,
+          damage_qty,
+          loss_qty,
+          misc_damage_qty
+        )
+        VALUES (?,?,?,?,?,?,?,?)
+        ON DUPLICATE KEY UPDATE
+          opening_stock = VALUES(opening_stock),
+          closing_stock = VALUES(closing_stock),
+          sold_qty = VALUES(sold_qty),
+          damage_qty = VALUES(damage_qty),
+          loss_qty = VALUES(loss_qty),
+          misc_damage_qty = VALUES(misc_damage_qty)
+        `,
+        [
+          product_id,
+          today,
+          openingStock,
+          closingStock,
+          sales.sold_qty,
+          sales.damage_qty,
+          sales.loss_qty,
+          misc.misc_damage_qty
+        ]
+      );
+
+      console.log(`✔ Product ${product_id} updated`);
+    }
+
+    console.log("✅ Daily Opening/Closing completed successfully");
+
+  } catch (err) {
+    console.error("❌ Error running cron:", err);
+  } finally {
+    await pool.end();
+  }
+}
+
+/* ---------------- RUN ---------------- */
+runDailyOpeningClosing();
