@@ -226,9 +226,9 @@ exports.stockHistory = async (req, res) => {
     //console.log(req.body);
 
     // --- Product is mandatory ---
-    if (!product_id) {
-      return res.status(400).json({ error: "product_id is required" });
-    }
+    // if (!product_id) {
+    //   return res.status(400).json({ error: "product_id is required" });
+    // }
 
     // Base query
     let query = `
@@ -243,14 +243,25 @@ exports.stockHistory = async (req, res) => {
         h.ReferenceInvoiceOrSale,
         s.quantity,
         s.Damage_Qty,
-        s.Loss_Qty
+        s.Loss_Qty,
+        p.product_name,
+        sa.sale_type
       FROM stock_History h
       JOIN stock s ON h.stock_Id = s.stock_id
-      WHERE s.product_id = ?
-        AND s.isActive = 1
+      JOIN products p ON p.product_id = s.product_id
+      LEFT JOIN sales sa     
+          ON 
+          sa.sale_tracking_Id = h.ReferenceInvoiceOrSale 
+          AND sa.product_id = s.product_id
+      WHERE s.isActive = 1
     `;
-
-    const queryParams = [product_id];
+    const queryParams = [];
+    //const queryParams = [product_id];
+    // --- Optional Date Range ---
+    if (product_id ) {
+      query += ` AND s.product_id = ?`;
+      queryParams.push(product_id);
+    }
 
     // --- Optional Date Range ---
     if (fromDate && toDate) {

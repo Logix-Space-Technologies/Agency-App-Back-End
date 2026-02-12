@@ -92,8 +92,16 @@ if (rows.length > 0) {
                 cess_percentage
             ]
         );
+        const newPriceId = insertResult.insertId;
 
-        res.json({ message: "Product price updated successfully", new_price_id: insertResult.insertId });
+        // Update stock table with new price_id for this product
+        await pool.query(
+            `UPDATE stock 
+            SET price_id = ? 
+            WHERE product_id = ?`,
+            [newPriceId, product_id]
+        );
+        res.json({ message: "Product price updated successfully", new_price_id: newPriceId });
 
     } catch (error) {
         console.error(error);

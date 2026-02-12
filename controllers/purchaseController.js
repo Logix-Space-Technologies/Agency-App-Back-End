@@ -120,7 +120,6 @@ exports.createEnhancedPurchase = async (req, res) => {
           [quantity, productId]
         );
       }
-
       // Record in stock history with appropriate type
       let stockType;
       if (isReplacement) stockType = "replacement";
@@ -128,13 +127,19 @@ exports.createEnhancedPurchase = async (req, res) => {
       else if (isFreeItem) stockType = "freebie";
       else stockType = "purchase";
 
+      const [stockIdResult] = await pool.query(
+        "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `isActive` = 1",
+        [productId]
+      );
+      if (stockIdResult.length > 0) {
+      const stock_Id = stockIdResult[0].stock_id;
       await connection.execute(
         `INSERT INTO stock_History (
                     stock_Id, Qty, stock_type, AddedDate, AddedBy,
                     CreditOrDebit, ReferenceInvoiceOrSale, purchase_id
                 ) VALUES (?, ?, ?, NOW(), ?, ?, ?,?)`,
         [
-          productId,
+          stock_Id,
           quantity,
           stockType,
           0,
@@ -143,6 +148,7 @@ exports.createEnhancedPurchase = async (req, res) => {
           purchaseId
         ]
       );
+      }
     }
 
     await connection.commit();
