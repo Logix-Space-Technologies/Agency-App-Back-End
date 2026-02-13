@@ -1208,7 +1208,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
             addedDate,
             addedBy,
             creditOrDebit,
-            referenceInvoiceOrSale,
+            sale_tracking_id,
           ]
         );
       } else {
