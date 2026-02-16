@@ -1,5 +1,6 @@
 const pool = require('../config/db');
-
+const { getISTTimestamp } = require('../utils/dateUtils');
+const { logUserActivity } = require("../utils/logUserActivity");
 
 
 //view all
@@ -196,7 +197,7 @@ exports.getAllocationByProductAndDate = async (req, res) => {
 // Multiple 
 exports.addDailyStockAllocation = async (req, res) => {
     try {
-        const { marketing_staff_id, saleDate, allocations } = req.body;
+        const { marketing_staff_id, saleDate, allocations, addedBy } = req.body;
         // console.log(Input)
         console.log(req.body)
 
@@ -208,16 +209,21 @@ exports.addDailyStockAllocation = async (req, res) => {
 
         const insertValues = allocations
             .filter(item => item.product_id && item.allocated_quantity)
-            .map(item => [marketing_staff_id, item.product_id, item.allocated_quantity, saleDate, date]);
+            .map(item => [marketing_staff_id, item.product_id, item.allocated_quantity, saleDate, date, addedBy, getISTTimestamp()]);
 
         if (insertValues.length === 0) {
             return res.status(400).json({ error: "No valid allocations provided" });
         }
-
+        console.log(insertValues);
         const [result] = await pool.query(
-            'INSERT INTO daily_stock_allocation (marketing_staff_id, product_id, allocated_quantity, date, addedDate) VALUES ?',
+            'INSERT INTO daily_stock_allocation (marketing_staff_id, product_id, allocated_quantity, date, addedDate, addedBy, created) VALUES ?',
             [insertValues]
         );
+        await logUserActivity({
+            req,
+            user_id : addedBy,
+            action: `Daily stock allocation added - ${marketing_staff_id}`
+          });
 
         res.json({ message: 'Daily stock allocations added successfully', rowsInserted: result.affectedRows });
     } catch (error) {
@@ -244,7 +250,7 @@ exports.viewAllDailyStockAllocation = async (req, res) => {
 exports.addDailyStockAllocation = async (req, res) => {
     try {
       console.log(req.body);
-      const { marketing_staff_id, saleDate, allocations } = req.body;
+      const { marketing_staff_id, saleDate, allocations, addedBy} = req.body;
   
       if (!marketing_staff_id) {
         return res.status(400).json({ error: "marketing staff id required" });
@@ -264,11 +270,16 @@ exports.addDailyStockAllocation = async (req, res) => {
         }
   
         await pool.query(
-          'INSERT INTO `daily_stock_allocation` (`marketing_staff_id`, `product_id`, `allocated_quantity`, `date`, `addedDate`,  `isActive`, `converted_to_sales`) VALUES (?, ?, ?, ? ,now(), 1, 0)',
-          [marketing_staff_id, product_id, allocated_quantity, saleDate]
+          'INSERT INTO `daily_stock_allocation` (`marketing_staff_id`, `product_id`, `allocated_quantity`, `date`, `addedDate`,  `isActive`, `converted_to_sales`, `addedBy`, `created`) VALUES (?, ?, ?, ? ,now(), 1, 0, ?, ?)',
+          [marketing_staff_id, product_id, allocated_quantity, saleDate, addedBy, getISTTimestamp()]
         );
       }
-  
+        await logUserActivity({
+        req,
+        user_id : addedBy,
+        action: `Daily stock allocation added - ${marketing_staff_id}`
+        });
+
       res.json({ message: 'daily stock allocations added successfully' });
     } catch (error) {
       console.error(error);
@@ -311,20 +322,25 @@ exports.searchDailyStockAllocationIndividual = async (req, res) => {
 // delete
 exports.deleteDailyStockAllocation = async (req,res)=>{
     try{
-        const { dailyStockId, productId, allocatedQuantity} = req.body;
+        const { dailyStockId, productId, allocatedQuantity, loggedInUserId} = req.body;
         if (!dailyStockId) return res.status(400).json({ error: "Daily stock id is required" });
 
         if (!productId) return res.status(400).json({ error: "Product id is required" });
 
         if (!allocatedQuantity || isNaN(allocatedQuantity)) return res.status(400).json({ error: "Allocated quantity is required and must be a number" });
 
-        const [rseult] = await pool.query('UPDATE `daily_stock_allocation` SET `isActive` = 0 WHERE `daily_stock_id` = ? AND `product_id` = ?', [dailyStockId, productId]);
+        const [result] = await pool.query('UPDATE `daily_stock_allocation` SET `isActive` = 0 WHERE `daily_stock_id` = ? AND `product_id` = ?', [dailyStockId, productId]);
         
-        if (rseult.affectedRows === 0 ) {
+        if (result.affectedRows === 0 ) {
             return res.status(404).json({ error: 'Record not found or already deleted' });
         }//else{
         //  await pool.query('UPDATE `stock` SET `quantity` = `quantity` + ? WHERE `product_id` = ?', [allocatedQuantity, productId]);                   
         // }
+        await logUserActivity({
+            req,
+            user_id :loggedInUserId,
+            action: `Allocation data deleted - ${dailyStockId} (daily stock id)`
+        });
       res.json({
         message:"Daily stock allocation deleted and stock updated successfully",
         dailyStockId,
