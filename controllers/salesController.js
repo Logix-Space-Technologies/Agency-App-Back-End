@@ -2,6 +2,8 @@ const { config } = require("dotenv");
 const pool = require("../config/db");
 
 const { v4: uuidv4 } = require("uuid");
+const { getISTTimestamp } = require('../utils/dateUtils');
+const { logUserActivity } = require("../utils/logUserActivity");
 
 exports.fetchDailyDataForPrint = async (req, res) => {
   const { marketing_staff_id, date } = req.body;
@@ -644,18 +646,23 @@ exports.addDirectSales = async (req, res) => {
       );  
     } else {
       const [customerResult] = await connection.query(
-        `INSERT INTO Customers (Name, Place, Mobile, EmailId, GstNumber, WalletAmount, isActive)
-                 VALUES (?, ?, ?, ?, ?, 0, 1)`,
-        [name, place, mobile, email, gstValue]
+        `INSERT INTO Customers (Name, Place, Mobile, EmailId, GstNumber, WalletAmount, addedBy, isActive)
+                 VALUES (?, ?, ?, ?, ?, 0, ?, 1)`,
+        [name, place, mobile, email, gstValue, employee_id]
       );
       customer_id = customerResult.insertId;
+      await logUserActivity({
+        req,
+        user_id :employee_id,
+        action: `Customer with name ${name} is added`
+      });
     }
     const sale_tracking_id = generateUniqueSaleTrackingId();
     const isGstBilling = !!customer?.gst_number;
 
      const [insertResult]  = await connection.query(
-      `INSERT INTO final_sale ( sale_tracking_Id, invoiceNumber, TotalAmount, UserId, DateofTransaction, addedDate, isSettled, AmountPaid, isGstBilling, addedBy, isActive)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO final_sale ( sale_tracking_Id, invoiceNumber, TotalAmount, UserId, DateofTransaction, addedDate, isSettled, AmountPaid, isGstBilling, created, addedBy, isActive)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         sale_tracking_id,
         invoiceNumber,
@@ -666,6 +673,7 @@ exports.addDirectSales = async (req, res) => {
         isSettledItem,
         amountPayingNow,
         isGstBilling,
+        getISTTimestamp(),
         employee_id
       ]
     );
@@ -767,11 +775,9 @@ exports.addDirectSales = async (req, res) => {
         ]
       );
 
-      const sale_id = salesResult.sale_id;
+      const sale_id = salesResult.insertId;
 
       console.log(sale_id);
-
-      console.log("Sale 1");
 
       // Update stock
       await connection.query(
@@ -779,9 +785,6 @@ exports.addDirectSales = async (req, res) => {
         [quantity, damaged_quantity, product_id]
       );
 
-      console.log("Price ----- ");
-      console.log(price_id_);
-      console.log(" ---- Price");
 
       const [stockIdResult] = await pool.query(
         "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `isActive` = 1",
@@ -813,7 +816,11 @@ exports.addDirectSales = async (req, res) => {
         );
       }
     }
-
+    await logUserActivity({
+        req,
+        user_id :employee_id,
+        action: `Sale created for the customer ${name}`
+      });
     await connection.commit();
     connection.release();
 
@@ -1037,8 +1044,8 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       }).format(current_date);
     const [insertResult] = await pool.query(
       `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction, addedDate, 
-             isSettled, AmountPaid, addedBy)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             isSettled, AmountPaid, created, addedBy)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         fuel,
         vehicle_service,
@@ -1050,6 +1057,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         addedDate,
         isSettledItem1,
         amount_paid,
+        getISTTimestamp(),
         user_id,
       ]
     );
@@ -1251,7 +1259,11 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       // console.log("amount Total" + amount_paid)
       // const isSettledItemNew = amount_paid >= (amount_received - totalDeductions) ? 1 : 0;
     }
-
+          await logUserActivity({
+          req,
+          user_id : user_id,
+          action : `Sale created - ${marketing_staff_id}`
+        });
     res.json({ message: "Sales added successfully", sales: salesResults,finalSaleRecord: finalSaleRecord });
   } catch (error) {
     console.error("Error in addSales:", error);
@@ -1984,7 +1996,7 @@ exports.getSaleDetailsForReturn = async (req, res) => {
 exports.deleteDirectSaleProduct = async (req, res) => {
   try {
     //console.log(req.body);
-    const { product_id, sale_id, sale_tracking_id } = req.body;
+    const { product_id, sale_id, sale_tracking_id, loggedInUserId } = req.body;
     if (!product_id)  return res.status(400).json({ error: "Product ID is required." });  
     if (!sale_id) return res.status(400).json({ error: "Sale ID is required." });
     if (!sale_tracking_id) return res.status(400).json({ error: "Sale Tracking ID  ID is required." });
@@ -2038,7 +2050,11 @@ exports.deleteDirectSaleProduct = async (req, res) => {
             [sale_tracking_id]
         );          
         }
-        
+        await logUserActivity({
+        req,
+        user_id :loggedInUserId,
+        action: `Product deleted from sales data - ${sale_tracking_id} (Sale tracking ID), ${product_id} (Product ID)`
+      });
       return res.status(200).json({ message: "Product deleted successfully." , productCount });    
     }
      } catch (error) {
@@ -2052,7 +2068,7 @@ exports.deleteDirectSaleProduct = async (req, res) => {
 
 exports.deleteAllDirectSaleProducts = async (req, res) => {
   try {
-    const { sale_tracking_id } = req.body;
+    const { sale_tracking_id, loggedInUserId} = req.body;
     if (!sale_tracking_id) {
       return res.status(400).json({ error: "Sale Tracking ID is required." });
     }
@@ -2096,6 +2112,12 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
         })()
       )
     );
+        await logUserActivity({
+        req,
+        user_id :loggedInUserId,
+        action: `All Products deleted from sales entry - ${sale_tracking_id} (Sale tracking ID)`
+      });
+    
      return res.status(200).json({ message: "All products deleted successfully." });
   } 
   } catch (error) {

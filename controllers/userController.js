@@ -1,6 +1,9 @@
 const pool = require("../config/db");
 const bcrypt = require("bcrypt");
 
+const { getISTTimestamp } = require('../utils/dateUtils');
+const { logUserActivity } = require("../utils/logUserActivity");
+
 // User Login
 exports.loginUser = async (req, res) => {
   try {
@@ -52,6 +55,12 @@ exports.loginUser = async (req, res) => {
       default:
         redirectPage = "/";
     }
+    
+    await logUserActivity({
+        req,
+        user_id :user.user_id,
+        action: `The user ${user.name} is logined`
+      });
 
     res.json({
       message: "Login successful",
@@ -144,6 +153,7 @@ exports.addUser = async (req, res) => {
       email,
       password_hash,
       Place_Of_Allocation,
+      userId,
     } = req.body;
 
     if (!name || !email || !password_hash) {
@@ -165,11 +175,12 @@ exports.addUser = async (req, res) => {
     // Hash the password
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password_hash, saltRounds);
+    const now = getISTTimestamp()
 
     // Insert user with hashed password
     const [result] = await pool.query(
       `INSERT INTO users (profile_avathar, name, role, phone, email, password_hash, created_at, Place_Of_Allocation)
-             VALUES (?, ?, ?, ?, ?, ?, now(), ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         profile_avathar,
         name,
@@ -177,14 +188,19 @@ exports.addUser = async (req, res) => {
         phone,
         email,
         hashedPassword,
+        now,
         Place_Of_Allocation,
       ]
     );
-
+        await logUserActivity({
+            req,
+            user_id :userId,
+            action: `User ${name} is added`
+          });
     res.json({ message: "User added successfully", user_id: result.insertId });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: error });
   }
 };
 
@@ -224,22 +240,24 @@ exports.editUser = async (req, res) => {
     }
 
     // Hash the password
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    let hashedPassword = null;
 
-    const query = `
-            UPDATE users 
-            SET profile_avathar = ?, 
-                name = ?, 
-                role = ?, 
-                phone = ?, 
-                email = ?,
-                password_hash = ?, 
-                Place_Of_Allocation = ?,
-                modified_date = now(),
-                addedBy = ? 
-            WHERE user_id = ?
-        `;
+    if (password && password.trim() !== "") {
+      const saltRounds = 10;
+      hashedPassword = await bcrypt.hash(password, saltRounds);
+    }
+    
+    let query = `
+      UPDATE users SET
+        profile_avathar = ?,
+        name = ?,
+        role = ?,
+        phone = ?,
+        email = ?,
+        Place_Of_Allocation = ?,
+        modified_date = ?,
+        addedBy = ?
+    `;
 
     const values = [
       profile_avathar,
@@ -247,14 +265,28 @@ exports.editUser = async (req, res) => {
       role,
       phone,
       email,
-      hashedPassword,
       Place_Of_Allocation,
-      loggedInUserId,
-      user_id,
+      getISTTimestamp(),
+      loggedInUserId
     ];
 
-    await pool.query(query, values);
+    // Only update password if provided
+    if (password && password.trim() !== "") {
+      const saltRounds = 10;
+      const hashedPassword = await bcrypt.hash(password, saltRounds);
+      query += `, password_hash = ?`;
+      values.push(hashedPassword);
+    }
 
+    query += ` WHERE user_id = ?`;
+    values.push(user_id);
+
+    await pool.query(query, values);
+    await logUserActivity({
+            req,
+            user_id :loggedInUserId,
+            action: `User ${name}'s data is edited`
+          });
     res.json({ message: "User updated successfully" });
   } catch (error) {
     console.error("Edit User Error:", error);
@@ -466,7 +498,7 @@ exports.changePassword = async (req, res) => {
 // Toggle Block/Unblock User
 exports.toggleBlock = async (req, res) => {
   try {
-    const { userId, isBlocked } = req.body;
+    const { userId, name, isBlocked, loggedInUserId } = req.body;
     console.log(req.body)
 
     if (!userId || (isBlocked !== 0 && isBlocked !== 1)) {
@@ -478,7 +510,11 @@ exports.toggleBlock = async (req, res) => {
       isBlocked,
       userId,
     ]);
-
+        await logUserActivity({
+            req,
+            user_id :loggedInUserId,
+            action: `User with name ${name}'s block status changed`
+          });
     res.json({
       message: isBlocked ? "User blocked successfully" : "User unblocked successfully",
     });
@@ -519,5 +555,19 @@ exports.getLinksForUser = async (req, res) => {
   } catch (error) {
     console.error("Error in toggleBlock:", error);
     res.status(500).json({ error: "Database error" });
+  }
+};
+
+
+exports.deleteOldLogs = async () => {
+  try {
+    await pool.query(`
+      DELETE FROM user_activity_log
+      WHERE created_at < NOW() - INTERVAL 30 DAY
+    `);
+
+    console.log("Old activity logs deleted");
+  } catch (error) {
+    console.error("Error deleting old logs:", error);
   }
 };
