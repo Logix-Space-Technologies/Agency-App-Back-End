@@ -153,6 +153,7 @@ exports.addUser = async (req, res) => {
       email,
       password_hash,
       Place_Of_Allocation,
+      userId,
     } = req.body;
 
     if (!name || !email || !password_hash) {
@@ -191,11 +192,15 @@ exports.addUser = async (req, res) => {
         Place_Of_Allocation,
       ]
     );
-
+        await logUserActivity({
+            req,
+            user_id :userId,
+            action: `User ${name} is added`
+          });
     res.json({ message: "User added successfully", user_id: result.insertId });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: error });
   }
 };
 
@@ -241,20 +246,18 @@ exports.editUser = async (req, res) => {
       const saltRounds = 10;
       hashedPassword = await bcrypt.hash(password, saltRounds);
     }
-    const now = getISTTimestamp()
-    const query = `
-            UPDATE users 
-            SET profile_avathar = ?, 
-                name = ?, 
-                role = ?, 
-                phone = ?, 
-                email = ?,
-                password_hash = ?, 
-                Place_Of_Allocation = ?,
-                modified_date = ?,
-                addedBy = ? 
-            WHERE user_id = ?
-        `;
+    
+    let query = `
+      UPDATE users SET
+        profile_avathar = ?,
+        name = ?,
+        role = ?,
+        phone = ?,
+        email = ?,
+        Place_Of_Allocation = ?,
+        modified_date = ?,
+        addedBy = ?
+    `;
 
     const values = [
       profile_avathar,
@@ -262,12 +265,22 @@ exports.editUser = async (req, res) => {
       role,
       phone,
       email,
-      hashedPassword,
       Place_Of_Allocation,
-      now,
-      loggedInUserId,
-      user_id,
+      getISTTimestamp(),
+      loggedInUserId
     ];
+
+    // Only update password if provided
+    if (password && password.trim() !== "") {
+      const saltRounds = 10;
+      const hashedPassword = await bcrypt.hash(password, saltRounds);
+      query += `, password_hash = ?`;
+      values.push(hashedPassword);
+    }
+
+    query += ` WHERE user_id = ?`;
+    values.push(user_id);
+
     await pool.query(query, values);
     await logUserActivity({
             req,
@@ -485,7 +498,7 @@ exports.changePassword = async (req, res) => {
 // Toggle Block/Unblock User
 exports.toggleBlock = async (req, res) => {
   try {
-    const { userId, isBlocked } = req.body;
+    const { userId, name, isBlocked, loggedInUserId } = req.body;
     console.log(req.body)
 
     if (!userId || (isBlocked !== 0 && isBlocked !== 1)) {
@@ -497,7 +510,11 @@ exports.toggleBlock = async (req, res) => {
       isBlocked,
       userId,
     ]);
-
+        await logUserActivity({
+            req,
+            user_id :loggedInUserId,
+            action: `User with name ${name}'s block status changed`
+          });
     res.json({
       message: isBlocked ? "User blocked successfully" : "User unblocked successfully",
     });
@@ -538,5 +555,19 @@ exports.getLinksForUser = async (req, res) => {
   } catch (error) {
     console.error("Error in toggleBlock:", error);
     res.status(500).json({ error: "Database error" });
+  }
+};
+
+
+exports.deleteOldLogs = async () => {
+  try {
+    await pool.query(`
+      DELETE FROM user_activity_log
+      WHERE created_at < NOW() - INTERVAL 30 DAY
+    `);
+
+    console.log("Old activity logs deleted");
+  } catch (error) {
+    console.error("Error deleting old logs:", error);
   }
 };

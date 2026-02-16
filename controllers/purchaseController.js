@@ -1,5 +1,6 @@
 const pool = require("../config/db"); // Assuming your db.js exports the promise pool
-
+const { getISTTimestamp } = require('../utils/dateUtils');
+const { logUserActivity } = require("../utils/logUserActivity");
 // Enhanced purchase controller with all scenarios
 exports.createEnhancedPurchase = async (req, res) => {
   const {
@@ -70,8 +71,8 @@ exports.createEnhancedPurchase = async (req, res) => {
                     product_id, purchase_date, purchase_price, total_amount, quantity,
                     Invoice_Number, supplier_id, is_damaged, damage_description,
                     replacement_provided, replacement_date, is_free_replacement,
-                    is_freebie, related_purchase_id, compensation_type, compensation_details
-                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    is_freebie, related_purchase_id, compensation_type, compensation_details, addedBy, created
+                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           productId,
           isReplacement || isFreeItem ? 0 : purchasePrice, // Free items have 0 price
@@ -88,9 +89,16 @@ exports.createEnhancedPurchase = async (req, res) => {
           relatedPurchaseId || null,
           compensationType || null,
           compensationDetails ? JSON.stringify(compensationDetails) : null,
+          addedBy,
+          getISTTimestamp()
         ]
       );
 
+      await logUserActivity({
+        req,
+        user_id :addedBy,
+        action: `Purchase added with invoice number ${invoiceNumber}`
+      });
       const purchaseId = purchaseResult.insertId;
 
 
@@ -862,7 +870,7 @@ exports.deletePurchase = async (req, res) => {
   let connection;
 
   try {
-    const { purchase_id, product_id, quantity } = req.body;
+    const { purchase_id, product_id, quantity, loggedInUserId } = req.body;
 
     if (!purchase_id || !product_id || !quantity) {
       return res.status(400).json({
@@ -896,8 +904,12 @@ exports.deletePurchase = async (req, res) => {
       [purchase_id]
     );
 
-    await connection.commit();
-
+        await logUserActivity({
+        req,
+        user_id :loggedInUserId,
+        action: `Purchase data deleted - ${purchase_id}`
+      });
+      await connection.commit();
     res.json({
       message: "Purchase deleted successfully",
       purchase_id,
