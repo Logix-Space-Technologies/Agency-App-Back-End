@@ -571,3 +571,85 @@ exports.deleteOldLogs = async () => {
     console.error("Error deleting old logs:", error);
   }
 };
+
+exports.getUserActivityByDate = async (req, res) => {
+  try {
+    const { date, page = 1, limit = 10 } = req.body;
+
+    if (!date) {
+      return res.status(400).json({
+        success: false,
+        message: "Date is required"
+      });
+    }
+
+    // Validate last 30 days
+    const selectedDate = new Date(date);
+    const today = new Date();
+    const diffDays = (today - selectedDate) / (1000 * 60 * 60 * 24);
+
+    if (diffDays < 0 || diffDays > 30) {
+      return res.status(400).json({
+        success: false,
+        message: "Please select a date within last 30 days"
+      });
+    }
+
+    const offset = (page - 1) * limit;
+
+    // Get total count
+    const [countResult] = await pool.query(
+      `
+      SELECT COUNT(*) as total
+      FROM user_activity_log
+      WHERE DATE(created_at) = ?
+      `,
+      [date]
+    );
+
+    const total = countResult[0].total;
+
+    // Get paginated data
+    const [rows] = await pool.query(
+      `
+      SELECT
+        u.name,
+        TRIM(SUBSTRING_INDEX(l.action, '-', 1)) AS action,
+        l.ip_address,
+        DATE_FORMAT(l.created_at, '%d-%m-%Y %H:%i:%s') AS created_at
+      FROM user_activity_log l
+      LEFT JOIN users u ON u.user_id = l.user_id
+      WHERE DATE(l.created_at) = ?
+      ORDER BY l.created_at DESC
+      LIMIT ? OFFSET ?
+      `,
+      [date, parseInt(limit), parseInt(offset)]
+    );
+
+    if (rows.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        total: 0,
+        totalPages: 0,
+        message: "No entries found"
+      });
+    }
+
+    res.json({
+      success: true,
+      data: rows,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      success: false,
+      message: "Server error"
+    });
+  }
+};
