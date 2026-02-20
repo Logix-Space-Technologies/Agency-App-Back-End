@@ -547,7 +547,7 @@ WHERE
 exports.fecthAllCustomers = async (req, res) => {
   try {
     const [rows] = await pool.query(
-      "SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE 1"
+      "SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE `isActive` = 1"
     );
     res.json({ success: true, data: rows });
   } catch (error) {
@@ -589,6 +589,7 @@ exports.fecthLatestPrices = async (req, res) => {
 };
 
 exports.addDirectSales = async (req, res) => {
+  let connection;
   const { agency_id, employee_id, customer, products, totalAmount, saleType,payment_breakdown = {}, } =
     req.body;
 
@@ -611,7 +612,7 @@ exports.addDirectSales = async (req, res) => {
         day: "2-digit",
       }).format(current_date);
 
-  const connection = await pool.getConnection();
+  connection = await pool.getConnection();
 
     // Convert amount_paying_now to number and handle empty/undefined cases
   const amountPayingNow = parseFloat(amount_paying_now || 0);
@@ -624,11 +625,11 @@ exports.addDirectSales = async (req, res) => {
     await connection.beginTransaction();
 
     // // 1. Insert or fetch customer
-    // const [existingCustomer] = await connection.query(
+    // const [existingCustomer] = await connection.execute(
     //   `SELECT id FROM Customers WHERE Mobile = ?`,
     //   [mobile]
     // );
-    const [rows] = await connection.query(
+    const [rows] = await connection.execute(
       "SELECT 1 FROM final_sale WHERE invoiceNumber = ? LIMIT 1",
       [customer?.invoiceNumber]
     );
@@ -640,12 +641,12 @@ exports.addDirectSales = async (req, res) => {
     let customer_id;
     if(id){
       customer_id = id;
-      const [customerUpdate] = await connection.query(
+      const [customerUpdate] = await connection.execute(
         "UPDATE `Customers` SET `GstNumber`= ?  WHERE `id` = ?",
         [gstValue, customer_id]
       );  
     } else {
-      const [customerResult] = await connection.query(
+      const [customerResult] = await connection.execute(
         `INSERT INTO Customers (Name, Place, Mobile, EmailId, GstNumber, WalletAmount, addedBy, isActive)
                  VALUES (?, ?, ?, ?, ?, 0, ?, 1)`,
         [name, place, mobile, email, gstValue, employee_id]
@@ -660,7 +661,7 @@ exports.addDirectSales = async (req, res) => {
     const sale_tracking_id = generateUniqueSaleTrackingId();
     const isGstBilling = !!customer?.gst_number;
 
-     const [insertResult]  = await connection.query(
+     const [insertResult]  = await connection.execute(
       `INSERT INTO final_sale ( sale_tracking_Id, invoiceNumber, TotalAmount, UserId, DateofTransaction, addedDate, isSettled, AmountPaid, isGstBilling, created, addedBy, isActive)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
@@ -681,7 +682,7 @@ exports.addDirectSales = async (req, res) => {
   //   const insertedId = insertResult.insertId;
 
   // // 2. UPDATE invoiceNumber
-  //   const [updateResult] = await connection.query(
+  //   const [updateResult] = await connection.execute(
   //     `UPDATE final_sale
   //     SET invoiceNumber = CONCAT(
   //         'SK',
@@ -696,13 +697,13 @@ exports.addDirectSales = async (req, res) => {
   //   throw new Error("Invoice number update failed for ID " + insertedId);
   // }
 
-  // const [finalSaleRecord] = await connection.query(
+  // const [finalSaleRecord] = await connection.execute(
   //     `SELECT invoiceNumber FROM final_sale WHERE sale_tracking_Id = ?`,
   //     [sale_tracking_id]
   //   );
 
      if (parseFloat(amountPayingNow) > 0) {
-      await pool.query(
+      await connection.execute(
         `INSERT INTO sales_credit_history (UPI, Cash, Card, sale_tracking_Id, amount, creditedDate, isActive)
                  VALUES (?,?,?,?, ?, now(), ?)`,
         [upi, cash, card, sale_tracking_id, amountPayingNow, 1]
@@ -711,7 +712,7 @@ exports.addDirectSales = async (req, res) => {
 
     console.log("sales_credit_history Completed  !!! ");
 
-    // await connection.query(
+    // await connection.execute(
     //   `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate,isActive)
     //          VALUES (?, ?, ?, ?)`,
     //   [sale_tracking_id, amountPayingNow, date, 1]
@@ -720,7 +721,7 @@ exports.addDirectSales = async (req, res) => {
     for (const item of products) {
       const { product_id, quantity,damaged_quantity,selling_price,isPriceChanged, price_id = null } = item;
 
-      const [priceRows] = await pool.query(
+      const [priceRows] = await connection.execute(
         `SELECT price_id, direct_selling_price, whole_sale_price
                  FROM product_prices
                  WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
@@ -752,7 +753,7 @@ exports.addDirectSales = async (req, res) => {
       const price_id_ = priceRows[0].price_id;
 
       // Insert into `sales`
-      const [salesResult] = await connection.query(
+      const [salesResult] = await connection.execute(
         `INSERT INTO sales (
                     sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, 
                     is_credit, sale_tracking_Id, sale_date, damaged_count, is_settled, loss_count,is_price_changed, isActive
@@ -780,13 +781,13 @@ exports.addDirectSales = async (req, res) => {
       console.log(sale_id);
 
       // Update stock
-      await connection.query(
+      await connection.execute(
         `UPDATE stock SET quantity = quantity - ?, Damage_Qty= Damage_Qty + ? WHERE  product_id = ?`,
         [quantity, damaged_quantity, product_id]
       );
 
 
-      const [stockIdResult] = await pool.query(
+      const [stockIdResult] = await connection.execute(
         "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `isActive` = 1",
         [product_id]
       );
@@ -798,7 +799,7 @@ exports.addDirectSales = async (req, res) => {
         const creditOrDebit = "debit";
         const referenceInvoiceOrSale = sale_tracking_id;
 
-        await pool.query(
+        await connection.execute(
           "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
           [
             stock_Id,
@@ -822,7 +823,7 @@ exports.addDirectSales = async (req, res) => {
         action: `Sale created for the customer ${name}`
       });
     await connection.commit();
-    connection.release();
+    //connection.release();
 
     res
       .status(201)
@@ -831,9 +832,11 @@ exports.addDirectSales = async (req, res) => {
       .json({ message: "Direct sales recorded with customer info"});
   } catch (err) {
     await connection.rollback();
-    connection.release();
+    //connection.release();
     console.error("Error processing direct sale:", err);
     res.status(500).json({ message: "Internal server error" });
+  } finally {
+    if (connection) connection.release();
   }
 };
 
@@ -965,6 +968,7 @@ exports.getAllSales = async (req, res) => {
 // const { v4: uuidv4 } = require('uuid');
 // Add Sales
 exports.addSalesFromDailyAllocation = async (req, res) => {
+  let connection;
   try {
     const {
       sale_type = "marketing",
@@ -983,8 +987,9 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
     const { fuel = 0, vehicle_service = 0, other = 0 } = expenses;
     const { cash = 0, card = 0, upi = 0 } = payment_breakdown;
 
-    console.log("Fuel:", fuel);
-    console.log("Card Payment:", card);
+    // GET CONNECTION
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
 
     if (
       !marketing_staff_id ||
@@ -994,7 +999,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       return res.status(400).json({ error: "Required fields are missing" });
     }
 
-    const [stockAllocations] = await pool.query(
+    const [stockAllocations] = await connection.execute(
       `SELECT daily_stock_id, product_id, allocated_quantity
              FROM daily_stock_allocation
              WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1`,
@@ -1018,10 +1023,6 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
     const isSettledItem1 =
       amount_paid >= products[0].amount_received - totalDeductions1 ? 1 : 0;
 
-    console.log(isSettledItem1);
-    console.log("is Settled Item  ? " + isSettledItem1);
-
-    console.log("-----------------");
 
     console.log({
       fuel,
@@ -1034,7 +1035,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       isSettledItem1,
       amount_paid,
     });
-    console.log("-----------------");
+
       const current_date = new Date();
       const addedDate = new Intl.DateTimeFormat("en-CA", {
         timeZone: "Asia/Kolkata",  // GMT+5:30
@@ -1042,7 +1043,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         month: "2-digit",
         day: "2-digit",
       }).format(current_date);
-    const [insertResult] = await pool.query(
+    const [insertResult] = await connection.execute(
       `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction, addedDate, 
              isSettled, AmountPaid, created, addedBy)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1065,7 +1066,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
     const insertedId = insertResult.insertId;
 
   // 2. UPDATE invoiceNumber
-  const [updateResult] = await pool.query(
+  const [updateResult] = await connection.execute(
     `UPDATE final_sale
      SET invoiceNumber = CONCAT(
          'SK',
@@ -1084,7 +1085,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
     console.log("Final Sale Completed !!! ");
 
     if (parseFloat(amount_paid) > 0) {
-      await pool.query(
+      await connection.execute(
         `INSERT INTO sales_credit_history (UPI, Cash, Card, sale_tracking_Id, amount, creditedDate, isActive)
                  VALUES (?,?,?,?, ?, now(), ?)`,
         [upi, cash, card, sale_tracking_id, amount_paid, 1]
@@ -1129,12 +1130,8 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       //     });
       // }
 
-      console.log("Product Fetch Going To ");
 
-      console.log(product_id);
-      console.log(sale_date);
-
-      const [priceRows] = await pool.query(
+      const [priceRows] = await connection.execute(
         `SELECT price_id
                  FROM product_prices
                  WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
@@ -1165,7 +1162,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         parseFloat(amount_paid) < parseFloat(amount_received) ? 1 : 0;
 
       console.log("Enter Into Sales !!! ");
-      const [insertResult] = await pool.query(
+      const [insertResult] = await connection.execute(
         `INSERT INTO sales
                  (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count, sale_tracking_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1188,14 +1185,14 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       const newSaleId = insertResult.insertId;
       console.log("New sale created with ID:", newSaleId);
 
-      await pool.query(
+      await connection.execute(
         `UPDATE stock
                  SET quantity = quantity - ? , Damage_Qty=Damage_Qty + ? , Loss_Qty = Loss_Qty + ?
                  WHERE product_id = ? AND isActive = 1`,
         [quantity_sold, damaged_count, loss_count, product_id]
       );
 
-      const [stockIdResult] = await pool.query(
+      const [stockIdResult] = await connection.execute(
         "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `price_id` = ? AND `isActive` = 1",
         [product_id, price_id]
       );
@@ -1207,7 +1204,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         const creditOrDebit = "debit";
         const referenceInvoiceOrSale = newSaleId;
 
-        await pool.query(
+        await connection.execute(
           "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
           [
             stock_Id,
@@ -1225,7 +1222,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         );
       }
 
-      await pool.query(
+      await connection.execute(
         `UPDATE daily_stock_allocation SET converted_to_sales = 1 , allocated_quantity = allocated_quantity-?  WHERE daily_stock_id = ?`,
         [quantity_sold, dsa_id]
       );
@@ -1239,14 +1236,14 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       });
     }
 
-    await pool.query(
+    await connection.execute(
       `UPDATE final_sale
              SET TotalAmount = ?
              WHERE sale_tracking_Id = ?`,
       [totalAmountReceivedForSale, sale_tracking_id]
     );
 
-    const [finalSaleRecord] = await pool.query(
+    const [finalSaleRecord] = await connection.execute(
       `SELECT AmountPaid, TotalAmount, invoiceNumber FROM final_sale WHERE sale_tracking_Id = ?`,
       [sale_tracking_id]
     );
@@ -1264,11 +1261,15 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
           user_id : user_id,
           action : `Sale created - ${marketing_staff_id}`
         });
+        await connection.commit();
     res.json({ message: "Sales added successfully", sales: salesResults,finalSaleRecord: finalSaleRecord });
   } catch (error) {
+    if (connection) await connection.rollback();
     console.error("Error in addSales:", error);
     res.status(500).json({ error: "Database error" });
-  } 
+  } finally {
+    if (connection) connection.release();
+  }
 };
 
 function generateUniqueSaleTrackingId() {
@@ -1861,9 +1862,9 @@ exports.submitAllProductReturns = async (req, res) => {
           );
         }
       
-        await connection.query(returnTableQuery, queryParams);
+        await connection.execute(returnTableQuery, queryParams);
 
-        // await connection.query(
+        // await connection.execute(
         //   `INSERT INTO direct_sale_return (
         //   invoice_no,
         //   product_id,
@@ -1889,7 +1890,7 @@ exports.submitAllProductReturns = async (req, res) => {
       }
 
       if (returned_quantity > 0) {
-        await connection.query(
+        await connection.execute(
           `UPDATE stock SET quantity = quantity + ? WHERE product_id = ?`,
           [returned_quantity, product_id]
         );
@@ -1897,13 +1898,13 @@ exports.submitAllProductReturns = async (req, res) => {
       if (damaged_refund_quantity > 0 || damaged_replacement_quantity > 0) {
         let damaged_count =
           damaged_refund_quantity + damaged_replacement_quantity;
-        await connection.query(
+        await connection.execute(
           `UPDATE stock SET Damage_Qty = Damage_Qty + ? WHERE product_id = ?`,
           [damaged_count, product_id]
         );
       }
       if (damaged_replacement_quantity > 0) {
-        await connection.query(
+        await connection.execute(
           `UPDATE stock SET quantity = quantity - ? WHERE product_id = ?`,
           [damaged_replacement_quantity, product_id]
         );
@@ -1912,11 +1913,11 @@ exports.submitAllProductReturns = async (req, res) => {
        if (returned_quantity > 0 || damaged_refund_quantity > 0 ) {
         qtyToBeToReduced =  (returned_quantity ?? 0) + (damaged_refund_quantity ?? 0);
         amtToBeToReduced =   (return_amount ?? 0) + (damaged_refund_amount ?? 0);
-        await connection.query(
+        await connection.execute(
           `UPDATE sales SET quantity_sold = quantity_sold - ?, amount_received = amount_received - ? WHERE product_id = ? AND sale_tracking_Id= ?`,
           [qtyToBeToReduced, amtToBeToReduced, product_id, invoice_no]
         );
-        await connection.query(
+        await connection.execute(
           `UPDATE final_sale SET TotalAmount = TotalAmount - ? WHERE  sale_tracking_Id= ?`,
           [amtToBeToReduced, invoice_no]
         );
@@ -1928,8 +1929,11 @@ exports.submitAllProductReturns = async (req, res) => {
       .status(200)  
       .json({ message: "Returns and stock updated successfully." });
   } catch (error) {
+    if (connection) await connection.rollback();
     console.log(error);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (connection) connection.release();
   }
 };
 
@@ -1994,6 +1998,7 @@ exports.getSaleDetailsForReturn = async (req, res) => {
 
 
 exports.deleteDirectSaleProduct = async (req, res) => {
+  let connection;
   try {
     //console.log(req.body);
     const { product_id, sale_id, sale_tracking_id, loggedInUserId } = req.body;
@@ -2001,28 +2006,32 @@ exports.deleteDirectSaleProduct = async (req, res) => {
     if (!sale_id) return res.status(400).json({ error: "Sale ID is required." });
     if (!sale_tracking_id) return res.status(400).json({ error: "Sale Tracking ID  ID is required." });
 
-    const [result] =  await pool.query(
+    connection = await pool.getConnection();
+    
+    await connection.beginTransaction();
+
+    const [result] =  await connection.execute(
           "UPDATE `sales` SET `isActive` = 0 WHERE `product_id`= ? AND `sale_tracking_Id`=?",
           [product_id, sale_tracking_id]
         );
     if (result.affectedRows === 0){
         return res.status(400).json({ error: "Sales data not updated" });
     }else{
-      const [product] =  await pool.query(
+      const [product] =  await connection.execute(
           "SELECT quantity_sold, amount_received from `sales` WHERE `product_id`= ? AND `sale_tracking_Id`=? AND `isActive` = 0",
           [product_id, sale_tracking_id]
         );
         const { quantity_sold, amount_received } = product[0] ?? {};
-        const [stockUpdate] =  await pool.query(
+        const [stockUpdate] =  await connection.execute(
             "UPDATE `stock` SET quantity = quantity +  ? WHERE `product_id` = ?",
             [quantity_sold, product_id]
         );
-        const [finalSaleUpdate] =  await pool.query(
+        const [finalSaleUpdate] =  await connection.execute(
             "UPDATE `final_sale` SET TotalAmount = TotalAmount - ? WHERE `sale_tracking_Id`= ?",
             [amount_received, sale_tracking_id]
         );
         //Stock ID from stock table 
-        const [stockRows] = await pool.query(
+        const [stockRows] = await connection.execute(
         "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND isActive = 1",
         [product_id]
       ); 
@@ -2033,19 +2042,19 @@ exports.deleteDirectSaleProduct = async (req, res) => {
 
         const stockId = stockRows[0].stock_id;
         //Delete stock history
-        await pool.query(
+        await connection.execute(
           "DELETE FROM `stock_History` WHERE `ReferenceInvoiceOrSale` = ? AND `stock_Id` = ?",
           [sale_tracking_id, stockId]
         );
 
-        const [count] =  await pool.query(
+        const [count] =  await connection.execute(
           "SELECT COUNT(*) AS productCount FROM `sales` WHERE `sale_tracking_Id`= ? AND isActive = 1",
           [sale_tracking_id]
         );
         const{ productCount } =  count[0];
         //console.log(productCount);
         if(productCount === 0 ){
-        const [finalSaleUpdate] =  await pool.query(
+        const [finalSaleUpdate] =  await connection.execute(
             "UPDATE `final_sale` SET isActive = 0 WHERE `sale_tracking_Id`= ?",
             [sale_tracking_id]
         );          
@@ -2055,11 +2064,16 @@ exports.deleteDirectSaleProduct = async (req, res) => {
         user_id :loggedInUserId,
         action: `Product deleted from sales data - ${sale_tracking_id} (Sale tracking ID), ${product_id} (Product ID)`
       });
+      // Commit the transaction
+      await connection.commit();
       return res.status(200).json({ message: "Product deleted successfully." , productCount });    
     }
      } catch (error) {
-    console.error("Error fetching sale details:", error);
-    res.status(500).json({ error: "Database error" });
+        if (connection) await connection.rollback();
+        console.error("Error in deleting sale", error);
+        res.status(500).json({ error: "Database error" });
+      } finally {
+        if (connection) connection.release();
       }
 
   };    
@@ -2067,13 +2081,18 @@ exports.deleteDirectSaleProduct = async (req, res) => {
 
 
 exports.deleteAllDirectSaleProducts = async (req, res) => {
+  let connection;
   try {
     const { sale_tracking_id, loggedInUserId} = req.body;
     if (!sale_tracking_id) {
       return res.status(400).json({ error: "Sale Tracking ID is required." });
     }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
     //Update final_sale
-    const [result] = await pool.query(
+    const [result] = await connection.execute(
       "UPDATE `final_sale` SET `isActive` = 0 WHERE `sale_tracking_Id` = ? AND `isActive` = 1",
       [sale_tracking_id]
     );
@@ -2081,7 +2100,7 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
     if (result.affectedRows === 0) {
       return res.status(400).json({ error: "Sales data not updated" });
     }else{
-    const [products] = await pool.query(
+    const [products] = await connection.execute(
       "SELECT `product_id`, `quantity_sold` FROM `sales` WHERE `sale_tracking_Id` = ? AND isActive = 1",
       [sale_tracking_id]
     );
@@ -2090,7 +2109,7 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
       return res.status(400).json({ error: "No active products found" });
     }
     //Delete stock history
-    await pool.query(
+    await connection.execute(
       "DELETE FROM `stock_History` WHERE `ReferenceInvoiceOrSale` = ?",
       [sale_tracking_id]
     );
@@ -2099,13 +2118,13 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
       products.map(({ product_id, quantity_sold }) =>
         (async () => {
           // Update sales
-          await pool.query(
+          await connection.execute(
             "UPDATE `sales` SET `isActive` = 0 WHERE `sale_tracking_Id` = ? AND `product_id` = ?",
             [sale_tracking_id, product_id]
           );
 
           // Update stock
-          await pool.query(
+          await connection.execute(
             "UPDATE `stock` SET quantity = quantity + ? WHERE `product_id` = ?",
             [quantity_sold, product_id]
           );
@@ -2117,12 +2136,15 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
         user_id :loggedInUserId,
         action: `All Products deleted from sales entry - ${sale_tracking_id} (Sale tracking ID)`
       });
-    
+      await connection.commit();
      return res.status(200).json({ message: "All products deleted successfully." });
   } 
   } catch (error) {
+    if (connection) await connection.rollback();
     console.error("Error deleting sale details:", error);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (connection) connection.release();
   }
 }; 
 
