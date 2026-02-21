@@ -135,7 +135,7 @@ exports.createEnhancedPurchase = async (req, res) => {
       else if (isFreeItem) stockType = "freebie";
       else stockType = "purchase";
 
-      const [stockIdResult] = await pool.query(
+      const [stockIdResult] = await connection.execute(
         "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `isActive` = 1",
         [productId]
       );
