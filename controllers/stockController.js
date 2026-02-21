@@ -422,3 +422,78 @@ exports.saveOpeningClosingBalance = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+
+
+exports.viewOpeningClosingStock = async (req, res) => {
+  try {
+    const { product_id, fromDate, toDate } = req.body;
+
+    // Validate date range (max 15 days back)
+    const today = new Date();
+    const minAllowedDate = new Date();
+    minAllowedDate.setDate(today.getDate() - 15);
+
+    if (fromDate) {
+      const selectedFromDate = new Date(fromDate);
+
+      if (selectedFromDate < minAllowedDate) {
+        return res.status(400).json({
+          error: "From date cannot be older than 15 days from today"
+        });
+      }
+    }
+
+    if (toDate) {
+      const selectedToDate = new Date(toDate);
+
+      if (selectedToDate < minAllowedDate) {
+        return res.status(400).json({
+          error: "To date cannot be older than 15 days from today"
+        });
+      }
+    }
+
+    let query = `
+      SELECT 
+        ocb.id,
+        ocb.product_id,
+        p.product_name,
+        ocb.date,
+        ocb.opening_stock,
+        ocb.closing_stock,
+        ocb.sold_qty,
+        ocb.damage_qty,
+        ocb.loss_qty,
+        ocb.misc_damage_qty
+      FROM opening_closing_balance ocb
+      JOIN products p ON p.product_id = ocb.product_id
+      WHERE 1=1
+    `;
+    const queryParams = [];
+    //const queryParams = [product_id];
+    // --- Optional Date Range ---
+    if (product_id ) {
+      query += ` AND ocb.product_id = ?`;
+      queryParams.push(product_id);
+    }
+
+    // --- Optional Date Range ---
+    if (fromDate && toDate) {
+      query += ` AND DATE(ocb.date) BETWEEN ? AND ?`;
+      queryParams.push(fromDate, toDate);
+    }
+
+    // Order results
+    query += ` ORDER BY ocb.date DESC`;
+
+    // Execute
+    const [result] = await pool.query(query, queryParams);
+
+    res.json(result);
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
