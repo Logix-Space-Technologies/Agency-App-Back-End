@@ -22,10 +22,12 @@ async function runDailyOpeningClosing() {
   const today = getISTDate();
 
   console.log("Running Opening/Closing Stock for:", today);
-
+  let connection;
   try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
     /* 1️⃣ Get all active products */
-    const [products] = await pool.query(`
+    const [products] = await connection.execute(`
       SELECT product_id
       FROM products
       WHERE isActive = 1
@@ -38,7 +40,7 @@ async function runDailyOpeningClosing() {
 
     for (const { product_id } of products) {
       /* 2️⃣ Opening Stock */
-      const [prev] = await pool.query(
+      const [prev] = await connection.execute(
         `
         SELECT closing_stock
         FROM opening_closing_balance
@@ -55,7 +57,7 @@ async function runDailyOpeningClosing() {
         if (prev.length) {
         openingStock = prev[0].closing_stock;
         } else {
-        const [[stock]] = await pool.query(
+        const [[stock]] = await connection.execute(
             `
             SELECT
             (
@@ -79,7 +81,7 @@ async function runDailyOpeningClosing() {
         }
 
       /* 3️⃣ Sales / Damage / Loss */
-      const [[sales]] = await pool.query(
+      const [[sales]] = await connection.execute(
         `
         SELECT
           IFNULL(SUM(quantity_sold),0) AS sold_qty,
@@ -94,7 +96,7 @@ async function runDailyOpeningClosing() {
       );
 
       /* 4️⃣ Miscellaneous Damage */
-      const [[misc]] = await pool.query(
+      const [[misc]] = await connection.execute(
         `
         SELECT IFNULL(SUM(quantity),0) AS misc_damage_qty
         FROM miscellaneous_damage
@@ -115,7 +117,7 @@ async function runDailyOpeningClosing() {
         misc.misc_damage_qty;
 
       /* 6️⃣ Insert / Update */
-      await pool.query(
+      await connection.execute(
         `
         INSERT INTO opening_closing_balance
         (
@@ -151,12 +153,14 @@ async function runDailyOpeningClosing() {
 
       console.log(`✔ Product ${product_id} updated`);
     }
-
+    await connection.commit();
     console.log("✅ Daily Opening/Closing completed successfully");
 
   } catch (err) {
+    if (connection) await connection.rollback();
     console.error("❌ Error running cron:", err);
   } finally {
+    if (connection) connection.release();
     await pool.end();
   }
 }
