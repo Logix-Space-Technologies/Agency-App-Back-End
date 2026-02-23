@@ -89,7 +89,20 @@ async function runDailyOpeningClosing() {
         openingStock = stock ? Number(stock.available_qty) : 0;
         }
 
-      /* 3️⃣ Sales / Damage / Loss */
+    /* 3️⃣ Purchases */
+      const [[purchase]] = await connection.execute(
+        `
+        SELECT IFNULL(SUM(quantity),0) AS purchase_qty
+        FROM purchase
+        WHERE product_id = ?
+        AND purchase_date = ?
+        AND isActive = 1
+        AND is_damaged = 0
+        `,
+        [product_id, today]
+      );
+
+      /* 4️⃣ Sales / Damage / Loss */
       const [[sales]] = await connection.execute(
         `
         SELECT
@@ -104,7 +117,7 @@ async function runDailyOpeningClosing() {
         [product_id, today]
       );
 
-      /* 4️⃣ Miscellaneous Damage */
+      /* 5️⃣ Miscellaneous Damage */
       const [[misc]] = await connection.execute(
         `
         SELECT IFNULL(SUM(quantity),0) AS misc_damage_qty
@@ -116,14 +129,19 @@ async function runDailyOpeningClosing() {
         `,
         [product_id, today, today]
       );
-
-      /* 5️⃣ Closing Stock */
+      const opening = Number(openingStock) || 0;
+      const purchaseQty = Number(purchase.purchase_qty) || 0;
+      const soldQty = Number(sales.sold_qty) || 0;
+      const damageQty = Number(sales.damage_qty) || 0;
+      const lossQty = Number(sales.loss_qty) || 0;
+      const miscDamageQty = Number(misc.misc_damage_qty) || 0;
+      /* 6️⃣ Closing Stock */
       const closingStock =
-        openingStock -
-        sales.sold_qty -
-        sales.damage_qty -
-        sales.loss_qty -
-        misc.misc_damage_qty;
+        (opening + purchaseQty) -
+        soldQty -
+        damageQty -
+        lossQty -
+        miscDamageQty;
 
       /* 6️⃣ Insert / Update */
       await connection.execute(
@@ -134,15 +152,17 @@ async function runDailyOpeningClosing() {
           date,
           opening_stock,
           closing_stock,
+          purchase_qty,
           sold_qty,
           damage_qty,
           loss_qty,
           misc_damage_qty
         )
-        VALUES (?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?)
         ON DUPLICATE KEY UPDATE
           opening_stock = VALUES(opening_stock),
           closing_stock = VALUES(closing_stock),
+          purchase_qty = VALUES(purchase_qty),
           sold_qty = VALUES(sold_qty),
           damage_qty = VALUES(damage_qty),
           loss_qty = VALUES(loss_qty),
@@ -153,6 +173,7 @@ async function runDailyOpeningClosing() {
           today,
           openingStock,
           closingStock,
+          purchase.purchase_qty,
           sales.sold_qty,
           sales.damage_qty,
           sales.loss_qty,
