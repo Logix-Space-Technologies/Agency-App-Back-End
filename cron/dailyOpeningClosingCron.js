@@ -5,21 +5,30 @@
 
 const pool = require("../config/db");
 /* ---------------- DATE UTILS ---------------- */
-function getISTDate(date = new Date()) {
-  const istOffset = 5.5 * 60 * 60 * 1000;
-  const istTime = new Date(date.getTime() + istOffset);
+function getISTDate(daysOffset = 0) {
+  const now = new Date();
 
-  const year = istTime.getUTCFullYear();
-  const month = String(istTime.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(istTime.getUTCDate()).padStart(2, "0");
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
 
-  return `${year}-${month}-${day}`; // YYYY-MM-DD
+  const year = parts.find(p => p.type === "year").value;
+  const month = parts.find(p => p.type === "month").value;
+  const day = parts.find(p => p.type === "day").value;
+
+  const istDate = new Date(`${year}-${month}-${day}`);
+  istDate.setDate(istDate.getDate() + daysOffset);
+
+  return istDate.toISOString().split("T")[0];
 }
 
 /* ---------------- MAIN LOGIC ---------------- */
 async function runDailyOpeningClosing() {
   //const connection = await mysql.createConnection(dbConfig);
-  const today = getISTDate();
+  const today = getISTDate(-1);
 
   console.log("Running Opening/Closing Stock for:", today);
   let connection;
