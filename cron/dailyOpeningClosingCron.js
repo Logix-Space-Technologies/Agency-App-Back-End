@@ -28,7 +28,7 @@ function getISTDate(daysOffset = 0) {
 /* ---------------- MAIN LOGIC ---------------- */
 async function runDailyOpeningClosing() {
   //const connection = await mysql.createConnection(dbConfig);
-  const today = getISTDate(-1);
+  const today = getISTDate();
 
   console.log("Running Opening/Closing Stock for:", today);
   let connection;
