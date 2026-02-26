@@ -462,6 +462,7 @@ exports.viewOpeningClosingStock = async (req, res) => {
         ocb.date,
         ocb.opening_stock,
         ocb.closing_stock,
+        ocb.purchase_qty,
         ocb.sold_qty,
         ocb.damage_qty,
         ocb.loss_qty,
@@ -495,5 +496,26 @@ exports.viewOpeningClosingStock = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Database error" });
+  }
+};
+
+
+exports.deleteOldStockData = async (req, res) => {
+  try {
+    await pool.query(`
+      DELETE FROM opening_closing_balance
+      WHERE created < NOW() - INTERVAL 15 DAY
+    `);
+
+    return res.status(200).json({
+      success: true,
+      message: "Old stock data deleted"
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
 };
