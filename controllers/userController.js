@@ -559,16 +559,23 @@ exports.getLinksForUser = async (req, res) => {
 };
 
 
-exports.deleteOldLogs = async () => {
+exports.deleteOldLogs = async (req, res) => {
   try {
     await pool.query(`
       DELETE FROM user_activity_log
-      WHERE created_at < NOW() - INTERVAL 30 DAY
+      WHERE created_at < NOW() - INTERVAL 20 DAY
     `);
 
-    console.log("Old activity logs deleted");
+    return res.status(200).json({
+      success: true,
+      message: "Old activity logs deleted"
+    });
+
   } catch (error) {
-    console.error("Error deleting old logs:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
 };
 
