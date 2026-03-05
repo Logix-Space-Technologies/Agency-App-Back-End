@@ -2518,27 +2518,24 @@ exports.fetchCustomerCreditAmount = async (req, res) => {
     const [rows] = await pool.query(
       `
       SELECT 
-        c.id AS customerId,
-        c.Name AS customerName,
-        SUM(
-          (fs.TotalAmount 
-            - fs.FuelExpenses 
-            + fs.VehcileServiceExpenses 
-            + fs.OtherExpenses
-          ) - fs.AmountPaid
-        ) AS totalCredit
+          c.id AS customerId,
+          c.Name AS customerName,
+          SUM(
+              (fs.TotalAmount - (fs.FuelExpenses + fs.VehcileServiceExpenses + fs.OtherExpenses))
+              - fs.AmountPaid
+          ) AS totalCredit
       FROM final_sale fs
       JOIN (
-        SELECT sale_tracking_Id, MIN(sale_type) AS sale_type
-        FROM sales
-        GROUP BY sale_tracking_Id
+          SELECT sale_tracking_Id, MIN(sale_type) AS sale_type
+          FROM sales
+          GROUP BY sale_tracking_Id
       ) s ON fs.sale_tracking_Id = s.sale_tracking_Id
       JOIN Customers c ON c.id = fs.UserId
       WHERE 
-        fs.isActive = 1
-        AND fs.isSettled = 0
-        AND s.sale_type != 'marketing'
-        AND c.id = ?
+          fs.isActive = 1
+          AND s.sale_type != 'marketing'
+          AND c.id = ?
+      GROUP BY c.id
       `,
       [customerId]
     );
