@@ -831,6 +831,11 @@ exports.addDirectSales = async (req, res) => {
       //.json({ message: "Direct sales recorded with customer info",finalSaleRecord:finalSaleRecord });
       .json({ message: "Direct sales recorded with customer info"});
   } catch (err) {
+      if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({
+        message: "Invoice number already exists. Please refresh and try again."
+      });
+    }
     await connection.rollback();
     //connection.release();
     console.error("Error processing direct sale:", err);
