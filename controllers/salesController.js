@@ -2564,3 +2564,103 @@ exports.fetchCustomerCreditAmount = async (req, res) => {
 
 
 
+//fetch data for with allocation ID - final sale -ID
+exports.fetchSalesDataByIDSaleTrackingID = async (req, res) => {
+  try {
+    let { saleTrackingId } = req.body;
+    // Step 1: Get final sale data
+    const [finalSalerows] = await pool.query(
+      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses`, `invoiceNumber`, COALESCE(`users`.`name`, 'Admin') as addedBy  FROM `final_sale` LEFT JOIN `users` ON `final_sale`.`addedBy` = `users`.`user_id` WHERE   `sale_tracking_Id` = ? AND `final_sale`.`isActive` = 1",
+      [saleTrackingId]
+    );
+
+    // Check if sale data exists
+    if (finalSalerows.length === 0) {
+      return res.json({
+        success: false,
+        message: "No final sale found for given date.",
+      });
+    }
+
+   // const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
+
+    // Step 2: Get product sale data
+    const [productData] = await pool.query(
+      `SELECT 
+                s.sale_id, 
+                s.sale_type, 
+                s.marketing_staff_id, 
+                p.product_name,
+                p.product_id,
+                pp.marketing_selling_price, 
+                s.quantity_sold, 
+                s.amount_received, 
+                s.is_credit, 
+                s.sale_tracking_Id, 
+                s.sale_date, 
+                s.damaged_count, 
+                s.is_settled, 
+                s.loss_count, 
+                s.isActive,
+                fs.id  AS final_sale_id,
+                u.name
+            FROM 
+                sales s
+            JOIN 
+                products p ON s.product_id = p.product_id
+            JOIN 
+                product_prices pp ON pp.price_id = s.price_id    
+            JOIN
+                final_sale fs ON s.sale_tracking_Id = fs.sale_tracking_Id
+            JOIN 
+                users u ON s.marketing_staff_id = u.user_id        
+            WHERE 
+                 fs.sale_tracking_Id = ?  AND s.isActive = 1 AND fs.isActive = 1`,
+      [saleTrackingId]
+    );
+
+    // Step 3: Get payment breakdown (using sale_tracking_Id from above)
+    const [transactionData] = await pool.query(
+      "SELECT SUM(`amount`) AS total, SUM(`UPI`) AS upi, SUM(`Cash`) AS cash, SUM(`Card`) AS card FROM `sales_credit_history` WHERE `sale_tracking_Id` = ?",
+      [saleTrackingId]
+    );
+
+        // Step 4: Find sale type
+    const saleType = productData.length > 0 ? productData[0].sale_type : null;
+
+    // Step 5: Get UserId from final_sale
+    const userId = finalSalerows[0].UserId;
+    let userDetails = {};
+
+    if (saleType && saleType !== "marketing") {
+      // Fetch from customers table
+      const [customerRows] = await pool.query(
+        "SELECT Name FROM customers WHERE id = ?",
+        [userId]
+      );
+
+      userDetails.name = customerRows[0]?.Name || {};
+
+    } else {
+      // Fetch from users table
+      const [userRows] = await pool.query(
+        "SELECT name FROM users WHERE user_id = ?",
+        [userId]
+      );
+
+      userDetails.name = userRows[0]?.name || {};
+    }
+
+    res.json({
+      success: true,
+      saledata: finalSalerows,
+      details: productData,
+      payments: transactionData[0] || {},
+      saleType: saleType,
+      userDetails: userDetails
+    });
+  } catch (error) {
+    console.error("Error fetching daily data:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch data" });
+  }
+};

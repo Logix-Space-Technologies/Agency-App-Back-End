@@ -26,7 +26,7 @@ exports.getCashFlow = async (req, res) => {
 
     // Sales (Credit)
     const [sales] = await pool.query(
-      `SELECT DateofTransaction AS date, NULL AS debit, TotalAmount AS credit, 'Sale' AS type
+      `SELECT DateofTransaction AS date, NULL AS debit, TotalAmount AS credit, 'Sale' AS type, sale_tracking_Id, id
        FROM final_sale
        WHERE isActive = 1 AND DateofTransaction BETWEEN ? AND ?`,
       [fromDate, toDate]
@@ -58,6 +58,7 @@ console.log(req.body);
     SELECT
         s.product_id,
         s.sale_date AS date,
+        s.sale_tracking_Id AS saleTrackingId,
         SUM(s.quantity_sold) AS total_quantity_sold,
         SUM(s.quantity_sold * pp.purchase_price) AS total_purchase_cost,
         SUM(s.amount_received) AS total_amount_received,
@@ -78,6 +79,7 @@ ORDER BY s.product_id, s.sale_date;
 SELECT 
       s.product_id,
       s.sale_date AS date,
+      s.sale_tracking_Id AS saleTrackingId,
       s.loss_count,
       pp.purchase_price,
       (s.loss_count * pp.purchase_price) AS debit,
@@ -153,7 +155,8 @@ const [salesDamage] = await pool.query(query2, params);
     // FUEL EXPENSE (DEBIT)
     const [fuel] = await pool.query(
       `SELECT 
-          DateofTransaction AS date, 
+          DateofTransaction AS date,
+          sale_tracking_Id AS saleTrackingId,
           FuelExpenses AS debit, 
           NULL AS credit, 
           'Fuel Expense' AS type
@@ -167,7 +170,8 @@ const [salesDamage] = await pool.query(query2, params);
     // VEHICLE EXPENSE (DEBIT)
     const [vehicle] = await pool.query(
       `SELECT 
-          DateofTransaction AS date, 
+          DateofTransaction AS date,
+          sale_tracking_Id AS saleTrackingId, 
           VehcileServiceExpenses AS debit, 
           NULL AS credit, 
           'Vehicle Expense' AS type
@@ -182,6 +186,7 @@ const [salesDamage] = await pool.query(query2, params);
     const [other] = await pool.query(
       `SELECT 
           DateofTransaction AS date, 
+          sale_tracking_Id AS saleTrackingId,
           OtherExpenses AS debit, 
           NULL AS credit, 
           'Other Expense' AS type

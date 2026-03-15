@@ -241,6 +241,7 @@ exports.stockHistory = async (req, res) => {
         h.AddedBy,
         h.CreditOrDebit,
         h.ReferenceInvoiceOrSale,
+        h.purchase_id,
         s.quantity,
         s.Damage_Qty,
         s.Loss_Qty,
