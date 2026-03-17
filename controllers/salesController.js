@@ -2,7 +2,7 @@ const { config } = require("dotenv");
 const pool = require("../config/db");
 
 const { v4: uuidv4 } = require("uuid");
-const { getISTTimestamp } = require('../utils/dateUtils');
+const { getISTTimestamp, getISTDate } = require('../utils/dateUtils');
 const { logUserActivity } = require("../utils/logUserActivity");
 
 exports.fetchDailyDataForPrint = async (req, res) => {
@@ -1450,7 +1450,8 @@ exports.searchSales = async (req, res) => {
         f.FuelExpenses,
         f.VehcileServiceExpenses,
         f.OtherExpenses,
-        f.isGstBilling
+        f.isGstBilling,
+        s.sale_type
       FROM final_sale f
       JOIN (
         SELECT sale_tracking_Id, MAX(sale_type) AS sale_type
@@ -1772,11 +1773,34 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
       [saleTrackingId]
     );
 
+    // Step 3: Get return data if any (using sale_tracking_Id from above)
+    const [returnData] = await pool.query(
+    `SELECT 
+    dsr.direct_sale_return_id,
+    dsr.sale_tracking_Id,
+    dsr.invoice_no,
+    dsr.product_id,
+    p.product_name,
+    dsr.returned_quantity,
+    dsr.return_amount,
+    dsr.damaged_refund_quantity,
+    dsr.damaged_refund_amount,
+    dsr.damaged_replacement_quantity,
+    dsr.date,
+    dsr.added_by
+    FROM direct_sale_return dsr
+    JOIN products p 
+    ON dsr.product_id = p.product_id WHERE sale_tracking_Id = ?`,
+      [saleTrackingId]
+    );
+
+
     res.json({
       success: true,
       saledata: finalSalerows,
       details: productData,
       payments: transactionData[0] || {}, // handle no data scenario
+      returnData
     });
   } catch (error) {
     console.error(error);
@@ -1943,63 +1967,70 @@ exports.submitAllProductReturns = async (req, res) => {
 };
 
 
-exports.getSaleDetailsForReturn = async (req, res) => {
-  try {
-    const { sale_tracking_id, type } = req.params;
-    //console.log(req.params);
-    if (!sale_tracking_id) {
-      return res.status(400).json({ error: "Sale Tracking ID is required." });
-    }
-    if (!type) {
-      return res.status(400).json({ error: "Sale Type is required." });
-    }
+  exports.getSaleDetailsForReturn = async (req, res) => {
+    try {
+      const { sale_tracking_id, type } = req.params;
+      //console.log(req.params);
+      if (!sale_tracking_id) {
+        return res.status(400).json({ error: "Sale Tracking ID is required." });
+      }
+      if (!type) {
+        return res.status(400).json({ error: "Sale Type is required." });
+      }
 
-    const [salesDetails] = await pool.query(
-      `
-            SELECT
-                s.sale_id,
-                s.sale_type,
-                u.name AS marketing_staff_name,
-                p.product_name,
-                p.product_id,
-                p.hsn_code,
-                pp.direct_selling_price AS product_price,
-                s.quantity_sold,
-                s.amount_received,
-                s.is_credit,
-                s.sale_tracking_Id,
-                s.sale_date,
-                s.damaged_count,
-                s.is_settled AS item_settled,
-                s.loss_count,
-                sch.amount AS credit_amount,
-                sch.creditedDate AS credit_date
-            FROM
-                sales s
-            JOIN
-                users u ON s.marketing_staff_id = u.user_id
-            JOIN
-                products p ON s.product_id = p.product_id
-            JOIN
-                product_prices pp ON s.price_id = pp.price_id
-            LEFT JOIN
-                sales_credit_history sch ON s.sale_tracking_Id = sch.sale_tracking_Id AND sch.isActive = 1
-            WHERE
-                s.sale_tracking_Id = ? AND  s.sale_type != ?
-            `,
-      [sale_tracking_id,type]
-    );
-    console.log(salesDetails);
-    if (salesDetails.length === 0) {
-      return res.status(404).json({ message: "Sale details not found." });
-    }
+      const [salesDetails] = await pool.query(
+        `
+              SELECT
+                  s.sale_id,
+                  s.sale_type,
+                  u.name AS marketing_staff_name,
+                  p.product_name,
+                  p.product_id,
+                  p.hsn_code,
+                  pp.direct_selling_price AS product_price,
+                  s.quantity_sold,
+                  s.amount_received,
+                  s.is_credit,
+                  s.sale_tracking_Id,
+                  s.sale_date,
+                  s.damaged_count,
+                  s.is_settled AS item_settled,
+                  s.loss_count,
+                  sch.amount AS credit_amount,
+                  sch.creditedDate AS credit_date,
 
-    res.json(salesDetails);
-  } catch (error) {
-    console.error("Error fetching sale details:", error);
-    res.status(500).json({ error: "Database error" });
-  }
-};
+                  IFNULL(dsr.returned_quantity,0) AS return_qty,
+                  IFNULL(dsr.return_amount,0) AS return_amount,
+                  (s.quantity_sold - IFNULL(dsr.returned_quantity,0)) AS remaining_qty
+              FROM
+                  sales s
+              JOIN
+                  users u ON s.marketing_staff_id = u.user_id
+              JOIN
+                  products p ON s.product_id = p.product_id
+              JOIN
+                  product_prices pp ON s.price_id = pp.price_id
+              LEFT JOIN
+                  sales_credit_history sch ON s.sale_tracking_Id = sch.sale_tracking_Id AND sch.isActive = 1
+              LEFT JOIN 
+                  direct_sale_return dsr ON s.product_id = dsr.product_id 
+                  AND s.sale_tracking_Id = dsr.sale_tracking_Id
+                  WHERE
+                  s.sale_tracking_Id = ? AND  s.sale_type != ?
+              `,
+        [sale_tracking_id, type]
+      );
+      console.log(salesDetails);
+      if (salesDetails.length === 0) {
+        return res.status(404).json({ message: "Sale details not found." });
+      }
+
+      res.json(salesDetails);
+    } catch (error) {
+      console.error("Error fetching sale details:", error);
+      res.status(500).json({ error: "Database error" });
+    }
+  };
 
 
 exports.deleteDirectSaleProduct = async (req, res) => {
@@ -2564,3 +2595,225 @@ exports.fetchCustomerCreditAmount = async (req, res) => {
 
 
 
+//fetch data for with allocation ID - final sale -ID
+exports.fetchSalesDataByIDSaleTrackingID = async (req, res) => {
+  try {
+    let { saleTrackingId } = req.body;
+    // Step 1: Get final sale data
+    const [finalSalerows] = await pool.query(
+      "SELECT `id`, `sale_tracking_Id`, `TotalAmount`, `UserId`, `DateofTransaction`, `isSettled`, `AmountPaid`, `FuelExpenses`, `VehcileServiceExpenses`, `OtherExpenses`, `invoiceNumber`, COALESCE(`users`.`name`, 'Admin') as addedBy  FROM `final_sale` LEFT JOIN `users` ON `final_sale`.`addedBy` = `users`.`user_id` WHERE   `sale_tracking_Id` = ? AND `final_sale`.`isActive` = 1",
+      [saleTrackingId]
+    );
+
+    // Check if sale data exists
+    if (finalSalerows.length === 0) {
+      return res.json({
+        success: false,
+        message: "No final sale found for given date.",
+      });
+    }
+
+   // const saleTrackingId = finalSalerows[0].sale_tracking_Id; // Assume first record for simplicity
+
+    // Step 2: Get product sale data
+    const [productData] = await pool.query(
+      `SELECT 
+                s.sale_id, 
+                s.sale_type, 
+                s.marketing_staff_id, 
+                p.product_name,
+                p.product_id,
+                pp.marketing_selling_price, 
+                s.quantity_sold, 
+                s.amount_received, 
+                s.is_credit, 
+                s.sale_tracking_Id, 
+                s.sale_date, 
+                s.damaged_count, 
+                s.is_settled, 
+                s.loss_count, 
+                s.isActive,
+                fs.id  AS final_sale_id,
+                u.name
+            FROM 
+                sales s
+            JOIN 
+                products p ON s.product_id = p.product_id
+            JOIN 
+                product_prices pp ON pp.price_id = s.price_id    
+            JOIN
+                final_sale fs ON s.sale_tracking_Id = fs.sale_tracking_Id
+            JOIN 
+                users u ON s.marketing_staff_id = u.user_id        
+            WHERE 
+                 fs.sale_tracking_Id = ?  AND s.isActive = 1 AND fs.isActive = 1`,
+      [saleTrackingId]
+    );
+
+    // Step 3: Get payment breakdown (using sale_tracking_Id from above)
+    const [transactionData] = await pool.query(
+      "SELECT SUM(`amount`) AS total, SUM(`UPI`) AS upi, SUM(`Cash`) AS cash, SUM(`Card`) AS card FROM `sales_credit_history` WHERE `sale_tracking_Id` = ?",
+      [saleTrackingId]
+    );
+
+        // Step 4: Find sale type
+    const saleType = productData.length > 0 ? productData[0].sale_type : null;
+
+    // Step 5: Get UserId from final_sale
+    const userId = finalSalerows[0].UserId;
+    let userDetails = {};
+
+    if (saleType && saleType !== "marketing") {
+      // Fetch from customers table
+      const [customerRows] = await pool.query(
+        "SELECT Name FROM customers WHERE id = ?",
+        [userId]
+      );
+
+      userDetails.name = customerRows[0]?.Name || {};
+
+    } else {
+      // Fetch from users table
+      const [userRows] = await pool.query(
+        "SELECT name FROM users WHERE user_id = ?",
+        [userId]
+      );
+
+      userDetails.name = userRows[0]?.name || {};
+    }
+
+    res.json({
+      success: true,
+      saledata: finalSalerows,
+      details: productData,
+      payments: transactionData[0] || {},
+      saleType: saleType,
+      userDetails: userDetails
+    });
+  } catch (error) {
+    console.error("Error fetching daily data:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch data" });
+  }
+};
+
+
+
+exports.submitProductReturn = async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items)) {
+    return res.status(400).json({ error: "Items must be an array" });
+  }
+  const now = getISTTimestamp();
+  let connection;
+
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    for (const item of items) {
+
+      const saleTrackingId = item.saleTrackingId || null;
+      const product_id = item.product_id || null;
+      const returned_quantity = Number(item.returned_quantity || 0);
+      const return_amount = Number(item.return_amount || 0);
+      const added_by = item.added_by || null;
+
+      if (!saleTrackingId || !product_id) {
+        console.log("Skipping invalid item:", item);
+        continue;
+      }
+
+      if (returned_quantity <= 0) continue;
+      
+      // Get sold quantity
+      const [saleData] = await connection.execute(
+        `SELECT quantity_sold 
+        FROM sales 
+        WHERE sale_tracking_Id = ? AND product_id = ?`,
+        [saleTrackingId, product_id]
+      );
+
+      const quantity_sold = saleData[0]?.quantity_sold || 0;
+
+      // Get already returned
+      const [existingReturn] = await connection.execute(
+        `SELECT returned_quantity 
+        FROM direct_sale_return
+        WHERE sale_tracking_Id = ? AND product_id = ?`,
+        [saleTrackingId, product_id]
+      );
+
+      // const alreadyReturned = existingReturn[0]?.returned_quantity || 0;
+
+      // const remainingQty = quantity_sold - alreadyReturned;
+
+      // if (returned_quantity > remainingQty) {
+
+      //   await connection.rollback();
+
+      //   return res.status(400).json({
+      //     error: `Return quantity exceeds remaining quantity. Remaining: ${remainingQty}`
+      //   });
+
+      // }
+
+      const [existing] = await connection.execute(
+        `SELECT direct_sale_return_id FROM direct_sale_return
+         WHERE product_id = ? AND sale_tracking_Id = ?`,
+        [product_id, saleTrackingId]
+      );
+
+      if (existing.length > 0) {
+
+        await connection.execute(
+          `UPDATE direct_sale_return SET
+           returned_quantity =  ?,
+           return_amount =  ?,
+           date = ?
+           ,
+           added_by = ?
+           WHERE product_id = ? AND sale_tracking_Id = ?`,
+          [returned_quantity, return_amount, now, added_by, product_id, saleTrackingId]
+        );
+
+      } else {
+
+        await connection.execute(
+          `INSERT INTO direct_sale_return (
+            sale_tracking_Id,
+            product_id,
+            returned_quantity,
+            return_amount,
+            date,
+            added_by
+          ) VALUES (?, ?, ?, ?, NOW(), ?)`,
+          [saleTrackingId, product_id, returned_quantity, return_amount, added_by]
+        );
+
+      }
+
+      await connection.execute(
+        `UPDATE stock SET quantity = quantity + ? WHERE product_id = ?`,
+        [returned_quantity, product_id]
+      );
+    }
+
+    await connection.commit();
+
+    res.status(200).json({
+      message: "Returns and stock updated successfully."
+    });
+
+  } catch (error) {
+
+    if (connection) await connection.rollback();
+    console.error(error);
+
+    res.status(500).json({ error: "Database error" });
+
+  } finally {
+
+    if (connection) connection.release();
+
+  }
+};
