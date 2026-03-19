@@ -771,7 +771,7 @@ exports.getPurchaseBills = async (req, res) => {
     `;
 
     const [result] = await pool.query(sql, [supplier_id]);
-    console.log(result);
+    //console.log(result);
 
     const [totalSum] = await pool.query(
       "SELECT SUM(total_amount) AS total_amount FROM purchase WHERE supplier_id = ? AND isActive=1",
@@ -845,6 +845,48 @@ exports.purchaseSettlement = async (req, res) => {
   } catch (error) {
     console.log(error);
     res.status(500).json({ error: "Database error" });
+  }
+};
+
+exports.getPurchaseSettlements = async (req, res) => {
+  try {
+    const { supplier_id, dateType, singleDate, fromDate, toDate } = req.body;
+    //console.log(req.body);
+    let condition = "";
+    let values = [supplier_id];
+
+    if (dateType === "single") {
+      condition = "AND DATE(transaction_date) = ?";
+      values.push(singleDate);
+    } else if (dateType === "range") {
+      condition = "AND DATE(transaction_date) BETWEEN ? AND ?";
+      values.push(fromDate, toDate);
+    }
+
+    const sql = `
+      SELECT *
+      FROM purchase_settlement
+      WHERE supplier_id = ? AND isActive = 1
+      ${condition}
+      ORDER BY purchase_settlement_id DESC
+    `;
+
+    const [rows] = await pool.query(sql, values);
+
+    const [total] = await pool.query(
+      `SELECT SUM(total_amount) as total
+       FROM purchase_settlement
+       WHERE supplier_id = ? AND isActive = 1 ${condition}`,
+      values
+    );
+
+    res.json({
+      result: rows,
+      total: total[0]?.total || 0,
+    });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "Error fetching settlements" });
   }
 };
 
