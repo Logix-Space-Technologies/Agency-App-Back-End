@@ -69,7 +69,7 @@ console.log(req.body);
         ON s.price_id = pp.price_id
     WHERE s.sale_date BETWEEN ? AND ?
       AND s.isActive = 1
-GROUP BY s.product_id, s.sale_date
+GROUP BY s.product_id, s.sale_date, s.sale_tracking_Id
 ORDER BY s.product_id, s.sale_date;
   `;
   const [profit] = await pool.query(query, [fromDate, toDate]);
