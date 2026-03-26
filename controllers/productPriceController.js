@@ -2,7 +2,9 @@ const pool = require('../config/db');
 const { getISTTimestamp } = require('../utils/dateUtils');
 
 exports.updateProductPrice = async (req, res) => {
+    const connection = await pool.getConnection();
     try {
+        await connection.beginTransaction();
         const {
             price_id,
             product_id,
@@ -18,12 +20,12 @@ exports.updateProductPrice = async (req, res) => {
             igst_percentage = 0.00,
             cess_percentage = 0.00
         } = req.body;
-
+        const updatedAt = getISTTimestamp();
         if (!price_id) return res.status(400).json({ error: "price_id is required" });
 
         const formattedDate = effective_date?.split("T")[0];
 if(product_mrp){
-const [rows] = await pool.query(
+const [rows] = await connection.query(
   "SELECT product_name, mrp FROM `products` WHERE `product_id`= ? AND `isActive`=1",
   [product_id]
 );
@@ -31,8 +33,7 @@ const [rows] = await pool.query(
 if (rows.length > 0) {
   const mrp = rows[0].mrp;
   if (mrp != product_mrp) {
-    const updatedAt = getISTTimestamp();
-    await pool.query(
+    await connection.query(
       "UPDATE `products` SET `mrp`= ?, `modified`= ? WHERE `product_id` = ?",
       [product_mrp, updatedAt, product_id]
     );
@@ -42,7 +43,7 @@ if (rows.length > 0) {
 }
     }
 
-        const [existingRows] = await pool.query(
+        const [existingRows] = await connection.query(
             `SELECT * FROM product_prices WHERE price_id = ? AND isActive = 1`,
             [price_id]
         );
@@ -69,15 +70,15 @@ if (rows.length > 0) {
             return res.json({ message: "No change detected. No update needed." });
         }
 
-        await pool.query(
+        await connection.query(
             `UPDATE product_prices SET isActive = 0 WHERE price_id = ?`,
             [price_id]
         );
 
-        const [insertResult] = await pool.query(
+        const [insertResult] = await connection.query(
             `INSERT INTO product_prices
-                (product_id, purchase_price, commision_rate, marketing_selling_price, direct_selling_price, whole_sale_price, effective_date, isActive, cgst_percentage, sgst_percentage, igst_percentage, cess_percentage)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+                (product_id, purchase_price, commision_rate, marketing_selling_price, direct_selling_price, whole_sale_price, effective_date, modified, isActive, cgst_percentage, sgst_percentage, igst_percentage, cess_percentage)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
             [
                 product_id,
                 purchase_price,
@@ -86,6 +87,7 @@ if (rows.length > 0) {
                 direct_selling_price,
                 whole_sale_price,
                 formattedDate,
+                updatedAt,
                 cgst_percentage,
                 sgst_percentage,
                 igst_percentage,
@@ -95,7 +97,7 @@ if (rows.length > 0) {
         const newPriceId = insertResult.insertId;
 
         // Update stock table with new price_id for this product
-        await pool.query(
+        await connection.query(
             `UPDATE stock 
             SET price_id = ? 
             WHERE product_id = ?`,
@@ -104,8 +106,15 @@ if (rows.length > 0) {
         res.json({ message: "Product price updated successfully", new_price_id: newPriceId });
 
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: "Database error" });
+    await connection.rollback();
+
+    console.error(error);
+    res.status(500).json({
+      error: error.message || "Database error",
+    });
+
+    } finally {
+        connection.release();
     }
 };
 
@@ -221,6 +230,7 @@ exports.getProductPrice = async(req,res)=>{
                 pp.direct_selling_price,
                 pp.whole_sale_price,
                 pp.effective_date,
+                pp.modified,
                  pp.cgst_percentage, 
                   pp.sgst_percentage,  
                   pp.igst_percentage, 
@@ -269,7 +279,8 @@ exports.getProductPriceForPrint = async (req, res) => {
         pp.marketing_selling_price,
         pp.direct_selling_price,
         pp.whole_sale_price,
-        pp.effective_date
+        pp.effective_date,
+        pp.modified
       FROM products p
       JOIN product_prices pp ON p.product_id = pp.product_id
       JOIN brands b ON b.brand_id = p.brand_id
