@@ -112,7 +112,7 @@ exports.createEnhancedPurchase = async (req, res) => {
       } else if (isDamaged) {
         // For damaged items, move to Damage_Qty
         await connection.execute(
-          "UPDATE stock SET quantity = quantity - ?, Damage_Qty = Damage_Qty + ? WHERE product_id = ?",
+          "UPDATE stock SET quantity = quantity + ?, Damage_Qty = Damage_Qty + ? WHERE product_id = ?",
           [quantity, quantity, productId]
         );
       } else if (isFreeItem) {
@@ -924,6 +924,18 @@ exports.deletePurchase = async (req, res) => {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
+      // 0 Get purchase details (is_damaged)
+      const [purchaseRows] = await connection.execute(
+        "SELECT is_damaged FROM purchase WHERE id = ?",
+        [purchase_id]
+      );
+
+      if (purchaseRows.length === 0) {
+        throw new Error("Purchase not found");
+      }
+
+      const isDamaged = purchaseRows[0].is_damaged;
+
     // 1️⃣ Soft delete purchase
     const [purchaseResult] = await connection.execute(
       "UPDATE purchase SET isActive = 0 WHERE id = ?",
@@ -935,10 +947,24 @@ exports.deletePurchase = async (req, res) => {
     }
 
     // 2️⃣ Reduce stock quantity
-    await connection.execute(
-      "UPDATE stock SET quantity = quantity - ? WHERE product_id = ?",
-      [quantity, product_id]
-    );
+    if (isDamaged === 1) {
+      // Reduce both quantity and Damage_Qty
+      await connection.execute(
+        `UPDATE stock 
+         SET quantity = quantity - ?, 
+             Damage_Qty = Damage_Qty - ?
+         WHERE product_id = ?`,
+        [quantity, quantity, product_id]
+      );
+    } else {
+      // Reduce only quantity
+      await connection.execute(
+        `UPDATE stock 
+         SET quantity = quantity - ?
+         WHERE product_id = ?`,
+        [quantity, product_id]
+      );
+    }
 
     // 3️⃣ Delete stock history for this purchase
     await connection.execute(
