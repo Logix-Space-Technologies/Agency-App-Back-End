@@ -629,6 +629,9 @@ exports.addDirectSales = async (req, res) => {
     //   `SELECT id FROM Customers WHERE Mobile = ?`,
     //   [mobile]
     // );
+    if (!customer?.invoiceNumber) {
+      throw new Error("Invoice number missing");
+    }
     const [rows] = await connection.execute(
       "SELECT 1 FROM final_sale WHERE invoiceNumber = ? LIMIT 1",
       [customer?.invoiceNumber]
@@ -678,6 +681,39 @@ exports.addDirectSales = async (req, res) => {
         employee_id
       ]
     );
+
+    const [counterRows] = await connection.execute(
+      "SELECT * FROM invoive_number_counter WHERE isActive = 1"
+    );
+
+    if (counterRows.length === 0) {
+      throw new Error("Invoice counter row missing");
+    }
+
+    const counter = counterRows[0];
+
+    if (isGstBilling) {
+      // GST Billing → increment GST_counter
+      const newGstCounter = (counter.GST_counter || 0) + 1;
+
+      await connection.execute(
+        `UPDATE invoive_number_counter 
+        SET GST_counter = ?, modified = ?
+        WHERE isActive = 1`,
+        [newGstCounter, getISTTimestamp()]
+      );
+
+    } else {
+      // Non-GST Billing → increment NGST_counter
+      const newNgstCounter = (counter.NGST_counter || 0) + 1;
+
+      await connection.execute(
+        `UPDATE invoive_number_counter 
+        SET NGST_counter = ?, modified = ?
+        WHERE id = 1`,
+        [newNgstCounter, getISTTimestamp()]
+      );
+    }
   //  commented on removing dynamic invoice number 
   //   const insertedId = insertResult.insertId;
 
@@ -1048,10 +1084,34 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         month: "2-digit",
         day: "2-digit",
       }).format(current_date);
+
+      const [counterRows] = await connection.execute(
+        `SELECT NGST_prefix, NGST_counter, NGST_suffix 
+        FROM invoive_number_counter 
+        WHERE isActive = 1`
+      );
+
+      if (counterRows.length === 0) {
+        throw new Error("Invoice counter not initialized");
+      }
+
+      const counterData = counterRows[0];
+
+      const newCounter = counterData.NGST_counter + 1;
+
+      const invoiceNumber = `${counterData.NGST_prefix}${String(newCounter).padStart(5, '0')}${counterData.NGST_suffix}`;
+
+      await connection.execute(
+        `UPDATE invoive_number_counter 
+        SET NGST_counter = ?, modified = ?
+        WHERE isActive = 1`,
+        [newCounter, getISTTimestamp()]
+      );
+
     const [insertResult] = await connection.execute(
       `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction, addedDate, 
-             isSettled, AmountPaid, created, addedBy)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             isSettled, AmountPaid, created, addedBy, invoiceNumber)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         fuel,
         vehicle_service,
@@ -1065,27 +1125,9 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         amount_paid,
         getISTTimestamp(),
         user_id,
+        invoiceNumber
       ]
     );
-
-    const insertedId = insertResult.insertId;
-
-  // 2. UPDATE invoiceNumber
-  const [updateResult] = await connection.execute(
-    `UPDATE final_sale
-     SET invoiceNumber = CONCAT(
-         'SK',
-         DATE_FORMAT(DateofTransaction, '%Y%m'),
-         LPAD(id, 5, '0')
-     )
-     WHERE id = ?`,
-    [insertedId]
-  );
-
-  if (updateResult.affectedRows === 0) {
-    throw new Error("Invoice number update failed for ID " + insertedId);
-  }
-
 
     console.log("Final Sale Completed !!! ");
 
@@ -2815,5 +2857,71 @@ exports.submitProductReturn = async (req, res) => {
 
     if (connection) connection.release();
 
+  }
+};
+
+exports.getGSTInvoiceNumber = async (req, res) => {
+  let connection;
+
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [rows] = await connection.execute(
+      "SELECT * FROM invoive_number_counter WHERE isActive = 1"
+    );
+
+    if (!rows.length) {
+      throw new Error("Counter row not found");
+    }
+    const data = rows[0];
+
+    const newCounter = data.GST_counter + 1;
+    const formattedCounter = String(newCounter).padStart(5, "0");
+
+    const gstInvoiceNumber = `${data.GST_prefix}${formattedCounter}${data.GST_suffix}`;
+
+    await connection.commit();
+
+    res.json({ gstInvoiceNumber });
+
+  } catch (error) {
+    if (connection) await connection.rollback(); 
+    res.status(500).json({ error: error.message });
+  } finally {
+    if (connection) connection.release(); 
+  }
+};
+
+exports.getNGSTInvoiceNumber = async (req, res) => {
+  let connection;
+
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [rows] = await connection.execute(
+      "SELECT * FROM invoive_number_counter WHERE isActive = 1"
+    );
+
+    if (!rows.length) {
+      throw new Error("Counter row not found");
+    }
+    const data = rows[0];
+
+    const newCounter = data.NGST_counter + 1;
+    const formattedCounter = String(newCounter).padStart(5, "0");
+
+    const ngstInvoiceNumber = `${data.NGST_prefix}${formattedCounter}${data.NGST_suffix}`;
+
+    await connection.commit();
+
+    res.json({ ngstInvoiceNumber });
+
+  } catch (error) {
+    if (connection) await connection.rollback(); 
+    res.status(500).json({ error: error.message });
+  } finally {
+    if (connection) connection.release(); 
   }
 };
