@@ -818,8 +818,8 @@ exports.addDirectSales = async (req, res) => {
 
       // Update stock
       await connection.execute(
-        `UPDATE stock SET quantity = quantity - ?, Damage_Qty= Damage_Qty + ? WHERE  product_id = ?`,
-        [quantity, damaged_quantity, product_id]
+        `UPDATE stock SET quantity = quantity + ? - ?, Damage_Qty= Damage_Qty + ? WHERE  product_id = ?`,
+        [damaged_quantity, quantity, damaged_quantity, product_id]
       );
 
 
