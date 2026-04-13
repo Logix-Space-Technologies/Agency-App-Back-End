@@ -246,7 +246,8 @@ exports.stockHistory = async (req, res) => {
         s.Damage_Qty,
         s.Loss_Qty,
         p.product_name,
-        sa.sale_type
+        sa.sale_type,
+        fs.invoiceNumber
       FROM stock_History h
       JOIN stock s ON h.stock_Id = s.stock_id
       JOIN products p ON p.product_id = s.product_id
@@ -254,6 +255,11 @@ exports.stockHistory = async (req, res) => {
           ON 
           sa.sale_tracking_Id = h.ReferenceInvoiceOrSale 
           AND sa.product_id = s.product_id
+    LEFT JOIN final_sale fs
+          ON 
+          fs.sale_tracking_Id = h.ReferenceInvoiceOrSale
+          AND h.purchase_id IS NULL
+          AND h.stock_type = 'sale'    
       WHERE s.isActive = 1
     `;
     const queryParams = [];
