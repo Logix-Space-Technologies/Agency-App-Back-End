@@ -306,26 +306,12 @@ exports.damagedProductSearch = async (req, res) => {
   try {
     const { userId, productId, filterType, startDate, endDate } = req.body;
 
-    let returnQuery = `
-      SELECT 
-        'return' AS source,
-        r.invoice_no,
-        r.date,
-        p.product_id,
-        p.product_name,
-        NULL AS damagedQty,
-        r.damaged_refund_quantity,
-        r.damaged_replacement_quantity
-      FROM direct_sale_return r
-      JOIN products p ON r.product_id = p.product_id
-      JOIN sales s ON (s.sale_tracking_Id = r.invoice_no AND s.product_id = r.product_id)
-      WHERE 1 = 1
-    `;
 
     let salesQuery = `
       SELECT 
         'sale' AS source,
-        s.sale_tracking_Id AS invoice_no,
+        s.sale_tracking_Id,
+        fs.invoiceNumber AS invoice_no,
         s.sale_date AS date,
         p.product_id,
         p.product_name,
@@ -333,6 +319,7 @@ exports.damagedProductSearch = async (req, res) => {
         NULL AS damaged_refund_quantity,
         NULL AS damaged_replacement_quantity
       FROM sales s
+      JOIN final_sale fs ON fs.sale_tracking_Id = s.sale_tracking_Id
       JOIN products p ON s.product_id = p.product_id
       WHERE s.isActive = 1 AND s.sale_type = "marketing"
     `;
@@ -357,7 +344,6 @@ exports.damagedProductSearch = async (req, res) => {
 
     // user filter
     if (userId) {
-      returnQuery += " AND s.sale_type = 'marketing' ";
       salesQuery += " AND s.marketing_staff_id = ? ";
       miscQuery += " AND md.addedBy = ? ";
       queryParams.push(userId);
@@ -365,7 +351,6 @@ exports.damagedProductSearch = async (req, res) => {
 
     // product filter
     if (productId) {
-      returnQuery += " AND r.product_id = ? ";
       salesQuery += " AND s.product_id = ? ";
       miscQuery += " AND md.product_id = ? ";
       queryParams.push(productId);
@@ -373,22 +358,19 @@ exports.damagedProductSearch = async (req, res) => {
 
     // date filter
     if (filterType === "daily") {
-      returnQuery += " AND DATE(r.date) = ? ";
       salesQuery += " AND DATE(s.sale_date) = ? ";
       miscQuery += " AND DATE(md.addedDate) = ? ";
       queryParams.push(startDate);
     } else if (filterType === "listdDateRange") {
-      returnQuery += " AND DATE(r.date) BETWEEN ? AND ? ";
       salesQuery += " AND DATE(s.sale_date) BETWEEN ? AND ? ";
       miscQuery += " AND DATE(md.addedDate) BETWEEN ? AND ? ";
       queryParams.push(startDate, endDate);
     }
 
-    const [returnRows] = await pool.query(returnQuery, queryParams);
     const [saleRows]   = await pool.query(salesQuery, queryParams);
     const [miscRows]   = await pool.query(miscQuery, queryParams);
 
-const result = [...returnRows, ...saleRows, ...miscRows]
+  const result = [...saleRows, ...miscRows]
   .filter(row => {
     const damagedQty = Number(row.damagedQty || 0);
     const refundQty = row.damaged_refund_quantity;
@@ -509,13 +491,13 @@ exports.getMiscDamagedProduct = async (req, res) => {
       return res.status(400).json({ error: "Product ID is required" });
     }
 
-    const sql = "SELECT  * FROM `miscellaneous_damage` WHERE product_id = ?";
+    const sql = "SELECT  * FROM `miscellaneous_damage` WHERE product_id = ? ORDER BY `miscellaneous_damage`.`id` DESC";
     const [result] = await pool.query(sql, [productId]);
     console.log(result)
 
 
     res.json({
-      message: "Misc damaged quantity added successfully",
+      message: "Misc damaged quantity fetched successfully",
       details: result,
     });
   } catch (error) {

@@ -506,7 +506,8 @@ exports.fecthAllCreditReport = async (req, res) => {
         WHEN s.sale_type = 'marketing' THEN u.name 
         ELSE c.Name 
     END AS name,
-    fs.sale_tracking_Id, 
+    fs.sale_tracking_Id,
+    fs.invoiceNumber, 
     fs.TotalAmount, 
     fs.UserId, 
     fs.DateofTransaction, 
@@ -629,12 +630,56 @@ exports.addDirectSales = async (req, res) => {
     //   `SELECT id FROM Customers WHERE Mobile = ?`,
     //   [mobile]
     // );
-    if (!customer?.invoiceNumber) {
-      throw new Error("Invoice number missing");
-    }
+    // if (!customer?.invoiceNumber) {
+    //   throw new Error("Invoice number missing");
+    // }
+
+    // Lock the counter row
+    const [counterRows] = await connection.execute(
+          "SELECT * FROM invoive_number_counter WHERE isActive = 1 FOR UPDATE"
+        );
+
+        if (!counterRows.length) {
+          throw new Error("Invoice counter row missing");
+        }
+
+        const counter = counterRows[0];
+
+        let invoiceNumber = "";
+        let newCounter;
+
+        const isGstBilling = !!customer?.gst_number;
+
+        if (isGstBilling) {
+          newCounter = (counter.GST_counter || 0) + 1;
+          const formatted = String(newCounter).padStart(5, "0");
+
+          invoiceNumber = `${counter.GST_prefix}${formatted}${counter.GST_suffix}`;
+
+          await connection.execute(
+            `UPDATE invoive_number_counter 
+            SET GST_counter = ?, modified = ? 
+            WHERE isActive = 1`,
+            [newCounter, getISTTimestamp()]
+          );
+        } else {
+          newCounter = (counter.NGST_counter || 0) + 1;
+          const formatted = String(newCounter).padStart(5, "0");
+
+          invoiceNumber = `${counter.NGST_prefix}${formatted}${counter.NGST_suffix}`;
+
+          await connection.execute(
+            `UPDATE invoive_number_counter 
+            SET NGST_counter = ?, modified = ? 
+            WHERE isActive = 1`,
+            [newCounter, getISTTimestamp()]
+          );
+        }
+
+    
     const [rows] = await connection.execute(
       "SELECT 1 FROM final_sale WHERE invoiceNumber = ? LIMIT 1",
-      [customer?.invoiceNumber]
+      [invoiceNumber]
     );
 
     if (rows.length) {
@@ -662,7 +707,7 @@ exports.addDirectSales = async (req, res) => {
       });
     }
     const sale_tracking_id = generateUniqueSaleTrackingId();
-    const isGstBilling = !!customer?.gst_number;
+    //const isGstBilling = !!customer?.gst_number;
 
      const [insertResult]  = await connection.execute(
       `INSERT INTO final_sale ( sale_tracking_Id, invoiceNumber, TotalAmount, UserId, DateofTransaction, addedDate, isSettled, AmountPaid, isGstBilling, created, addedBy, isActive)
@@ -682,16 +727,8 @@ exports.addDirectSales = async (req, res) => {
       ]
     );
 
-    const [counterRows] = await connection.execute(
-      "SELECT * FROM invoive_number_counter WHERE isActive = 1"
-    );
-
-    if (counterRows.length === 0) {
-      throw new Error("Invoice counter row missing");
-    }
-
-    const counter = counterRows[0];
-
+    // Counter was already fetched and locked earlier in the transaction
+    // Update the counter based on billing type
     if (isGstBilling) {
       // GST Billing → increment GST_counter
       const newGstCounter = (counter.GST_counter || 0) + 1;
@@ -1484,6 +1521,7 @@ exports.searchSales = async (req, res) => {
       SELECT
         f.id,
         f.sale_tracking_Id,
+        f.invoiceNumber,
         f.TotalAmount,
         ${nameField},
         f.DateofTransaction,
