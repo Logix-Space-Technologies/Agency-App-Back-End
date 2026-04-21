@@ -16,6 +16,7 @@ const purchaseRouter = require("./routes/purchaseRoutes")
 const salaryRouter = require("./routes/salaryRoutes")
 const customerRouter = require("./routes/customerRoutes")
 const cashFlowRouter = require("./routes/cashFlowRoutes")
+const salesGstReportRoutes = require("./routes/salesGstReport");
 
 
 
@@ -37,6 +38,8 @@ app.use('/api/purchase',purchaseRouter)
 app.use('/api/salary/',salaryRouter)
 app.use('/api/customers', customerRouter)
 app.use('/api/cashflow', cashFlowRouter)
+app.use('/api/gstReport', salesGstReportRoutes)
+
 
 
 const PORT = process.env.PORT || 5000;
