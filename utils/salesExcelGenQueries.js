@@ -36,7 +36,7 @@ const SALES_AGG = `
   FROM sales s
   JOIN product_prices pp ON s.price_id = pp.price_id
   WHERE s.isActive = 1
-  GROUP BY s.sale_tracking_Id
+  GROUP BY s.sale_tracking_Id, sale_date 
 `;
 
 function buildSalesSQL(gstFilter = '') {
