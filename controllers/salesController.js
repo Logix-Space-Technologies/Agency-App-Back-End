@@ -1503,11 +1503,11 @@ exports.searchSales = async (req, res) => {
      let subquery =  "";
      let nameField = "";
       if (user_type === "marketing") {
-            subquery = `JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id`;
+            subquery = `LEFT JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id`;
             nameField = "u.name AS name";
       }
        else if (user_type === "customer") {
-            subquery = `JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id`;
+            subquery = `LEFT JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id`;
             nameField = "c.Name AS name";
       }
        else if (user_type === "all") {
@@ -1564,7 +1564,7 @@ exports.searchSales = async (req, res) => {
         queryParams.push(user_id);
       }
     }
-    query += ` ORDER BY f.DateofTransaction DESC`;
+    query += ` ORDER BY f.created DESC`;
 
     const [result] = await pool.query(query, queryParams);
     res.json(result);
