@@ -51,7 +51,10 @@ exports.getProduct = async (req, res) => {
 }
 
 exports.addProduct = async (req, res) => {
+    let connection;
     try {
+          connection = await pool.getConnection();
+          await connection.beginTransaction();
         const {
             product_name,
             category_id,
@@ -68,7 +71,7 @@ exports.addProduct = async (req, res) => {
         }
 
         // Insert into products
-        const [productResult] = await pool.query(
+        const [productResult] = await connection.execute(
             `INSERT INTO products (product_name, category_id, brand_id, hsn_code, mrp, description, expiry_date, product_image)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [product_name, category_id, brand_id, hsn_code, mrp, description, expiry_date, product_image]
@@ -77,25 +80,37 @@ exports.addProduct = async (req, res) => {
         const product_id = productResult.insertId;
 
         // Insert into product_prices
-        const [priceResult] = await pool.query(
+        const [priceResult] = await connection.execute(
             `INSERT INTO product_prices (product_id, purchase_price, marketing_selling_price, direct_selling_price, effective_date)
-             VALUES (?, 0, ?, ?, NOW())`,
-            [product_id, mrp, mrp]
+             VALUES (?, ?, ?, ?, NOW())`,
+            [product_id, 0, mrp, mrp]
         );
 
         const price_id = priceResult.insertId;
 
         // Insert initial stock (quantity = 0, isActive = 1)
-        await pool.query(
+        await connection.execute(
             `INSERT INTO stock (product_id, price_id, quantity, added_date, isActive)
              VALUES (?, ?, 0, NOW(), 1)`,
             [product_id, price_id]
         );
-
+        await connection.commit();
         res.json({ message: 'Product added successfully', product_id });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Database error' });
+
+        console.error("Add Product Error:", error);
+        if (connection) {
+            await connection.rollback();
+        }
+
+        res.status(500).json({
+            error: 'Database error'
+        });
+
+    } finally {
+        if (connection) {
+            connection.release();
+        }
     }
 };
 
