@@ -319,7 +319,19 @@ exports.searchProduct = async (req, res) => {
 
 exports.damagedProductSearch = async (req, res) => {
   try {
-    const { userId, productId, filterType, startDate, endDate } = req.body;
+      const {
+        userId,
+        productId,
+        filterType,
+        startDate,
+        endDate,
+
+        summaryPage = 1,
+        summaryLimit = 10,
+
+        detailsPage = 1,
+        detailsLimit = 10,
+      } = req.body;
 
 
     let salesQuery = `
@@ -401,6 +413,18 @@ exports.damagedProductSearch = async (req, res) => {
   })
   .sort((a, b) => new Date(b.date) - new Date(a.date));
 
+    const detailsStart = (detailsPage - 1) * detailsLimit;
+
+    const paginatedDetails = result.slice(
+      detailsStart,
+      detailsStart + Number(detailsLimit)
+    );
+
+    const detailsTotalRecords = result.length;
+
+    const detailsTotalPages = Math.ceil(
+      detailsTotalRecords / detailsLimit
+    );
 
     // ⭐ CHANGE: get all products
     const [allProducts] = await pool.query(`
@@ -458,11 +482,40 @@ exports.damagedProductSearch = async (req, res) => {
         b.damagedQty + b.damagedRefund + b.damagedReplace + b.miscDamagedQty;
       return totalB - totalA;
     });
+    
+    const summaryStart = (summaryPage - 1) * summaryLimit;
+
+    const paginatedSummary = productSummary.slice(
+      summaryStart,
+      summaryStart + Number(summaryLimit)
+    );
+
+    const summaryTotalRecords = productSummary.length;
+
+    const summaryTotalPages = Math.ceil(
+      summaryTotalRecords / summaryLimit
+    );
 
     res.json({
-      summary: productSummary,
+      summary: paginatedSummary,
+
+      summaryPagination: {
+        currentPage: Number(summaryPage),
+        totalPages: summaryTotalPages,
+        totalRecords: summaryTotalRecords,
+        limit: Number(summaryLimit),
+      },
+
       totals: grandTotal,
-      data: result, // unchanged (used for details view)
+
+      data: paginatedDetails,
+
+      detailsPagination: {
+        currentPage: Number(detailsPage),
+        totalPages: detailsTotalPages,
+        totalRecords: detailsTotalRecords,
+        limit: Number(detailsLimit),
+      },
     });
 
   } catch (error) {
@@ -497,26 +550,79 @@ exports.addMiscDamagedProduct = async (req, res) => {
   }
 };
 
+// exports.getMiscDamagedProduct = async (req, res) => {
+//   try {
+//     const { productId} = req.body;
+//     console.log(req.body);
+
+//     if (!productId) {
+//       return res.status(400).json({ error: "Product ID is required" });
+//     }
+
+//     const sql = "SELECT  * FROM `miscellaneous_damage` WHERE product_id = ? ORDER BY `miscellaneous_damage`.`id` DESC";
+//     const [result] = await pool.query(sql, [productId]);
+//     console.log(result)
+
+
+//     res.json({
+//       message: "Misc damaged quantity fetched successfully",
+//       details: result,
+//     });
+//   } catch (error) {
+//     console.log(error)
+//     res.status(500).json({ error: "Database error" });
+//   }
+// };
+
 exports.getMiscDamagedProduct = async (req, res) => {
   try {
-    const { productId} = req.body;
-    console.log(req.body);
+    const { productId, page = 1, limit = 10 } = req.body;
 
     if (!productId) {
       return res.status(400).json({ error: "Product ID is required" });
     }
 
-    const sql = "SELECT  * FROM `miscellaneous_damage` WHERE product_id = ? ORDER BY `miscellaneous_damage`.`id` DESC";
-    const [result] = await pool.query(sql, [productId]);
-    console.log(result)
+    const offset = (page - 1) * limit;
 
+    // Fetch paginated rows
+    const sql = `
+      SELECT *
+      FROM miscellaneous_damage
+      WHERE product_id = ?
+      ORDER BY id DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    const [result] = await pool.query(sql, [
+      productId,
+      Number(limit),
+      Number(offset),
+    ]);
+
+    // Total count query
+    const countSql = `
+      SELECT COUNT(*) AS total
+      FROM miscellaneous_damage
+      WHERE product_id = ?
+    `;
+
+    const [countResult] = await pool.query(countSql, [productId]);
+
+    const totalRecords = countResult[0].total;
+    const totalPages = Math.ceil(totalRecords / limit);
 
     res.json({
       message: "Misc damaged quantity fetched successfully",
       details: result,
+      pagination: {
+        totalRecords,
+        totalPages,
+        currentPage: Number(page),
+        limit: Number(limit),
+      },
     });
   } catch (error) {
-    console.log(error)
+    console.log(error);
     res.status(500).json({ error: "Database error" });
   }
 };
