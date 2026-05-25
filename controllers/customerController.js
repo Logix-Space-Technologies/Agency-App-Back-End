@@ -10,7 +10,7 @@ exports.getAllCustomers = async (req, res) => {
     try {
         // Get paginated data
         const [customers] = await pool.query(
-        "SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE `isActive`= 1 LIMIT ? OFFSET ?",
+        "SELECT `id`, `Name`, `Place`, `Mobile`, `EmailId` FROM `Customers` WHERE `isActive`= 1  ORDER BY Name ASC LIMIT ? OFFSET ?",
         [limit, offset]
         );
 
@@ -53,16 +53,66 @@ exports.getCustomers = async (req, res) => {
 exports.searchCustomer = async (req, res) => {
   try {
     const { user_data } = req.body;
-    if (!user_data)
-      return res.status(400).json({ error: "Customer data is required" });
 
-    const [result] = await pool.query(
-      "SELECT id, Name, Place, Mobile, EmailId FROM Customers WHERE (Name LIKE ? OR EmailId LIKE ? OR Mobile LIKE ? OR Place LIKE ?)  AND isActive = 1",
-      [`%${user_data}%`, `%${user_data}%`, `%${user_data}%`, `%${user_data}%`]
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    if (!user_data) {
+      return res
+        .status(400)
+        .json({ error: "Customer data is required" });
+    }
+
+    const searchValue = `%${user_data}%`;
+
+    // Fetch paginated results
+    const [customers] = await pool.query(
+      `SELECT id, Name, Place, Mobile, EmailId
+       FROM Customers
+       WHERE (
+          Name LIKE ?
+          OR EmailId LIKE ?
+          OR Mobile LIKE ?
+          OR Place LIKE ?
+       )
+       AND isActive = 1
+       ORDER BY Name ASC
+       LIMIT ? OFFSET ?`,
+      [
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        limit,
+        offset,
+      ]
     );
 
-    res.json(result);
+    // Count total results
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) as total
+       FROM Customers
+       WHERE (
+          Name LIKE ?
+          OR EmailId LIKE ?
+          OR Mobile LIKE ?
+          OR Place LIKE ?
+       )
+       AND isActive = 1`,
+      [searchValue, searchValue, searchValue, searchValue]
+    );
+
+    const total = countResult[0].total;
+
+    res.json({
+      customers,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    });
   } catch (error) {
+    console.error("Search Customer Error:", error);
     res.status(500).json({ error: "Database error" });
   }
 };
