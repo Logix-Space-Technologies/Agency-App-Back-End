@@ -1,6 +1,7 @@
 const pool = require("../config/db"); // Assuming your db.js exports the promise pool
 const { getISTTimestamp } = require('../utils/dateUtils');
 const { logUserActivity } = require("../utils/logUserActivity");
+
 // Enhanced purchase controller with all scenarios
 exports.createEnhancedPurchase = async (req, res) => {
   const {
@@ -15,6 +16,7 @@ exports.createEnhancedPurchase = async (req, res) => {
     compensationDetails,
   } = req.body;
 
+  // ---- VALIDATE FIRST (no connection held) ----
   if (!supplierId || !purchaseDetails || purchaseDetails.length === 0) {
     return res.status(400).json({ error: "Missing required purchase data." });
   }
@@ -38,13 +40,9 @@ exports.createEnhancedPurchase = async (req, res) => {
         freebieRatio, // e.g., "5:1" for 5 damaged get 1 free
       } = item;
 
-      // Validate required fields
+      // Validate required fields -> THROW so finally releases the connection
       if (!productId || !quantity) {
-        await connection.rollback();
-        connection.release();
-        return res
-          .status(400)
-          .json({ error: "Missing product ID or quantity." });
+        throw new Error("MISSING_PRODUCT_OR_QTY");
       }
 
       // Check stock for replacement scenarios
@@ -55,13 +53,11 @@ exports.createEnhancedPurchase = async (req, res) => {
         );
 
         if (stock.length === 0 || stock[0].Damage_Qty < quantity) {
-          await connection.rollback();
-          connection.release();
-          return res.status(400).json({
-            error: `Cannot replace ${quantity} items. Only ${
-              stock[0]?.Damage_Qty || 0
-            } damaged items available.`,
-          });
+          const err = new Error("INSUFFICIENT_DAMAGED_QTY");
+          err.detail = `Cannot replace ${quantity} items. Only ${
+            stock[0]?.Damage_Qty || 0
+          } damaged items available.`;
+          throw err;
         }
       }
 
@@ -94,13 +90,7 @@ exports.createEnhancedPurchase = async (req, res) => {
         ]
       );
 
-      await logUserActivity({
-        req,
-        user_id :addedBy,
-        action: `Purchase added with invoice number ${invoiceNumber}`
-      });
       const purchaseId = purchaseResult.insertId;
-
 
       // Handle stock updates based on purchase type
       if (isReplacement) {
@@ -128,6 +118,7 @@ exports.createEnhancedPurchase = async (req, res) => {
           [quantity, productId]
         );
       }
+
       // Record in stock history with appropriate type
       let stockType;
       if (isReplacement) stockType = "replacement";
@@ -140,35 +131,48 @@ exports.createEnhancedPurchase = async (req, res) => {
         [productId]
       );
       if (stockIdResult.length > 0) {
-      const stock_Id = stockIdResult[0].stock_id;
-      await connection.execute(
-        `INSERT INTO stock_History (
+        const stock_Id = stockIdResult[0].stock_id;
+        await connection.execute(
+          `INSERT INTO stock_History (
                     stock_Id, Qty, stock_type, AddedDate, AddedBy,
                     CreditOrDebit, ReferenceInvoiceOrSale, purchase_id
                 ) VALUES (?, ?, ?, NOW(), ?, ?, ?,?)`,
-        [
-          stock_Id,
-          quantity,
-          stockType,
-          0,
-          isReplacement || isDamaged ? "Debit" : "Credit",
-          invoiceNumber,
-          purchaseId
-        ]
-      );
+          [
+            stock_Id,
+            quantity,
+            stockType,
+            addedBy,
+            isReplacement || isDamaged ? "Debit" : "Credit",
+            invoiceNumber,
+            purchaseId
+          ]
+        );
       }
     }
 
+    // Log once per purchase (moved out of the item loop)
+    await logUserActivity({
+      req,
+      user_id: addedBy,
+      action: `Purchase added with invoice number ${invoiceNumber}`
+    });
+
     await connection.commit();
-    connection.release();
     res.status(201).json({ message: "Purchase processed successfully!" });
   } catch (error) {
-    if (connection) {
-      await connection.rollback();
-      connection.release();
+    if (connection) await connection.rollback();
+
+    if (error.message === "MISSING_PRODUCT_OR_QTY") {
+      return res.status(400).json({ error: "Missing product ID or quantity." });
     }
+    if (error.message === "INSUFFICIENT_DAMAGED_QTY") {
+      return res.status(400).json({ error: error.detail });
+    }
+
     console.error("Error in enhanced purchase process:", error);
     res.status(500).json({ error: "Database error during purchase process." });
+  } finally {
+    if (connection) connection.release();
   }
 };
 
@@ -256,6 +260,7 @@ exports.createPurchaseNew = async (req, res) => {
   const { supplierId, invoiceNumber, purchaseDetails, addedBy, isReplacement } =
     req.body;
 
+  // ---- VALIDATE FIRST ----
   if (!supplierId || !purchaseDetails || purchaseDetails.length === 0) {
     return res.status(400).json({ error: "Missing required purchase data." });
   }
@@ -277,22 +282,16 @@ exports.createPurchaseNew = async (req, res) => {
         );
 
         if (stock.length === 0 || stock[0].Damage_Qty < quantity) {
-          await connection.rollback();
-          connection.release();
-          return res.status(400).json({
-            error: `Cannot replace ${quantity} items. Only ${
-              stock[0]?.Damage_Qty || 0
-            } damaged items available for product ID ${productId}.`,
-          });
+          const err = new Error("INSUFFICIENT_DAMAGED_QTY");
+          err.detail = `Cannot replace ${quantity} items. Only ${
+            stock[0]?.Damage_Qty || 0
+          } damaged items available for product ID ${productId}.`;
+          throw err;
         }
       }
 
       if (!productId || !quantity) {
-        await connection.rollback();
-        connection.release();
-        return res
-          .status(400)
-          .json({ error: "Missing details for a purchase item." });
+        throw new Error("MISSING_ITEM_DETAILS");
       }
 
       // Insert into purchase table
@@ -334,39 +333,55 @@ exports.createPurchaseNew = async (req, res) => {
 
       // else {
       // Normal purchase - increase regular quantity
+      // (kept unconditional, exactly as original — runs for all paths)
       await connection.execute(
         "UPDATE stock SET quantity = quantity + ? WHERE product_id = ?",
         [quantity, productId]
       );
       // }
 
-      // Record in stock history
-      await connection.execute(
-        `INSERT INTO stock_History (
+      // Record in stock history — use the real stock_id, not product_id
+      const [stockIdResult] = await connection.execute(
+        "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `isActive` = 1",
+        [productId]
+      );
+      if (stockIdResult.length > 0) {
+        const stock_Id = stockIdResult[0].stock_id;
+        await connection.execute(
+          `INSERT INTO stock_History (
                     stock_Id, Qty, stock_type, AddedDate, AddedBy,
                     CreditOrDebit, ReferenceInvoiceOrSale
                 ) VALUES (?, ?, ?, NOW(), ?, ?, ?)`,
-        [
-          productId,
-          quantity,
-          isReplacement ? "replacement" : isDamaged ? "damage" : "purchase",
-          0,
-          isReplacement || isDamaged ? "Debit" : "Credit",
-          invoiceNumber,
-        ]
-      );
+          [
+            stock_Id,
+            quantity,
+            isReplacement ? "replacement" : isDamaged ? "damage" : "purchase",
+            addedBy || 0,
+            isReplacement || isDamaged ? "Debit" : "Credit",
+            invoiceNumber,
+          ]
+        );
+      }
     }
 
     await connection.commit();
-    connection.release();
     res.status(201).json({ message: "Purchase processed successfully!" });
   } catch (error) {
-    if (connection) {
-      await connection.rollback();
-      connection.release();
+    if (connection) await connection.rollback();
+
+    if (error.message === "MISSING_ITEM_DETAILS") {
+      return res
+        .status(400)
+        .json({ error: "Missing details for a purchase item." });
     }
+    if (error.message === "INSUFFICIENT_DAMAGED_QTY") {
+      return res.status(400).json({ error: error.detail });
+    }
+
     console.error("Error in purchase process:", error);
     res.status(500).json({ error: "Database error during purchase process." });
+  } finally {
+    if (connection) connection.release();
   }
 };
 
@@ -500,7 +515,7 @@ exports.getAllPurchases = async (req, res) => {
       WHERE isActive = 1
     `);
 
-    // Data query
+    // Data query (parameterised LIMIT/OFFSET)
     const [purchases] = await pool.execute(
       `
       SELECT
@@ -524,9 +539,9 @@ exports.getAllPurchases = async (req, res) => {
       JOIN products pr ON pr.product_id = p.product_id
       WHERE p.isActive = 1
       ORDER BY p.purchase_date DESC
-        LIMIT ${limit} OFFSET ${offset}
+      LIMIT ? OFFSET ?
       `,
- 
+      [limit, offset]
     );
 
     res.json({
@@ -548,7 +563,9 @@ exports.getAllPurchases = async (req, res) => {
 exports.getAllPurchasesByValues = async (req, res) => {
   try {
     const { supplier, product, fromDate, toDate, page = 1, limit = 15 } = req.body;
-    const offset = (page - 1) * limit;
+    const pageNum = parseInt(page) || 1;
+    const limitNum = parseInt(limit) || 15;
+    const offset = (pageNum - 1) * limitNum;
 
     let whereClause = "WHERE p.isActive = 1";
     const params = [];
@@ -574,7 +591,7 @@ exports.getAllPurchasesByValues = async (req, res) => {
       params.push(toDate);
     }
 
-    // Count
+    // Count (uses only the filter params)
     const [[{ total }]] = await pool.query(
       `
       SELECT COUNT(*) AS total
@@ -586,7 +603,7 @@ exports.getAllPurchasesByValues = async (req, res) => {
       params
     );
 
-    // Data
+    // Data (parameterised LIMIT/OFFSET appended after filter params)
     const [purchases] = await pool.query(
       `
       SELECT
@@ -610,18 +627,18 @@ exports.getAllPurchasesByValues = async (req, res) => {
       JOIN products pr ON pr.product_id = p.product_id
       ${whereClause}
       ORDER BY p.purchase_date DESC
-  LIMIT ${limit} OFFSET ${offset}
+      LIMIT ? OFFSET ?
       `,
-      [...params, parseInt(limit), offset]
+      [...params, limitNum, offset]
     );
 
     res.json({
       data: purchases,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNum,
+        limit: limitNum,
         totalRecords: total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(total / limitNum),
       },
     });
   } catch (error) {
@@ -662,6 +679,7 @@ exports.createPurchase = async (req, res) => {
 
   console.log("Received request body in createPurchase:", req.body); // For debugging
 
+  // ---- VALIDATE FIRST ----
   if (
     !supplierId ||
     !invoiceNumber ||
@@ -672,7 +690,6 @@ exports.createPurchase = async (req, res) => {
   }
 
   let connection;
-
   try {
     // Obtain a connection from the pool
     connection = await pool.getConnection();
@@ -684,11 +701,7 @@ exports.createPurchase = async (req, res) => {
     for (const item of purchaseDetails) {
       const { productId, quantity, purchasePrice, totalAmount } = item;
       if (!productId || !quantity || !purchasePrice) {
-        await connection.rollback();
-        connection.release();
-        return res
-          .status(400)
-          .json({ error: "Missing details for a purchase item." });
+        throw new Error("MISSING_ITEM_DETAILS");
       }
 
       // Insert into the purchase table
@@ -714,32 +727,41 @@ exports.createPurchase = async (req, res) => {
         currentStock.length > 0 ? parseInt(currentStock[0].quantity) : 0;
 
       // Update stock
-      const [stockUpdateResult] = await connection.execute(
+      await connection.execute(
         "UPDATE stock SET quantity = quantity + ?, added_date = NOW() WHERE product_id = ?",
         [quantity, productId]
       );
 
-      // Insert into stock history
-      await connection.execute(
-        "INSERT INTO stock_History (stock_Id, Qty, stock_type, AddedDate, AddedBy, CreditOrDebit, ReferenceInvoiceOrSale) VALUES (?, ?, ?, NOW(), ?, ?, ?)",
-        [productId, quantity, "purchase", 0, "Credit", invoiceNumber]
+      // Insert into stock history — use the real stock_id, not product_id
+      const [stockIdResult] = await connection.execute(
+        "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `isActive` = 1",
+        [productId]
       );
+      if (stockIdResult.length > 0) {
+        const stock_Id = stockIdResult[0].stock_id;
+        await connection.execute(
+          "INSERT INTO stock_History (stock_Id, Qty, stock_type, AddedDate, AddedBy, CreditOrDebit, ReferenceInvoiceOrSale) VALUES (?, ?, ?, NOW(), ?, ?, ?)",
+          [stock_Id, quantity, "purchase", addedBy || 0, "Credit", invoiceNumber]
+        );
+      }
     }
 
     // Commit the transaction
     await connection.commit();
-    connection.release();
 
     res.status(201).json({
       message:
         "Purchase created, stock updated, and stock history recorded successfully!",
     });
   } catch (error) {
-    // If any error occurred, rollback the transaction and release the connection
-    if (connection) {
-      await connection.rollback();
-      connection.release();
+    if (connection) await connection.rollback();
+
+    if (error.message === "MISSING_ITEM_DETAILS") {
+      return res
+        .status(400)
+        .json({ error: "Missing details for a purchase item." });
     }
+
     console.error(
       "Error creating purchase, updating stock, and recording history:",
       error
@@ -747,6 +769,8 @@ exports.createPurchase = async (req, res) => {
     res.status(500).json({
       error: "Database error during purchase and stock update process.",
     });
+  } finally {
+    if (connection) connection.release();
   }
 };
 
@@ -771,7 +795,6 @@ exports.getPurchaseBills = async (req, res) => {
     `;
 
     const [result] = await pool.query(sql, [supplier_id]);
-    //console.log(result);
 
     const [totalSum] = await pool.query(
       "SELECT SUM(total_amount) AS total_amount FROM purchase WHERE supplier_id = ? AND isActive=1",
@@ -820,9 +843,6 @@ exports.purchaseSettlement = async (req, res) => {
       return res.status(400).json({ error: "Amount paid is required" });
     }
 
-    //const sql = "Insert into  brands SET brand_name = ? WHERE brand_id = ?";
-    // const sql = "INSERT into `purchase_settlement`(`supplier_id`, `total_amount`,`added_date`, `transaction_date`, `transaction_type`, `remarks`, `isActive`) VALUES (?, ?, ?, ?, ?, ?, 1)";
-
     const sql =
       "INSERT into `purchase_settlement`(`supplier_id`, `cash_amount`, `card_amount`, `upi_amount`, `cheque_amount`, `total_amount`, `added_date`, `transaction_date`, `remarks`, `isActive`) VALUES (?, ?, ?, ?, ?, ?,?,?,?, 1)";
 
@@ -839,8 +859,8 @@ exports.purchaseSettlement = async (req, res) => {
       1,
     ]);
     res.json({
-      message: "Brand updated successfully",
-      brand_id: result.insertId,
+      message: "Settlement recorded successfully",
+      settlement_id: result.insertId,
     });
   } catch (error) {
     console.log(error);
@@ -851,7 +871,6 @@ exports.purchaseSettlement = async (req, res) => {
 exports.getPurchaseSettlements = async (req, res) => {
   try {
     const { supplier_id, dateType, singleDate, fromDate, toDate } = req.body;
-    //console.log(req.body);
     let condition = "";
     let values = [supplier_id];
 
@@ -906,7 +925,6 @@ exports.getTransactionTypes = async (req, res) => {
   }
 };
 
-
 // Delete purchase
 exports.deletePurchase = async (req, res) => {
   let connection;
@@ -924,17 +942,17 @@ exports.deletePurchase = async (req, res) => {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
-      // 0 Get purchase details (is_damaged)
-      const [purchaseRows] = await connection.execute(
-        "SELECT is_damaged FROM purchase WHERE id = ?",
-        [purchase_id]
-      );
+    // 0 Get purchase details (is_damaged)
+    const [purchaseRows] = await connection.execute(
+      "SELECT is_damaged FROM purchase WHERE id = ?",
+      [purchase_id]
+    );
 
-      if (purchaseRows.length === 0) {
-        throw new Error("Purchase not found");
-      }
+    if (purchaseRows.length === 0) {
+      throw new Error("Purchase not found");
+    }
 
-      const isDamaged = purchaseRows[0].is_damaged;
+    const isDamaged = purchaseRows[0].is_damaged;
 
     // 1️⃣ Soft delete purchase
     const [purchaseResult] = await connection.execute(
@@ -972,12 +990,12 @@ exports.deletePurchase = async (req, res) => {
       [purchase_id]
     );
 
-        await logUserActivity({
-        req,
-        user_id :loggedInUserId,
-        action: `Purchase data deleted - ${purchase_id}`
-      });
-      await connection.commit();
+    await logUserActivity({
+      req,
+      user_id: loggedInUserId,
+      action: `Purchase data deleted - ${purchase_id}`
+    });
+    await connection.commit();
     res.json({
       message: "Purchase deleted successfully",
       purchase_id,

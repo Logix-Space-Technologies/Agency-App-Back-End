@@ -591,127 +591,110 @@ exports.fecthLatestPrices = async (req, res) => {
 
 exports.addDirectSales = async (req, res) => {
   let connection;
-  const { agency_id, employee_id, customer, products, totalAmount, saleType,payment_breakdown = {}, } =
-    req.body;
 
-  console.log(req.body);
+  const {
+    agency_id,
+    employee_id,
+    customer,
+    products,
+    totalAmount,
+    saleType,
+    payment_breakdown = {},
+  } = req.body;
 
-  if (!agency_id || products.length === 0) {
+  // ---------- VALIDATE FIRST ----------
+  if (!agency_id || !Array.isArray(products) || products.length === 0) {
     return res.status(400).json({ message: "Missing or invalid input" });
   }
 
   const { cash = 0, card = 0, upi = 0 } = payment_breakdown;
+  const { id, name, place, mobile, email, date, amount_paying_now } = customer;
+  const sale_type = saleType;
 
-
-  const { id, name, place, mobile, email, date, invoiceNumber, amount_paying_now, gst_number } = customer;
-  const sale_type = req.body.saleType;
   const current_date = new Date();
   const added_date = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "Asia/Kolkata",  // GMT+5:30
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      }).format(current_date);
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(current_date);
 
-  connection = await pool.getConnection();
-
-    // Convert amount_paying_now to number and handle empty/undefined cases
   const amountPayingNow = parseFloat(amount_paying_now || 0);
-
   const isSettledItem =
     parseFloat(amount_paying_now) >= parseFloat(totalAmount) ? 1 : 0;
 
-
   try {
+    connection = await pool.getConnection();
     await connection.beginTransaction();
 
-    // // 1. Insert or fetch customer
-    // const [existingCustomer] = await connection.execute(
-    //   `SELECT id FROM Customers WHERE Mobile = ?`,
-    //   [mobile]
-    // );
-    // if (!customer?.invoiceNumber) {
-    //   throw new Error("Invoice number missing");
-    // }
-
-    // Lock the counter row
+    // Lock the counter row once
     const [counterRows] = await connection.execute(
-          "SELECT * FROM invoive_number_counter WHERE isActive = 1 FOR UPDATE"
-        );
+      "SELECT * FROM invoive_number_counter WHERE isActive = 1 FOR UPDATE"
+    );
 
-        if (!counterRows.length) {
-          throw new Error("Invoice counter row missing");
-        }
+    if (!counterRows.length) {
+      throw new Error("Invoice counter row missing");
+    }
 
-        const counter = counterRows[0];
+    const counter = counterRows[0];
+    const isGstBilling = !!customer?.gst_number;
 
-        let invoiceNumber = "";
-        let newCounter;
+    let invoiceNumber = "";
+    let newCounter;
 
-        const isGstBilling = !!customer?.gst_number;
+    if (isGstBilling) {
+      newCounter = (counter.GST_counter || 0) + 1;
+      invoiceNumber = `${counter.GST_prefix}${String(newCounter).padStart(5, "0")}${counter.GST_suffix}`;
+      await connection.execute(
+        `UPDATE invoive_number_counter SET GST_counter = ?, modified = ? WHERE isActive = 1`,
+        [newCounter, getISTTimestamp()]
+      );
+    } else {
+      newCounter = (counter.NGST_counter || 0) + 1;
+      invoiceNumber = `${counter.NGST_prefix}${String(newCounter).padStart(5, "0")}${counter.NGST_suffix}`;
+      await connection.execute(
+        `UPDATE invoive_number_counter SET NGST_counter = ?, modified = ? WHERE isActive = 1`,
+        [newCounter, getISTTimestamp()]
+      );
+    }
 
-        if (isGstBilling) {
-          newCounter = (counter.GST_counter || 0) + 1;
-          const formatted = String(newCounter).padStart(5, "0");
-
-          invoiceNumber = `${counter.GST_prefix}${formatted}${counter.GST_suffix}`;
-
-          await connection.execute(
-            `UPDATE invoive_number_counter 
-            SET GST_counter = ?, modified = ? 
-            WHERE isActive = 1`,
-            [newCounter, getISTTimestamp()]
-          );
-        } else {
-          newCounter = (counter.NGST_counter || 0) + 1;
-          const formatted = String(newCounter).padStart(5, "0");
-
-          invoiceNumber = `${counter.NGST_prefix}${formatted}${counter.NGST_suffix}`;
-
-          await connection.execute(
-            `UPDATE invoive_number_counter 
-            SET NGST_counter = ?, modified = ? 
-            WHERE isActive = 1`,
-            [newCounter, getISTTimestamp()]
-          );
-        }
-
-    
-    const [rows] = await connection.execute(
+    // Duplicate check -> THROW (not return) so finally releases the connection
+    const [dupRows] = await connection.execute(
       "SELECT 1 FROM final_sale WHERE invoiceNumber = ? LIMIT 1",
       [invoiceNumber]
     );
-
-    if (rows.length) {
-      return res.status(400).json({ message: "Invoice number already exists" });
+    if (dupRows.length) {
+      throw new Error("DUPLICATE_INVOICE");
     }
+
     const gstValue = customer?.gst_number != null ? customer.gst_number : null;
     let customer_id;
-    if(id){
+
+    if (id) {
       customer_id = id;
-      const [customerUpdate] = await connection.execute(
+      await connection.execute(
         "UPDATE `Customers` SET `GstNumber`= ?  WHERE `id` = ?",
         [gstValue, customer_id]
-      );  
+      );
     } else {
       const [customerResult] = await connection.execute(
         `INSERT INTO Customers (Name, Place, Mobile, EmailId, GstNumber, WalletAmount, addedBy, isActive)
-                 VALUES (?, ?, ?, ?, ?, 0, ?, 1)`,
+           VALUES (?, ?, ?, ?, ?, 0, ?, 1)`,
         [name, place, mobile, email, gstValue, employee_id]
       );
       customer_id = customerResult.insertId;
       await logUserActivity({
         req,
-        user_id :employee_id,
-        action: `Customer with name ${name} is added`
+        user_id: employee_id,
+        action: `Customer with name ${name} is added`,
       });
     }
-    const sale_tracking_id = generateUniqueSaleTrackingId();
-    //const isGstBilling = !!customer?.gst_number;
 
-     const [insertResult]  = await connection.execute(
+    const sale_tracking_id = generateUniqueSaleTrackingId();
+
+    await connection.execute(
       `INSERT INTO final_sale ( sale_tracking_Id, invoiceNumber, TotalAmount, UserId, DateofTransaction, addedDate, isSettled, AmountPaid, isGstBilling, created, addedBy, isActive)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         sale_tracking_id,
         invoiceNumber,
@@ -723,82 +706,35 @@ exports.addDirectSales = async (req, res) => {
         amountPayingNow,
         isGstBilling,
         getISTTimestamp(),
-        employee_id
+        employee_id,
       ]
     );
 
-    // Counter was already fetched and locked earlier in the transaction
-    // Update the counter based on billing type
-    if (isGstBilling) {
-      // GST Billing → increment GST_counter
-      const newGstCounter = (counter.GST_counter || 0) + 1;
+    // NOTE: the counter was already incremented above. The second/duplicate
+    // counter UPDATE that existed in the original code has been removed.
 
-      await connection.execute(
-        `UPDATE invoive_number_counter 
-        SET GST_counter = ?, modified = ?
-        WHERE isActive = 1`,
-        [newGstCounter, getISTTimestamp()]
-      );
-
-    } else {
-      // Non-GST Billing → increment NGST_counter
-      const newNgstCounter = (counter.NGST_counter || 0) + 1;
-
-      await connection.execute(
-        `UPDATE invoive_number_counter 
-        SET NGST_counter = ?, modified = ?
-        WHERE id = 1`,
-        [newNgstCounter, getISTTimestamp()]
-      );
-    }
-  //  commented on removing dynamic invoice number 
-  //   const insertedId = insertResult.insertId;
-
-  // // 2. UPDATE invoiceNumber
-  //   const [updateResult] = await connection.execute(
-  //     `UPDATE final_sale
-  //     SET invoiceNumber = CONCAT(
-  //         'SK',
-  //         DATE_FORMAT(DateofTransaction, '%Y%m'),
-  //         LPAD(id, 5, '0')
-  //     )
-  //     WHERE id = ?`,
-  //     [insertedId]
-  //   );
-
-  //   if (updateResult.affectedRows === 0) {
-  //   throw new Error("Invoice number update failed for ID " + insertedId);
-  // }
-
-  // const [finalSaleRecord] = await connection.execute(
-  //     `SELECT invoiceNumber FROM final_sale WHERE sale_tracking_Id = ?`,
-  //     [sale_tracking_id]
-  //   );
-
-     if (parseFloat(amountPayingNow) > 0) {
+    if (parseFloat(amountPayingNow) > 0) {
       await connection.execute(
         `INSERT INTO sales_credit_history (UPI, Cash, Card, sale_tracking_Id, amount, creditedDate, isActive)
-                 VALUES (?,?,?,?, ?, now(), ?)`,
+           VALUES (?,?,?,?, ?, now(), ?)`,
         [upi, cash, card, sale_tracking_id, amountPayingNow, 1]
       );
     }
 
-    console.log("sales_credit_history Completed  !!! ");
-
-    // await connection.execute(
-    //   `INSERT INTO sales_credit_history (sale_tracking_Id, amount, creditedDate,isActive)
-    //          VALUES (?, ?, ?, ?)`,
-    //   [sale_tracking_id, amountPayingNow, date, 1]
-    // );
-
     for (const item of products) {
-      const { product_id, quantity,damaged_quantity,selling_price,isPriceChanged, price_id = null } = item;
+      const {
+        product_id,
+        quantity,
+        damaged_quantity,
+        selling_price,
+        isPriceChanged,
+      } = item;
 
       const [priceRows] = await connection.execute(
         `SELECT price_id, direct_selling_price, whole_sale_price
-                 FROM product_prices
-                 WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
-                 ORDER BY effective_date DESC LIMIT 1`,
+           FROM product_prices
+           WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
+           ORDER BY effective_date DESC LIMIT 1`,
         [product_id, date]
       );
 
@@ -807,58 +743,66 @@ exports.addDirectSales = async (req, res) => {
         continue;
       }
 
-      var marketing_selling_price = 0;
-
-      //console.log(priceRows[0]);
-
-      if (sale_type == "direct") {
-        marketing_selling_price = priceRows[0].direct_selling_price;
-      } else {
-        marketing_selling_price = priceRows[0].whole_sale_price;
-      }
-
-      // 3. Calculate total amount
-      //const amount__ = quantity * marketing_selling_price;
-       const amount__ = (quantity * selling_price) - (damaged_quantity* selling_price);
-
-      console.log(amount__);
-
       const price_id_ = priceRows[0].price_id;
+      const amount__ =
+        quantity * selling_price - damaged_quantity * selling_price;
 
-      // Insert into `sales`
       const [salesResult] = await connection.execute(
         `INSERT INTO sales (
-                    sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, 
-                    is_credit, sale_tracking_Id, sale_date, damaged_count, is_settled, loss_count,is_price_changed, isActive
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)`,
+            sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received,
+            is_credit, sale_tracking_Id, sale_date, damaged_count, is_settled, loss_count, is_price_changed, isActive
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           sale_type,
           employee_id,
           product_id,
           price_id_,
           quantity,
-          amount__, // amount_received
-          0, // is_credit
-          sale_tracking_id, // sale_tracking_Id
+          amount__,
+          0,
+          sale_tracking_id,
           date,
-          damaged_quantity, // damaged_count
-          isSettledItem, // is_settled
-          0, // loss_count
-          isPriceChanged, // selling price edited or not
-          1, // isActive
+          damaged_quantity,
+          isSettledItem,
+          0,
+          isPriceChanged,
+          1,
         ]
       );
 
-      const sale_id = salesResult.insertId;
+      const [stockRows] = await connection.execute(
+        `SELECT stock_id, quantity
+        FROM stock
+        WHERE product_id = ?
+          AND isActive = 1
+        FOR UPDATE`,
+        [product_id]
+      );
+      if (stockRows.length === 0) {
+          throw new Error(`Stock not found for ${product_id}`);
+      }
 
-      console.log(sale_id);
-
-      // Update stock
-      await connection.execute(
-        `UPDATE stock SET quantity = quantity + ? - ?, Damage_Qty= Damage_Qty + ? WHERE  product_id = ?`,
-        [damaged_quantity, quantity, damaged_quantity, product_id]
+      if (stockRows[0].quantity < quantity) {
+          throw new Error(`Insufficient stock for ${product_id}`);
+      }
+      const [updateResult] = await connection.execute(
+        `UPDATE stock
+        SET quantity = quantity + ? - ?,
+            Damage_Qty = Damage_Qty + ?
+        WHERE product_id = ?
+          AND quantity >= ?`,
+        [
+          damaged_quantity,
+          quantity,
+          damaged_quantity,
+          product_id,
+          quantity
+        ]
       );
 
+      if (updateResult.affectedRows === 0) {
+          throw new Error(`Insufficient stock`);
+      }
 
       const [stockIdResult] = await connection.execute(
         "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `isActive` = 1",
@@ -867,50 +811,38 @@ exports.addDirectSales = async (req, res) => {
 
       if (stockIdResult.length > 0) {
         const stock_Id = stockIdResult[0].stock_id;
-        //const addedDate = new Date();
         const addedBy = req.user ? req.user.id : 0;
-        const creditOrDebit = "debit";
-        const referenceInvoiceOrSale = sale_tracking_id;
 
         await connection.execute(
           "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
-          [
-            stock_Id,
-            -quantity,
-            "sale",
-            added_date,
-            addedBy,
-            creditOrDebit,
-            referenceInvoiceOrSale,
-          ]
+          [stock_Id, -quantity, "sale", added_date, addedBy, "debit", sale_tracking_id]
         );
       } else {
         console.warn(
-          `No active stock found for product_id: ${product_id} and price_id: ${price_id_} to record in stock history.`
+          `No active stock found for product_id: ${product_id} to record in stock history.`
         );
       }
     }
-    await logUserActivity({
-        req,
-        user_id :employee_id,
-        action: `Sale created for the customer ${name}`
-      });
     await connection.commit();
-    //connection.release();
 
-    res
-      .status(201)
-      //commented on removing dynamic invoice number
-      //.json({ message: "Direct sales recorded with customer info",finalSaleRecord:finalSaleRecord });
-      .json({ message: "Direct sales recorded with customer info"});
+    await logUserActivity({
+      req,
+      user_id: employee_id,
+      action: `Sale created for the customer ${name}`,
+    });
+
+
+
+    res.status(201).json({ message: "Direct sales recorded with customer info" });
   } catch (err) {
-      if (err.code === "ER_DUP_ENTRY") {
+    if (connection) await connection.rollback();
+
+    if (err.message === "DUPLICATE_INVOICE" || err.code === "ER_DUP_ENTRY") {
       return res.status(400).json({
-        message: "Invoice number already exists. Please refresh and try again."
+        message: "Invoice number already exists. Please refresh and try again.",
       });
     }
-    await connection.rollback();
-    //connection.release();
+
     console.error("Error processing direct sale:", err);
     res.status(500).json({ message: "Internal server error" });
   } finally {
@@ -1047,40 +979,39 @@ exports.getAllSales = async (req, res) => {
 // Add Sales
 exports.addSalesFromDailyAllocation = async (req, res) => {
   let connection;
+
+  const {
+    sale_type = "marketing",
+    marketing_staff_id,
+    sale_date = new Date(),
+    products = [],
+    amount_paid = 0,
+    expenses = {},
+    payment_breakdown = {},
+    user_id = "",
+  } = req.body;
+
+  // ---------- VALIDATE FIRST (no DB connection held yet) ----------
+  if (!marketing_staff_id || !Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({ error: "Required fields are missing" });
+  }
+
+  const { fuel = 0, vehicle_service = 0, other = 0 } = expenses;
+  const { cash = 0, card = 0, upi = 0 } = payment_breakdown;
+
   try {
-    const {
-      sale_type = "marketing",
-      marketing_staff_id,
-      sale_date = new Date(),
-      products = [],
-      amount_paid = 0,
-      expenses = {}, // Destructure expenses
-      payment_breakdown = {}, // Destructure payment breakdown
-      user_id = ""
-    } = req.body;
-
-    console.log(req.body);
-
-    // You can now access these like:
-    const { fuel = 0, vehicle_service = 0, other = 0 } = expenses;
-    const { cash = 0, card = 0, upi = 0 } = payment_breakdown;
-
-    // GET CONNECTION
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
-    if (
-      !marketing_staff_id ||
-      !Array.isArray(products) ||
-      products.length === 0
-    ) {
-      return res.status(400).json({ error: "Required fields are missing" });
-    }
-
     const [stockAllocations] = await connection.execute(
-      `SELECT daily_stock_id, product_id, allocated_quantity
-             FROM daily_stock_allocation
-             WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1`,
+      `SELECT daily_stock_id,
+              product_id,
+              allocated_quantity
+      FROM daily_stock_allocation
+      WHERE marketing_staff_id = ?
+        AND converted_to_sales = 0
+        AND isActive = 1
+      FOR UPDATE`,
       [marketing_staff_id]
     );
 
@@ -1090,65 +1021,49 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
     }
 
     const salesResults = [];
-
     const sale_tracking_id = generateUniqueSaleTrackingId();
     let totalAmountReceivedForSale = 0;
+
     const totalDeductions1 =
       parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
-    console.log("Products - 0");
-    console.log(products[0].amount_received);
 
     const isSettledItem1 =
       amount_paid >= products[0].amount_received - totalDeductions1 ? 1 : 0;
 
+    const current_date = new Date();
+    const addedDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(current_date);
 
-    console.log({
-      fuel,
-      vehicle_service,
-      other,
-      sale_tracking_id,
-      totalAmount: 0,
-      marketing_staff_id,
-      sale_date,
-      isSettledItem1,
-      amount_paid,
-    });
+    // ---- Invoice counter (locked + updated once) ----
+    const [counterRows] = await connection.execute(
+      `SELECT NGST_prefix, NGST_counter, NGST_suffix
+         FROM invoive_number_counter
+         WHERE isActive = 1 FOR UPDATE`
+    );
 
-      const current_date = new Date();
-      const addedDate = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "Asia/Kolkata",  // GMT+5:30
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      }).format(current_date);
+    if (counterRows.length === 0) {
+      throw new Error("Invoice counter not initialized");
+    }
 
-      const [counterRows] = await connection.execute(
-        `SELECT NGST_prefix, NGST_counter, NGST_suffix 
-        FROM invoive_number_counter 
-        WHERE isActive = 1`
-      );
+    const counterData = counterRows[0];
+    const newCounter = counterData.NGST_counter + 1;
+    const invoiceNumber = `${counterData.NGST_prefix}${String(newCounter).padStart(5, "0")}${counterData.NGST_suffix}`;
 
-      if (counterRows.length === 0) {
-        throw new Error("Invoice counter not initialized");
-      }
-
-      const counterData = counterRows[0];
-
-      const newCounter = counterData.NGST_counter + 1;
-
-      const invoiceNumber = `${counterData.NGST_prefix}${String(newCounter).padStart(5, '0')}${counterData.NGST_suffix}`;
-
-      await connection.execute(
-        `UPDATE invoive_number_counter 
-        SET NGST_counter = ?, modified = ?
-        WHERE isActive = 1`,
-        [newCounter, getISTTimestamp()]
-      );
+    await connection.execute(
+      `UPDATE invoive_number_counter
+         SET NGST_counter = ?, modified = ?
+         WHERE isActive = 1`,
+      [newCounter, getISTTimestamp()]
+    );
 
     const [insertResult] = await connection.execute(
-      `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction, addedDate, 
-             isSettled, AmountPaid, created, addedBy, invoiceNumber)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO final_sale ( FuelExpenses, VehcileServiceExpenses, OtherExpenses, sale_tracking_Id, TotalAmount, UserId, DateofTransaction, addedDate,
+         isSettled, AmountPaid, created, addedBy, invoiceNumber)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         fuel,
         vehicle_service,
@@ -1162,26 +1077,19 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         amount_paid,
         getISTTimestamp(),
         user_id,
-        invoiceNumber
+        invoiceNumber,
       ]
     );
-
-    console.log("Final Sale Completed !!! ");
 
     if (parseFloat(amount_paid) > 0) {
       await connection.execute(
         `INSERT INTO sales_credit_history (UPI, Cash, Card, sale_tracking_Id, amount, creditedDate, isActive)
-                 VALUES (?,?,?,?, ?, now(), ?)`,
+           VALUES (?,?,?,?, ?, now(), ?)`,
         [upi, cash, card, sale_tracking_id, amount_paid, 1]
       );
     }
 
-    console.log("sales_credit_history Completed  !!! ");
-
     for (const item of products) {
-      console.log("Product loop  !!! ");
-      console.log(item);
-
       const {
         product_id,
         dsa_id,
@@ -1193,37 +1101,18 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
 
       totalAmountReceivedForSale += parseFloat(amount_received);
 
-      console.log("total AmountReceived For Sale" + totalAmountReceivedForSale);
-
       if (!allocationMap[product_id]) {
-        console.log("No Product");
         console.warn(`No active allocation found for product_id ${product_id}`);
         continue;
       }
 
-      console.log("quantity_sold" + quantity_sold);
-      console.log(
-        "quantity Allocated " + allocationMap[product_id].allocated_quantity
-      );
-
-      // if (quantity_sold > allocationMap[product_id].allocated_quantity) {
-      //     console.log("quantity allocated     error " )
-
-      //     return res.status(400).json({
-      //         error: `Sold quantity (${quantity_sold}) exceeds allocated quantity (${allocationMap[product_id].allocated_quantity}) for product ID ${product_id}`
-      //     });
-      // }
-
-
       const [priceRows] = await connection.execute(
         `SELECT price_id
-                 FROM product_prices
-                 WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
-                 ORDER BY effective_date DESC LIMIT 1`,
+           FROM product_prices
+           WHERE product_id = ? AND isActive = 1 AND effective_date <= ?
+           ORDER BY effective_date DESC LIMIT 1`,
         [product_id, sale_date]
       );
-
-      console.log("product_prices fetch slect");
 
       if (priceRows.length === 0) {
         console.warn(`No price found for product_id ${product_id}`);
@@ -1231,25 +1120,13 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       }
 
       const price_id = priceRows[0].price_id;
-
-      // const totalDeductions = parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
-
-      // console.log("Deductions"+totalDeductions)
-      // console.log("amount Received" + amount_received)
-      // console.log("amount Total" + amount_paid)
-      // const isSettledItem = amount_paid >= (amount_received - totalDeductions) ? 1 : 0;
-
-      // console.log("Is Settled? " + isSettledItem);
-
-      //const isSettledItem = parseFloat(amount_paid) >= parseFloat(amount_received) - (fuel+other+vehicle_service) ? 1 : 0;
       const isCredit =
         parseFloat(amount_paid) < parseFloat(amount_received) ? 1 : 0;
 
-      console.log("Enter Into Sales !!! ");
-      const [insertResult] = await connection.execute(
+      const [salesInsert] = await connection.execute(
         `INSERT INTO sales
-                 (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count, sale_tracking_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count, sale_tracking_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           sale_type,
           marketing_staff_id,
@@ -1266,15 +1143,22 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         ]
       );
 
-      const newSaleId = insertResult.insertId;
-      console.log("New sale created with ID:", newSaleId);
+      const newSaleId = salesInsert.insertId;
 
-      await connection.execute(
-        `UPDATE stock
-                 SET quantity = quantity - ? , Damage_Qty=Damage_Qty + ? , Loss_Qty = Loss_Qty + ?
-                 WHERE product_id = ? AND isActive = 1`,
-        [quantity_sold, damaged_count, loss_count, product_id]
+      const [stockLock] = await connection.execute(
+        `SELECT stock_id, quantity
+        FROM stock
+        WHERE product_id = ?
+          AND isActive = 1
+        FOR UPDATE`,
+        [product_id]
       );
+
+      if (stockLock.length === 0) {
+        throw new Error(
+          `Stock not found for product ${product_id}`
+        );
+      }
 
       const [stockIdResult] = await connection.execute(
         "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `price_id` = ? AND `isActive` = 1",
@@ -1283,22 +1167,11 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
 
       if (stockIdResult.length > 0) {
         const stock_Id = stockIdResult[0].stock_id;
-        //const addedDate = new Date();
         const addedBy = req.user ? req.user.id : 0;
-        const creditOrDebit = "debit";
-        const referenceInvoiceOrSale = newSaleId;
 
         await connection.execute(
           "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
-          [
-            stock_Id,
-            -quantity_sold,
-            "sale",
-            addedDate,
-            addedBy,
-            creditOrDebit,
-            sale_tracking_id,
-          ]
+          [stock_Id, -quantity_sold, "sale", addedDate, addedBy, "debit", sale_tracking_id]
         );
       } else {
         console.warn(
@@ -1306,10 +1179,20 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         );
       }
 
-      await connection.execute(
-        `UPDATE daily_stock_allocation SET converted_to_sales = 1 , allocated_quantity = allocated_quantity-?  WHERE daily_stock_id = ?`,
-        [quantity_sold, dsa_id]
+      const [allocationUpdate] = await connection.execute(
+        `UPDATE daily_stock_allocation
+        SET converted_to_sales = 1,
+            allocated_quantity = allocated_quantity - ?
+        WHERE daily_stock_id = ?
+          AND allocated_quantity >= ?`,
+        [quantity_sold, dsa_id, quantity_sold]
       );
+
+      if (allocationUpdate.affectedRows === 0) {
+        throw new Error(
+          `Insufficient allocated quantity for DSA ${dsa_id}`
+        );
+      }
 
       salesResults.push({
         sale_id: newSaleId,
@@ -1321,9 +1204,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
     }
 
     await connection.execute(
-      `UPDATE final_sale
-             SET TotalAmount = ?
-             WHERE sale_tracking_Id = ?`,
+      `UPDATE final_sale SET TotalAmount = ? WHERE sale_tracking_Id = ?`,
       [totalAmountReceivedForSale, sale_tracking_id]
     );
 
@@ -1332,27 +1213,27 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       [sale_tracking_id]
     );
 
-    if (finalSaleRecord.length > 0) {
-      // const { AmountPaid, TotalAmount } = finalSaleRecord[0];
-      // const totalDeductions = parseFloat(fuel) + parseFloat(other) + parseFloat(vehicle_service);
-      // console.log("Deductions"+totalDeductions)
-      // console.log("amount Received" + amount_received)
-      // console.log("amount Total" + amount_paid)
-      // const isSettledItemNew = amount_paid >= (amount_received - totalDeductions) ? 1 : 0;
-    }
-          await logUserActivity({
-          req,
-          user_id : user_id,
-          action : `Sale created - ${marketing_staff_id}`
-        });
-        await connection.commit();
-    res.json({ message: "Sales added successfully", sales: salesResults,finalSaleRecord: finalSaleRecord });
+    await connection.commit();
+    
+    await logUserActivity({
+      req,
+      user_id: user_id,
+      action: `Sale created - ${marketing_staff_id}`,
+    });
+
+
+
+    res.json({
+      message: "Sales added successfully",
+      sales: salesResults,
+      finalSaleRecord: finalSaleRecord,
+    });
   } catch (error) {
     if (connection) await connection.rollback();
     console.error("Error in addSales:", error);
     res.status(500).json({ error: "Database error" });
   } finally {
-    if (connection) connection.release();
+    if (connection) connection.release(); // ALWAYS returns the connection
   }
 };
 
