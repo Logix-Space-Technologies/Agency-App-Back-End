@@ -501,23 +501,81 @@ exports.getReplacementHistory = async (req, res) => {
   }
 };
 
+// // Get All Active Purchases with Supplier and Product Name
+// exports.getAllPurchases = async (req, res) => {
+//   try {
+//     const page = parseInt(req.body.page) || 1;
+//     const limit = parseInt(req.body.limit) || 15;
+//     const offset = (page - 1) * limit;
+
+//     // Count query
+//     const [[{ total }]] = await pool.execute(`
+//       SELECT COUNT(*) AS total
+//       FROM purchase
+//       WHERE isActive = 1
+//     `);
+
+//     // Data query (parameterised LIMIT/OFFSET)
+//     const [purchases] = await pool.execute(
+//       `
+//       SELECT
+//         pr.product_name,
+//         pr.product_id,
+//         p.purchase_date,
+//         p.purchase_price,
+//         p.total_amount,
+//         p.quantity,
+//         p.Invoice_Number,
+//         s.supplier_name,
+//         p.AddedDate,
+//         p.is_damaged,
+//         p.damage_description,
+//         p.replacement_provided,
+//         p.replacement_date,
+//         p.is_free_replacement,
+//         p.id AS purchase_id
+//       FROM purchase p
+//       JOIN suppliers s ON p.supplier_id = s.supplier_id
+//       JOIN products pr ON pr.product_id = p.product_id
+//       WHERE p.isActive = 1
+//       ORDER BY p.purchase_date DESC
+//       LIMIT ? OFFSET ?
+//       `,
+//       [limit, offset]
+//     );
+
+//     res.json({
+//       data: purchases,
+//       pagination: {
+//         page,
+//         limit,
+//         totalRecords: total,
+//         totalPages: Math.ceil(total / limit),
+//       },
+//     });
+//   } catch (error) {
+//     console.error("Error fetching purchases:", error);
+//     res.status(500).json({ error: "Database error." });
+//   }
+// };
+
+
 // Get All Active Purchases with Supplier and Product Name
 exports.getAllPurchases = async (req, res) => {
   try {
-    const page = parseInt(req.body.page) || 1;
-    const limit = parseInt(req.body.limit) || 15;
+    const page = Number(req.body.page) || 1;
+    const limit = Number(req.body.limit) || 15;
     const offset = (page - 1) * limit;
 
     // Count query
-    const [[{ total }]] = await pool.execute(`
+    const [[{ total }]] = await pool.query(`
       SELECT COUNT(*) AS total
       FROM purchase
       WHERE isActive = 1
     `);
 
-    // Data query (parameterised LIMIT/OFFSET)
-    const [purchases] = await pool.execute(
-      `
+    // Data query
+    const [purchases] = await pool.query(`
       SELECT
         pr.product_name,
         pr.product_id,
@@ -539,10 +597,8 @@ exports.getAllPurchases = async (req, res) => {
       JOIN products pr ON pr.product_id = p.product_id
       WHERE p.isActive = 1
       ORDER BY p.purchase_date DESC
-      LIMIT ? OFFSET ?
-      `,
-      [limit, offset]
-    );
+      LIMIT ${limit} OFFSET ${offset}
+    `);
 
     res.json({
       data: purchases,
@@ -558,6 +614,7 @@ exports.getAllPurchases = async (req, res) => {
     res.status(500).json({ error: "Database error." });
   }
 };
+
 
 // Get All Active Purchases with Supplier and Product Name
 exports.getAllPurchasesByValues = async (req, res) => {
@@ -603,6 +660,9 @@ exports.getAllPurchasesByValues = async (req, res) => {
       params
     );
 
+    const limitNum = Number(limit) || 15;
+    const offsetNum = Number(offset) || 0;
+    
     // Data (parameterised LIMIT/OFFSET appended after filter params)
     const [purchases] = await pool.query(
       `
@@ -627,7 +687,7 @@ exports.getAllPurchasesByValues = async (req, res) => {
       JOIN products pr ON pr.product_id = p.product_id
       ${whereClause}
       ORDER BY p.purchase_date DESC
-      LIMIT ? OFFSET ?
+      LIMIT ${Number(limit)} OFFSET ${Number(offset)}
       `,
       [...params, limitNum, offset]
     );
