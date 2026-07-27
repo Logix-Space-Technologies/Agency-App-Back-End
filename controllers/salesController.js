@@ -640,6 +640,7 @@ exports.addDirectSales = async (req, res) => {
         );
 
         if (!counterRows.length) {
+          await connection.rollback();
           throw new Error("Invoice counter row missing");
         }
 
@@ -683,6 +684,7 @@ exports.addDirectSales = async (req, res) => {
     );
 
     if (rows.length) {
+      await connection.rollback();
       return res.status(400).json({ message: "Invoice number already exists" });
     }
     const gstValue = customer?.gst_number != null ? customer.gst_number : null;
@@ -905,6 +907,7 @@ exports.addDirectSales = async (req, res) => {
       .json({ message: "Direct sales recorded with customer info"});
   } catch (err) {
       if (err.code === "ER_DUP_ENTRY") {
+        await connection.rollback();
       return res.status(400).json({
         message: "Invoice number already exists. Please refresh and try again."
       });
@@ -1059,7 +1062,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       user_id = ""
     } = req.body;
 
-    console.log(req.body);
+    //console.log(req.body);
 
     // You can now access these like:
     const { fuel = 0, vehicle_service = 0, other = 0 } = expenses;
@@ -1074,13 +1077,14 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       !Array.isArray(products) ||
       products.length === 0
     ) {
+      await connection.rollback();
       return res.status(400).json({ error: "Required fields are missing" });
     }
 
     const [stockAllocations] = await connection.execute(
       `SELECT daily_stock_id, product_id, allocated_quantity
              FROM daily_stock_allocation
-             WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1`,
+             WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1  FOR UPDATE`,
       [marketing_staff_id]
     );
 
@@ -1223,7 +1227,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
         [product_id, sale_date]
       );
 
-      console.log("product_prices fetch slect");
+      //console.log("product_prices fetch slect");
 
       if (priceRows.length === 0) {
         console.warn(`No price found for product_id ${product_id}`);
@@ -1245,7 +1249,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       const isCredit =
         parseFloat(amount_paid) < parseFloat(amount_received) ? 1 : 0;
 
-      console.log("Enter Into Sales !!! ");
+      //console.log("Enter Into Sales !!! ");
       const [insertResult] = await connection.execute(
         `INSERT INTO sales
                  (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count, sale_tracking_id)
@@ -2131,6 +2135,7 @@ exports.deleteDirectSaleProduct = async (req, res) => {
           [product_id, sale_tracking_id]
         );
     if (result.affectedRows === 0){
+        await connection.rollback();
         return res.status(400).json({ error: "Sales data not updated" });
     }else{
       const [product] =  await connection.execute(
@@ -2153,6 +2158,7 @@ exports.deleteDirectSaleProduct = async (req, res) => {
       ); 
         // Check if stock exists
         if (stockRows.length === 0) {
+          await connection.rollback();
           return res.status(400).json({ error: "Stock not found for this product" });
         }
 
@@ -2214,6 +2220,7 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
     );
 
     if (result.affectedRows === 0) {
+      await connection.rollback();
       return res.status(400).json({ error: "Sales data not updated" });
     }else{
     const [products] = await connection.execute(
@@ -2222,6 +2229,7 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
     );
 
     if (products.length === 0) {
+      await connection.rollback();
       return res.status(400).json({ error: "No active products found" });
     }
     //Delete stock history
@@ -2746,7 +2754,7 @@ exports.fetchSalesDataByIDSaleTrackingID = async (req, res) => {
     if (saleType && saleType !== "marketing") {
       // Fetch from customers table
       const [customerRows] = await pool.query(
-        "SELECT Name FROM customers WHERE id = ?",
+        "SELECT Name FROM Customers WHERE id = ?",
         [userId]
       );
 
