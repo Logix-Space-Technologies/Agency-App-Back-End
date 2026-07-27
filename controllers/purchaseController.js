@@ -586,6 +586,18 @@ exports.getAllPurchasesByValues = async (req, res) => {
       params
     );
 
+    // Grand Total
+    const [[{ grandTotal }]] = await pool.query(
+      `
+      SELECT COALESCE(SUM(p.total_amount), 0) AS grandTotal
+      FROM purchase p
+      JOIN suppliers s ON p.supplier_id = s.supplier_id
+      JOIN products pr ON pr.product_id = p.product_id
+      ${whereClause}
+      `,
+      params
+    );
+
     // Data
     const [purchases] = await pool.query(
       `
@@ -617,6 +629,7 @@ exports.getAllPurchasesByValues = async (req, res) => {
 
     res.json({
       data: purchases,
+      grandTotal: Number(grandTotal || 0),
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
