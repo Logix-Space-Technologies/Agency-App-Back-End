@@ -44,6 +44,7 @@ async function runDailyOpeningClosing() {
 
     if (!products.length) {
       console.log("No active products found.");
+      await connection.commit();
       return;
     }
 

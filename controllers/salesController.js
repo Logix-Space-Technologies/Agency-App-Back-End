@@ -150,7 +150,6 @@ exports.cashReport = async (req, res) => {
 
 exports.incCredit = async (req, res) => {
   try {
-    console.log(req.body);
     const { allocation_id, marketing_staff_id, payment } = req.body;
     const { cash, card, gpay } = payment;
 
@@ -347,7 +346,6 @@ GROUP BY
 exports.fecthAllCreditReportUser = async (req, res) => {
   const { marketing_staff_id, startDate, endDate, page = 1, limit = 15 } = req.body;
 
-  console.log(req.body);
   const offset = (page - 1) * limit;
   try {
     let dateFilter = "";
@@ -484,19 +482,16 @@ GROUP BY
 };
 
 exports.fecthAllCreditReport = async (req, res) => {
-  const { fromDate, toDate } = req.body.params;
-
-  console.log(req.body);
-
-  if (!fromDate) {
-    return res
-      .status(400)
-      .json({ success: false, message: "fromDate is required." });
-  }
-
-  const dateToUse = toDate || fromDate;
-
   try {
+    const { fromDate, toDate } = req.body.params || {};
+
+    if (!fromDate) {
+      return res
+        .status(400)
+        .json({ success: false, message: "fromDate is required." });
+    }
+
+    const dateToUse = toDate || fromDate;
     const [rows] = await pool.query(
       `
             SELECT 
@@ -591,38 +586,38 @@ exports.fecthLatestPrices = async (req, res) => {
 
 exports.addDirectSales = async (req, res) => {
   let connection;
-  const { agency_id, employee_id, customer, products, totalAmount, saleType,payment_breakdown = {}, } =
-    req.body;
+  try {
+    const { agency_id, employee_id, customer, products, totalAmount, saleType,payment_breakdown = {}, } =
+      req.body;
 
-  console.log(req.body);
+    if (!agency_id || !Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({ message: "Missing or invalid input" });
+    }
 
-  if (!agency_id || products.length === 0) {
-    return res.status(400).json({ message: "Missing or invalid input" });
-  }
+    if (!customer || typeof customer !== "object") {
+      return res.status(400).json({ message: "Customer details are required" });
+    }
 
-  const { cash = 0, card = 0, upi = 0 } = payment_breakdown;
+    const { cash = 0, card = 0, upi = 0 } = payment_breakdown;
 
 
-  const { id, name, place, mobile, email, date, invoiceNumber, amount_paying_now, gst_number } = customer;
-  const sale_type = req.body.saleType;
-  const current_date = new Date();
-  const added_date = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "Asia/Kolkata",  // GMT+5:30
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      }).format(current_date);
-
-  connection = await pool.getConnection();
+    const { id, name, place, mobile, email, date, amount_paying_now, gst_number } = customer;
+    const sale_type = req.body.saleType;
+    const current_date = new Date();
+    const added_date = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Kolkata",  // GMT+5:30
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(current_date);
 
     // Convert amount_paying_now to number and handle empty/undefined cases
-  const amountPayingNow = parseFloat(amount_paying_now || 0);
+    const amountPayingNow = parseFloat(amount_paying_now || 0);
 
-  const isSettledItem =
-    parseFloat(amount_paying_now) >= parseFloat(totalAmount) ? 1 : 0;
+    const isSettledItem =
+      parseFloat(amount_paying_now) >= parseFloat(totalAmount) ? 1 : 0;
 
-
-  try {
+    connection = await pool.getConnection();
     await connection.beginTransaction();
 
     // // 1. Insert or fetch customer
@@ -747,9 +742,9 @@ exports.addDirectSales = async (req, res) => {
       const newNgstCounter = (counter.NGST_counter || 0) + 1;
 
       await connection.execute(
-        `UPDATE invoive_number_counter 
+        `UPDATE invoive_number_counter
         SET NGST_counter = ?, modified = ?
-        WHERE id = 1`,
+        WHERE isActive = 1`,
         [newNgstCounter, getISTTimestamp()]
       );
     }
@@ -978,7 +973,6 @@ exports.getSaleDetails = async (req, res) => {
 exports.getProductSaleMeta = async (req, res) => {
   try {
     const { product_id, marketing_staff_id, sale_date } = req.body;
-    console.log("Request Body:", req.body);
 
     if (!product_id || !marketing_staff_id || !sale_date) {
       return res.status(400).json({ error: "Missing required fields" });
@@ -1127,9 +1121,9 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
       }).format(current_date);
 
       const [counterRows] = await connection.execute(
-        `SELECT NGST_prefix, NGST_counter, NGST_suffix 
-        FROM invoive_number_counter 
-        WHERE isActive = 1`
+        `SELECT NGST_prefix, NGST_counter, NGST_suffix
+        FROM invoive_number_counter
+        WHERE isActive = 1 FOR UPDATE`
       );
 
       if (counterRows.length === 0) {
@@ -1372,7 +1366,7 @@ function generateUniqueSaleTrackingId() {
 
 //add sales
 exports.addSales = async (req, res) => {
-  console.log("Function Called for Sales Entry");
+  let connection;
   try {
     const {
       sale_type,
@@ -1388,17 +1382,17 @@ exports.addSales = async (req, res) => {
       loss_count,
     } = req.body;
 
-    console.log("Request body:", req.body);
-
     if (!product_id || !price_id || quantity_sold === undefined) {
-      console.log("Missing required fields");
       return res.status(400).json({ error: "Required fields are missing" });
     }
 
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
     // Insert sale
-    const [saleResult] = await pool.query(
-      `INSERT INTO sales (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, 
-             amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count) 
+    const [saleResult] = await connection.execute(
+      `INSERT INTO sales (sale_type, marketing_staff_id, product_id, price_id, quantity_sold,
+             amount_received, is_credit, sale_date, damaged_count, is_settled, loss_count)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         sale_type,
@@ -1416,86 +1410,64 @@ exports.addSales = async (req, res) => {
     );
 
     const newSaleId = saleResult.insertId;
-    console.log("New sale created with ID:", newSaleId);
 
     // Update stock
-    console.log("Updating stock for product:", product_id, "price:", price_id);
-    const [stockUpdateResult] = await pool.query(
+    const [stockUpdateResult] = await connection.execute(
       "UPDATE stock SET quantity = quantity - ? WHERE product_id = ? AND price_id = ? AND `isActive`=1",
       [quantity_sold, product_id, price_id]
     );
 
-    console.log("Stock update affected rows:", stockUpdateResult.affectedRows);
-
     if (stockUpdateResult.affectedRows === 0) {
-      console.log("Stock not found for update");
+      await connection.rollback();
       return res
         .status(404)
         .json({ error: "Stock not found for the given product and price." });
     }
 
     // Get stock ID for history
-    console.log("Fetching stock ID for history");
-    const [stockIdResult] = await pool.query(
+    const [stockIdResult] = await connection.execute(
       "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `price_id` = ? AND `isActive` = 1",
       [product_id, price_id]
     );
 
-    console.log("Stock ID query result:", stockIdResult);
-
     if (stockIdResult.length > 0) {
       const stock_Id = stockIdResult[0].stock_id;
-      console.log("Found stock ID:", stock_Id, "for history entry");
 
       const addedDate = new Date();
       const addedBy = req.user ? req.user.id : null;
       const creditOrDebit = "debit";
       const referenceInvoiceOrSale = newSaleId;
 
-      console.log("Inserting into stock_history with values:", {
-        stock_Id,
-        Qty: -quantity_sold,
-        stock_type: "sale",
-        addedDate,
-        addedBy,
-        creditOrDebit,
-        referenceInvoiceOrSale,
-      });
-
-      try {
-        const [historyResult] = await pool.query(
-          "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
-          [
-            stock_Id,
-            -quantity_sold,
-            "sale",
-            addedDate,
-            addedBy,
-            creditOrDebit,
-            referenceInvoiceOrSale,
-          ]
-        );
-        console.log(
-          "Stock history insert successful, ID:",
-          historyResult.insertId
-        );
-      } catch (historyError) {
-        console.error("Error inserting into stock_history:", historyError);
-        throw historyError; // Re-throw to be caught by the outer catch
-      }
+      await connection.execute(
+        "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+          stock_Id,
+          -quantity_sold,
+          "sale",
+          addedDate,
+          addedBy,
+          creditOrDebit,
+          referenceInvoiceOrSale,
+        ]
+      );
     } else {
       console.warn(
         `No active stock found for product_id: ${product_id} and price_id: ${price_id} to record in stock history.`
       );
     }
 
+    await connection.commit();
+
     res.json({
       message: "Sale and stock updated successfully",
       sale_id: newSaleId,
     });
   } catch (error) {
+    if (connection) await connection.rollback();
     console.error("Error in addSales:", error);
-    res.status(500).json({ error: "Database error", details: error.message });
+    res.status(500).json({ error: "Database error" });
+  } finally {
+    if (connection) connection.release();
   }
 };
 
@@ -1894,7 +1866,6 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
 
 exports.submitAllProductReturns = async (req, res) => {
   const { items } = req.body;
-  console.log(req.body);
   let connection;
   let returnData = [];
   let returnTableQuery = "";
@@ -1910,7 +1881,7 @@ exports.submitAllProductReturns = async (req, res) => {
 
     if (items && items.length) {
       let invoice = items[0]?.invoice_no;
-      [returnData] = await pool.query(
+      [returnData] = await connection.query(
         `SELECT * FROM  direct_sale_return  WHERE invoice_no = ?`,
         [invoice]
       );
@@ -2430,7 +2401,6 @@ exports.viewSalesData = async (req, res) => {
 exports.getSalesQtyDetailsForPrint = async (req, res) => {
   try {
     const { selectedUser, selectedProduct, startDate, endDate } = req.body;
-    console.log(req.body)
     if (!startDate || !endDate) {
       return res.status(400).json({ error: "Start and end dates are required." });
     }
@@ -2907,18 +2877,13 @@ exports.submitProductReturn = async (req, res) => {
 };
 
 exports.getGSTInvoiceNumber = async (req, res) => {
-  let connection;
-
   try {
-    connection = await pool.getConnection();
-    await connection.beginTransaction();
-
-    const [rows] = await connection.execute(
+    const [rows] = await pool.query(
       "SELECT * FROM invoive_number_counter WHERE isActive = 1"
     );
 
     if (!rows.length) {
-      throw new Error("Counter row not found");
+      return res.status(404).json({ error: "Counter row not found" });
     }
     const data = rows[0];
 
@@ -2927,31 +2892,22 @@ exports.getGSTInvoiceNumber = async (req, res) => {
 
     const gstInvoiceNumber = `${data.GST_prefix}${formattedCounter}${data.GST_suffix}`;
 
-    await connection.commit();
-
     res.json({ gstInvoiceNumber });
 
   } catch (error) {
-    if (connection) await connection.rollback(); 
-    res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) connection.release(); 
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
   }
 };
 
 exports.getNGSTInvoiceNumber = async (req, res) => {
-  let connection;
-
   try {
-    connection = await pool.getConnection();
-    await connection.beginTransaction();
-
-    const [rows] = await connection.execute(
+    const [rows] = await pool.query(
       "SELECT * FROM invoive_number_counter WHERE isActive = 1"
     );
 
     if (!rows.length) {
-      throw new Error("Counter row not found");
+      return res.status(404).json({ error: "Counter row not found" });
     }
     const data = rows[0];
 
@@ -2960,14 +2916,10 @@ exports.getNGSTInvoiceNumber = async (req, res) => {
 
     const ngstInvoiceNumber = `${data.NGST_prefix}${formattedCounter}${data.NGST_suffix}`;
 
-    await connection.commit();
-
     res.json({ ngstInvoiceNumber });
 
   } catch (error) {
-    if (connection) await connection.rollback(); 
-    res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) connection.release(); 
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
   }
 };

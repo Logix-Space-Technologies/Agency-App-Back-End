@@ -194,45 +194,6 @@ exports.getAllocationByProductAndDate = async (req, res) => {
 };
 
 
-// Multiple 
-exports.addDailyStockAllocation = async (req, res) => {
-    try {
-        const { marketing_staff_id, saleDate, allocations, addedBy } = req.body;
-        // console.log(Input)
-        console.log(req.body)
-
-        if (!marketing_staff_id || !allocations || !Array.isArray(allocations || !saleDate)) {
-            return res.status(400).json({ error: "Missing or invalid inputs" });
-        }
-
-        const date = new Date();
-
-        const insertValues = allocations
-            .filter(item => item.product_id && item.allocated_quantity)
-            .map(item => [marketing_staff_id, item.product_id, item.allocated_quantity, saleDate, date, addedBy, getISTTimestamp()]);
-
-        if (insertValues.length === 0) {
-            return res.status(400).json({ error: "No valid allocations provided" });
-        }
-        console.log(insertValues);
-        const [result] = await pool.query(
-            'INSERT INTO daily_stock_allocation (marketing_staff_id, product_id, allocated_quantity, date, addedDate, addedBy, created) VALUES ?',
-            [insertValues]
-        );
-        await logUserActivity({
-            req,
-            user_id : addedBy,
-            action: `Daily stock allocation added - ${marketing_staff_id}`
-          });
-
-        res.json({ message: 'Daily stock allocations added successfully', rowsInserted: result.affectedRows });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Database error' });
-    }
-};
-
-
 //view all
 exports.viewAllDailyStockAllocation = async (req, res) => {
     try {
@@ -248,10 +209,10 @@ exports.viewAllDailyStockAllocation = async (req, res) => {
 
 //add dsa
 exports.addDailyStockAllocation = async (req, res) => {
+    let connection;
     try {
-      console.log(req.body);
       const { marketing_staff_id, saleDate, allocations, addedBy} = req.body;
-  
+
       if (!marketing_staff_id) {
         return res.status(400).json({ error: "marketing staff id required" });
       }
@@ -261,19 +222,28 @@ exports.addDailyStockAllocation = async (req, res) => {
       if (!Array.isArray(allocations) || allocations.length === 0) {
         return res.status(400).json({ error: "allocations are required" });
       }
-  
       for (const alloc of allocations) {
-        const { product_id, allocated_quantity } = alloc;
-  
-        if (!product_id || !allocated_quantity) {
+        if (!alloc.product_id || !alloc.allocated_quantity) {
           return res.status(400).json({ error: "product_id and allocated_quantity required in each allocation" });
         }
-  
-        await pool.query(
+      }
+
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+
+      for (const alloc of allocations) {
+        const { product_id, allocated_quantity } = alloc;
+
+        await connection.execute(
           'INSERT INTO `daily_stock_allocation` (`marketing_staff_id`, `product_id`, `allocated_quantity`, `date`, `addedDate`,  `isActive`, `converted_to_sales`, `addedBy`, `created`) VALUES (?, ?, ?, ? ,now(), 1, 0, ?, ?)',
           [marketing_staff_id, product_id, allocated_quantity, saleDate, addedBy, getISTTimestamp()]
         );
       }
+
+      await connection.commit();
+      connection.release();
+      connection = null;
+
         await logUserActivity({
         req,
         user_id : addedBy,
@@ -282,8 +252,11 @@ exports.addDailyStockAllocation = async (req, res) => {
 
       res.json({ message: 'daily stock allocations added successfully' });
     } catch (error) {
+      if (connection) await connection.rollback();
       console.error(error);
       res.status(500).json({ error: 'Database error' });
+    } finally {
+      if (connection) connection.release();
     }
   };
   
@@ -423,16 +396,17 @@ exports.deleteDailyStockAllocation = async (req,res)=>{
         
         if (result.affectedRows === 0 ) {
             return res.status(404).json({ error: 'Record not found or already deleted' });
-        }//else{
-        //  await pool.query('UPDATE `stock` SET `quantity` = `quantity` + ? WHERE `product_id` = ?', [allocatedQuantity, productId]);                   
-        // }
+        }
+        // No stock update needed here: allocated_quantity is only a virtual
+        // reservation against stock.quantity (see viewAllStocks / addSalesFromDailyAllocation),
+        // it was never physically subtracted, so nothing needs to be added back.
         await logUserActivity({
             req,
             user_id :loggedInUserId,
             action: `Allocation data deleted - ${dailyStockId} (daily stock id)`
         });
       res.json({
-        message:"Daily stock allocation deleted and stock updated successfully",
+        message:"Daily stock allocation deleted successfully",
         dailyStockId,
         productId,
         allocatedQuantity,

@@ -15,7 +15,6 @@ exports.viewAllSuppliers = async (req, res) => {
 exports.addSuppliers = async (req, res) => {
     try {
         const { supplier_name, contact_number, email_Id, address } = req.body;
-        console.log(req.body);
 
         if (!supplier_name) return res.status(400).json({ error: "Supplier name is required" });
 

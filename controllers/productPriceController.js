@@ -2,9 +2,8 @@ const pool = require('../config/db');
 const { getISTTimestamp } = require('../utils/dateUtils');
 
 exports.updateProductPrice = async (req, res) => {
-    const connection = await pool.getConnection();
+    let connection;
     try {
-        await connection.beginTransaction();
         const {
             price_id,
             product_id,
@@ -24,6 +23,9 @@ exports.updateProductPrice = async (req, res) => {
         if (!price_id) return res.status(400).json({ error: "price_id is required" });
 
         const formattedDate = effective_date?.split("T")[0];
+
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
 if(product_mrp){
 const [rows] = await connection.query(
   "SELECT product_name, mrp FROM `products` WHERE `product_id`= ? AND `isActive`=1",
@@ -49,6 +51,7 @@ if (rows.length > 0) {
         );
 
         if (existingRows.length === 0) {
+            await connection.rollback();
             return res.status(404).json({ error: "Active product price not found" });
         }
 
@@ -67,6 +70,7 @@ if (rows.length > 0) {
             existing.effective_date.toISOString().split("T")[0] !== formattedDate;
 
         if (!isChanged) {
+            await connection.rollback();
             return res.json({ message: "No change detected. No update needed." });
         }
 
@@ -106,15 +110,15 @@ if (rows.length > 0) {
         res.json({ message: "Product price updated successfully", new_price_id: newPriceId });
 
     } catch (error) {
-    await connection.rollback();
+    if (connection) await connection.rollback();
 
     console.error(error);
     res.status(500).json({
-      error: error.message || "Database error",
+      error: "Database error",
     });
 
     } finally {
-        connection.release();
+        if (connection) connection.release();
     }
 };
 

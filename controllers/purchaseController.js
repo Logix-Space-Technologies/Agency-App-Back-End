@@ -24,6 +24,8 @@ exports.createEnhancedPurchase = async (req, res) => {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
+    const activityLogActions = [];
+
     // Process each item in the purchase
     for (const item of purchaseDetails) {
       const {
@@ -50,7 +52,7 @@ exports.createEnhancedPurchase = async (req, res) => {
       // Check stock for replacement scenarios
       if (isReplacement) {
         const [stock] = await connection.execute(
-          "SELECT Damage_Qty FROM stock WHERE product_id = ?",
+          "SELECT Damage_Qty FROM stock WHERE product_id = ? FOR UPDATE",
           [productId]
         );
 
@@ -94,11 +96,7 @@ exports.createEnhancedPurchase = async (req, res) => {
         ]
       );
 
-      await logUserActivity({
-        req,
-        user_id :addedBy,
-        action: `Purchase added with invoice number ${invoiceNumber}`
-      });
+      activityLogActions.push(`Purchase added with invoice number ${invoiceNumber}`);
       const purchaseId = purchaseResult.insertId;
 
 
@@ -161,6 +159,12 @@ exports.createEnhancedPurchase = async (req, res) => {
 
     await connection.commit();
     connection.release();
+    connection = null;
+
+    for (const action of activityLogActions) {
+      await logUserActivity({ req, user_id: addedBy, action });
+    }
+
     res.status(201).json({ message: "Purchase processed successfully!" });
   } catch (error) {
     if (connection) {
@@ -252,7 +256,6 @@ exports.getEnhancedDamagedItems = async (req, res) => {
 
 // Create a New Purchase with Support for Replacements
 exports.createPurchaseNew = async (req, res) => {
-  console.log("test");
   const { supplierId, invoiceNumber, purchaseDetails, addedBy, isReplacement } =
     req.body;
 
@@ -272,7 +275,7 @@ exports.createPurchaseNew = async (req, res) => {
       // Validate replacement quantity against Damage_Qty
       if (isReplacement) {
         const [stock] = await connection.execute(
-          "SELECT Damage_Qty FROM stock WHERE product_id = ?",
+          "SELECT Damage_Qty FROM stock WHERE product_id = ? FOR UPDATE",
           [productId]
         );
 
@@ -524,9 +527,9 @@ exports.getAllPurchases = async (req, res) => {
       JOIN products pr ON pr.product_id = p.product_id
       WHERE p.isActive = 1
       ORDER BY p.purchase_date DESC
-        LIMIT ${limit} OFFSET ${offset}
+        LIMIT ? OFFSET ?
       `,
- 
+      [limit, offset]
     );
 
     res.json({
@@ -547,7 +550,9 @@ exports.getAllPurchases = async (req, res) => {
 // Get All Active Purchases with Supplier and Product Name
 exports.getAllPurchasesByValues = async (req, res) => {
   try {
-    const { supplier, product, fromDate, toDate, page = 1, limit = 15 } = req.body;
+    const { supplier, product, fromDate, toDate } = req.body;
+    const page = parseInt(req.body.page) || 1;
+    const limit = parseInt(req.body.limit) || 15;
     const offset = (page - 1) * limit;
 
     let whereClause = "WHERE p.isActive = 1";
@@ -622,17 +627,17 @@ exports.getAllPurchasesByValues = async (req, res) => {
       JOIN products pr ON pr.product_id = p.product_id
       ${whereClause}
       ORDER BY p.purchase_date DESC
-  LIMIT ${limit} OFFSET ${offset}
+  LIMIT ? OFFSET ?
       `,
-      [...params, parseInt(limit), offset]
+      [...params, limit, offset]
     );
 
     res.json({
       data: purchases,
       grandTotal: Number(grandTotal || 0),
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page,
+        limit,
         totalRecords: total,
         totalPages: Math.ceil(total / limit),
       },
@@ -672,8 +677,6 @@ exports.getProducts = async (req, res) => {
 // Create a New Purchase with Multiple Items and Update Stock & History
 exports.createPurchase = async (req, res) => {
   const { supplierId, invoiceNumber, purchaseDetails, addedBy } = req.body;
-
-  console.log("Received request body in createPurchase:", req.body); // For debugging
 
   if (
     !supplierId ||
@@ -823,7 +826,6 @@ exports.purchaseSettlement = async (req, res) => {
       total_amount,
       remarks,
     } = req.body;
-    console.log(req.body);
 
     if (!supplier_id) {
       return res.status(400).json({ error: "Supplier ID is required" });

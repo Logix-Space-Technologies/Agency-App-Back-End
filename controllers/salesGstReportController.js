@@ -20,20 +20,13 @@ function validateDates(from, to) {
   return null;
 }
 
-exports.fetchGstReport = async (req, res) => {  
-const { fromDate: from, toDate: to } = req.body.params;
- console.log(from + " " + to,"gst report");
-
-  const err = validateDates(from, to);
-  if (err) return res.status(400).json({ error: err });
-
-  if (!from || !to) {
-    return res
-      .status(400)
-      .json({ success: false, message: "From and To Dates are required." });
-  }
-
+exports.fetchGstReport = async (req, res) => {
   try {
+    const { fromDate: from, toDate: to } = req.body.params || {};
+
+    const err = validateDates(from, to);
+    if (err) return res.status(400).json({ error: err });
+
     const [totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue] = await Promise.all([
       getTotalSales(from, to),
       getB2B(from, to),
@@ -54,6 +47,6 @@ const { fromDate: from, toDate: to } = req.body.params;
 
   } catch (e) {
     console.error('[GST Excel Error]', e);
-    res.status(500).json({ error: 'Failed to generate report', detail: e.message });
+    res.status(500).json({ error: 'Failed to generate report' });
   }
 };

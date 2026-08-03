@@ -54,7 +54,6 @@ exports.deleteBrand = async (req, res) => {
   try {
     // const brand_id = req.body.brand_id
     const { brand_id } = req.body;
-    console.log(brand_id);
     if (!brand_id)
       return res.status(400).json({ error: "Brand Id is required" });
 
@@ -75,7 +74,6 @@ exports.deleteBrand = async (req, res) => {
 exports.editBrand = async (req, res) => {
   try {
     const { brand_id, brand_name } = req.body;
-    console.log(req.body);
 
     if (!brand_id) {
       return res.status(400).json({ error: "Brand ID is required" });

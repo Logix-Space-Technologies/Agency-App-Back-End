@@ -204,7 +204,6 @@ exports.searchStock = async (req, res) => {
 
 //delete stock
 exports.deleteStock = async (req, res) => {
-    console.log( req.body)
     try {
         const { stock_id } = req.body;
         if (!stock_id) return res.status(400).json({ error: "stock id required" })
