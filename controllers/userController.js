@@ -9,8 +9,6 @@ exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    console.log(req.body);
-
     if (!email || !password) {
       return res.status(400).json({ error: "Email and password are required" });
     }
@@ -27,12 +25,9 @@ exports.loginUser = async (req, res) => {
 
     const user = users[0];
 
-    console.log(user);
-
     // Compare passwords
     const isMatch = await bcrypt.compare(password, user.password_hash);
 
-    console.log(isMatch);
     if (!isMatch) {
       return res.status(401).json({ error: "Invalid login credentials" });
     }
@@ -84,7 +79,7 @@ exports.loginUser = async (req, res) => {
 exports.getUsers = async (req, res) => {
   try {
     const [users] = await pool.query(
-      "SELECT user_id, profile_avathar, name, role, phone, email, password_hash, created_at, Place_Of_Allocation, isBlocked FROM users WHERE isActive = 1"
+      "SELECT user_id, profile_avathar, name, role, phone, email, created_at, Place_Of_Allocation, isBlocked FROM users WHERE isActive = 1"
     );
     res.json(users);
   } catch (error) {
@@ -96,9 +91,8 @@ exports.getUsers = async (req, res) => {
 exports.getUserByID = async (req, res) => {
   try {
     const { userId } = req.body;
-    //console.log(req.body)
     const [users] = await pool.query(
-      "SELECT user_id, profile_avathar, name, role, phone, email, password_hash, created_at, Place_Of_Allocation, isBlocked FROM users WHERE isActive = 1 AND user_id = ?",
+      "SELECT user_id, profile_avathar, name, role, phone, email, created_at, Place_Of_Allocation, isBlocked FROM users WHERE isActive = 1 AND user_id = ?",
        [userId]
     );
     res.json(users);
@@ -130,7 +124,7 @@ exports.searchUser = async (req, res) => {
       return res.status(400).json({ error: "User data is required" });
 
     const [result] = await pool.query(
-      `SELECT user_id, profile_avathar, name, role, phone, email, password_hash, created_at, Place_Of_Allocation, isBlocked
+      `SELECT user_id, profile_avathar, name, role, phone, email, created_at, Place_Of_Allocation, isBlocked
              FROM users
              WHERE (name LIKE ? OR email LIKE ? OR phone LIKE ? OR Place_Of_Allocation LIKE ?)  AND isActive = 1`,
       [`%${user_data}%`, `%${user_data}%`, `%${user_data}%`, `%${user_data}%`]
@@ -200,7 +194,7 @@ exports.addUser = async (req, res) => {
     res.json({ message: "User added successfully", user_id: result.insertId });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: error });
+    res.status(500).json({ error: "Database error" });
   }
 };
 
@@ -239,14 +233,6 @@ exports.editUser = async (req, res) => {
       return res.status(400).json({ error: "User ID is required" });
     }
 
-    // Hash the password
-    let hashedPassword = null;
-
-    if (password && password.trim() !== "") {
-      const saltRounds = 10;
-      hashedPassword = await bcrypt.hash(password, saltRounds);
-    }
-    
     let query = `
       UPDATE users SET
         profile_avathar = ?,
@@ -356,93 +342,95 @@ exports.getMenuItems = async (req, res) => {
 };
 
 exports.updateUserAccess = async (req, res) => {
+  const { accessList } = req.body;
+  if (!Array.isArray(accessList)) {
+    return res.status(400).json({ message: "Invalid payload" });
+  }
+
+  let connection;
   try {
-    const { accessList } = req.body;
-    if (!Array.isArray(accessList)) {
-      return res.status(400).json({ message: "Invalid payload" });
-    }
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    try {
+    let totalParentAffected = 0;
+    let totalChildAffected = 0;
 
-      let totalParentAffected = 0;
-      let totalChildAffected = 0;
+    const addRoleParentSQL = `
+      UPDATE menu_items
+      SET access_roles = CASE
+        WHEN access_roles IS NULL OR access_roles = '' THEN 'user'
+        WHEN FIND_IN_SET('user', access_roles) THEN access_roles
+        ELSE CONCAT(access_roles, ',user')
+      END
+      WHERE id = ?`;
 
-      const addRoleParentSQL = `
-        UPDATE menu_items
-        SET access_roles = CASE
-          WHEN access_roles IS NULL OR access_roles = '' THEN 'user'
-          WHEN FIND_IN_SET('user', access_roles) THEN access_roles
-          ELSE CONCAT(access_roles, ',user')
-        END
-        WHERE id = ?`;
+    const removeRoleParentSQL = `
+      UPDATE menu_items
+      SET access_roles = TRIM(BOTH ',' FROM REPLACE(CONCAT(',', IFNULL(access_roles, ''), ','), ',user,', ','))
+      WHERE id = ?`;
 
-      const removeRoleParentSQL = `
-        UPDATE menu_items
-        SET access_roles = TRIM(BOTH ',' FROM REPLACE(CONCAT(',', IFNULL(access_roles, ''), ','), ',user,', ','))
-        WHERE id = ?`;
+    const addRoleChildSQL = `
+      UPDATE menu_items
+      SET access_roles = CASE
+        WHEN access_roles IS NULL OR access_roles = '' THEN 'user'
+        WHEN FIND_IN_SET('user', access_roles) THEN access_roles
+        ELSE CONCAT(access_roles, ',user')
+      END
+      WHERE href = ? AND parent_id = ?`;
 
-      const addRoleChildSQL = `
-        UPDATE menu_items
-        SET access_roles = CASE
-          WHEN access_roles IS NULL OR access_roles = '' THEN 'user'
-          WHEN FIND_IN_SET('user', access_roles) THEN access_roles
-          ELSE CONCAT(access_roles, ',user')
-        END
-        WHERE href = ? AND parent_id = ?`;
+    const removeRoleChildSQL = `
+      UPDATE menu_items
+      SET access_roles = TRIM(BOTH ',' FROM REPLACE(CONCAT(',', IFNULL(access_roles, ''), ','), ',user,', ','))
+      WHERE href = ? AND parent_id = ?`;
 
-      const removeRoleChildSQL = `
-        UPDATE menu_items
-        SET access_roles = TRIM(BOTH ',' FROM REPLACE(CONCAT(',', IFNULL(access_roles, ''), ','), ',user,', ','))
-        WHERE href = ? AND parent_id = ?`;
+    for (const menu of accessList) {
+      const parentId = menu.id;
 
-      for (const menu of accessList) {
-        const parentId = menu.id;
+      // Parent update
+      if (menu.parentUserAccess === 1) {
+        const [result] = await connection.query(addRoleParentSQL, [parentId]);
+        totalParentAffected += (result && result.affectedRows) || 0;
+      } else {
+        const [result] = await connection.query(removeRoleParentSQL, [parentId]);
+        totalParentAffected += (result && result.affectedRows) || 0;
+      }
 
-        // Parent update
-        if (menu.parentUserAccess === 1) {
-          const [result] = await pool.query(addRoleParentSQL, [parentId]);
-          totalParentAffected += (result && result.affectedRows) || 0;
-        } else {
-          const [result] = await pool.query(removeRoleParentSQL, [parentId]);
-          totalParentAffected += (result && result.affectedRows) || 0;
-        }
-
-        // Children update
-        if (Array.isArray(menu.children)) {
-          for (const child of menu.children) {
-            if (child.childUserAccess === 1) {
-              const [result] = await pool.query(addRoleChildSQL, [child.href, parentId]);
-              totalChildAffected += (result && result.affectedRows) || 0;
-            } else {
-              const [result] = await pool.query(removeRoleChildSQL, [child.href, parentId]);
-              totalChildAffected += (result && result.affectedRows) || 0;
-            }
+      // Children update
+      if (Array.isArray(menu.children)) {
+        for (const child of menu.children) {
+          if (child.childUserAccess === 1) {
+            const [result] = await connection.query(addRoleChildSQL, [child.href, parentId]);
+            totalChildAffected += (result && result.affectedRows) || 0;
+          } else {
+            const [result] = await connection.query(removeRoleChildSQL, [child.href, parentId]);
+            totalChildAffected += (result && result.affectedRows) || 0;
           }
         }
       }
+    }
 
-      // Return informative response
-      if (totalParentAffected > 0 || totalChildAffected > 0) {
-        return res.json({
-          message: "Access updated successfully",
-          parentAffected: totalParentAffected,
-          childAffected: totalChildAffected,
-        });
-      } else {
-        return res.status(200).json({
-          message: "No rows changed (they were already in the desired state).",
-          parentAffected: totalParentAffected,
-          childAffected: totalChildAffected,
-        });
-      }
-    } catch (err) {
-      await pool.rollback();
-      console.error(err);
-      return res.status(500).json({ message: "Server error" });
+    await connection.commit();
+
+    // Return informative response
+    if (totalParentAffected > 0 || totalChildAffected > 0) {
+      return res.json({
+        message: "Access updated successfully",
+        parentAffected: totalParentAffected,
+        childAffected: totalChildAffected,
+      });
+    } else {
+      return res.status(200).json({
+        message: "No rows changed (they were already in the desired state).",
+        parentAffected: totalParentAffected,
+        childAffected: totalChildAffected,
+      });
     }
   } catch (error) {
+    if (connection) await connection.rollback();
     console.error(error);
     return res.status(500).json({ message: "Server error" });
+  } finally {
+    if (connection) connection.release();
   }
 };
 
@@ -499,7 +487,6 @@ exports.changePassword = async (req, res) => {
 exports.toggleBlock = async (req, res) => {
   try {
     const { userId, name, isBlocked, loggedInUserId } = req.body;
-    console.log(req.body)
 
     if (!userId || (isBlocked !== 0 && isBlocked !== 1)) {
       return res.status(400).json({ error: "User ID and block status are required" });

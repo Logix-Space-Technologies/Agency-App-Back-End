@@ -78,7 +78,7 @@ exports.calculateMarketingSalary = async (req, res) => {
 exports.getAllMarketingStaff = async (req, res) => {
   try {
     const [staff] = await pool.query(
-      "SELECT `user_id`, `profile_avathar`, `name`, `role`, `phone`, `email`, `password_hash`, `created_at`, `Place_Of_Allocation`, `isActive` FROM `users` WHERE role = ? AND isActive = 1",
+      "SELECT `user_id`, `profile_avathar`, `name`, `role`, `phone`, `email`, `created_at`, `Place_Of_Allocation`, `isActive` FROM `users` WHERE role = ? AND isActive = 1",
       ["marketing_staff"]
     );
     res.json(staff);
@@ -131,17 +131,19 @@ exports.addUserSalary = async (req, res) => {
 exports.updateStaffSalary = async (req, res) => {
   try {
     const { id, Month, Year, AddedDate, Amount, Remarks } = req.body;
-    console.log(req.body);
-    console.log(AddedDate);
-    const formattedDate = AddedDate.split("T")[0];
-    console.log(formattedDate); 
     const istDate = new Date(new Date().getTime() + (5.5 * 60 * 60 * 1000));
-//    const now = new Date();
+
     if (!id || !Amount) {
       return res
         .status(400)
         .json({ error: "Staff name and amount are required" });
     }
+
+    if (!AddedDate) {
+      return res.status(400).json({ error: "AddedDate is required" });
+    }
+
+    const formattedDate = AddedDate.split("T")[0];
 
     const [result] = await pool.query(
       "UPDATE `Salary` SET `modified` = ?, `Amount` = ?, `Remarks` = ?, `AddedDate` = ?, `Month` = ?, `Year` = ? WHERE `id` = ?",

@@ -56,14 +56,8 @@ exports.searchCategory = async (req, res) => {
 exports.updateCategory = async (req, res) => {
     try {
         const { category_id, category_name  } = req.body;
-        console.log(category_id, category_name);
         if (!category_id) return res.status(400).json({ error: "Category ID is required" });
         if (!category_name) return res.status(400).json({ error: "Category Name is required" });
-        
-        // const [result] = await pool.query('UPDATE `categories` SET `category_name` = ? WHERE `category_id`= ?', [category_name, category_id]);
-        // if (result.affectedRows === 0) return res.status(400).json({ error: 'Category not found' });
-
-        // res.json({ message: 'Category updated successfully' });
 
         const sql = "UPDATE `categories` SET `category_name` = ? WHERE `category_id`= ?";
 

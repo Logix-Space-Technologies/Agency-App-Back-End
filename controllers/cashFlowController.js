@@ -47,8 +47,7 @@ exports.getCashFlow = async (req, res) => {
 
 exports.fetchProfitLoss = async (req, res) => {
   try {
-    const { fromDate, toDate, page, limit} = req.body;
-console.log(req.body);
+    const { fromDate, toDate, page = 1, limit = 10 } = req.body;
     if (!fromDate || !toDate) {
       return res.status(400).json({ error: "From and To dates are required" });
     }

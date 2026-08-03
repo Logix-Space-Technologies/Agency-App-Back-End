@@ -53,8 +53,6 @@ exports.getProduct = async (req, res) => {
 exports.addProduct = async (req, res) => {
     let connection;
     try {
-          connection = await pool.getConnection();
-          await connection.beginTransaction();
         const {
             product_name,
             category_id,
@@ -69,6 +67,9 @@ exports.addProduct = async (req, res) => {
         if (!product_name) {
             return res.status(400).json({ error: "product_name required" });
         }
+
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
 
         // Insert into products
         const [productResult] = await connection.execute(
@@ -526,27 +527,35 @@ exports.damagedProductSearch = async (req, res) => {
 
 
 exports.addMiscDamagedProduct = async (req, res) => {
+  let connection;
   try {
     const { productId, productName,damagedQty,damagedRefund,damagedReplace,loggedInUserId } = req.body;
-    console.log(req.body);
 
     if (!productId) {
       return res.status(400).json({ error: "Product ID is required" });
     }
 
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
     const sql = "INSERT INTO `miscellaneous_damage` (`product_id`, `quantity`, `addedDate`, `addedBy`, `isActive`) VALUES (?,?,NOW(),?,1)";
-    const [result] = await pool.query(sql, [productId, damagedQty,loggedInUserId ]);
+    const [result] = await connection.execute(sql, [productId, damagedQty,loggedInUserId ]);
 
     const updatesql = "UPDATE stock SET Damage_Qty = Damage_Qty + ?, modified_date = NOW() WHERE product_id = ?";
-    await pool.query(updatesql, [damagedQty,productId]);
+    await connection.execute(updatesql, [damagedQty,productId]);
+
+    await connection.commit();
 
     res.json({
       message: "Misc damaged quantity added successfully",
       brand_id: result.insertId,
     });
   } catch (error) {
-    console.log(error)
+    if (connection) await connection.rollback();
+    console.error(error);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (connection) connection.release();
   }
 };
 
