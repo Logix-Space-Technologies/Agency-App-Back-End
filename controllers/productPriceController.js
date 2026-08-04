@@ -102,11 +102,14 @@ if (rows.length > 0) {
 
         // Update stock table with new price_id for this product
         await connection.query(
-            `UPDATE stock 
-            SET price_id = ? 
+            `UPDATE stock
+            SET price_id = ?
             WHERE product_id = ?`,
             [newPriceId, product_id]
         );
+
+        await connection.commit();
+
         res.json({ message: "Product price updated successfully", new_price_id: newPriceId });
 
     } catch (error) {
