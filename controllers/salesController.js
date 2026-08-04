@@ -83,10 +83,24 @@ exports.cashReport = async (req, res) => {
     const startDateTime = fromDate + " 00:00:00";
     const endDateTime = (toDate || fromDate) + " 23:59:59";
 
-    // 1. Credit repayments (UPI, Cash, Card)
+    // Money actually received in this window, broken down by method.
+    // sales_credit_history is populated by every real payment event in the
+    // system — new marketing/direct sale payments (addSalesFromDailyAllocation,
+    // addDirectSales) and later credit repayments (incCredit) alike — each
+    // row tagged with creditedDate = the actual date the money was received.
+    // This is the single, complete, correct source for "cash collected today".
+    //
+    // Deliberately NOT also summing `sales.amount_received WHERE is_credit = 0`
+    // here (as a previous version of this report did): that combination is
+    // broken two ways — (1) sales.sale_date is the delivery date, not the
+    // payment date, so it doesn't answer "how much cash came in today"; and
+    // (2) addDirectSales hardcodes is_credit = 0 for every item regardless of
+    // whether it was actually paid, so that query silently included unpaid/
+    // credit sale value as if it were cash received. Both combined caused the
+    // report to overstate cash whenever a direct/wholesale sale was on credit.
     const [creditHistory] = await pool.query(
       `
-            SELECT 
+            SELECT
                 SUM(UPI) AS totalUPI,
                 SUM(Cash) AS totalCash,
                 SUM(Card) AS totalCard
@@ -97,48 +111,17 @@ exports.cashReport = async (req, res) => {
       [startDateTime, endDateTime]
     );
 
-    // 2. Final sale amounts and expenses
-    const [finalSale] = await pool.query(
-      `
-            SELECT 
-                SUM(AmountPaid) AS totalAmountPaid,
-                SUM(FuelExpenses) AS totalFuelExpenses,
-                SUM(VehcileServiceExpenses) AS totalServiceExpenses,
-                SUM(OtherExpenses) AS totalOtherExpenses
-            FROM final_sale
-            WHERE isSettled = 1 AND isActive = 1 
-              AND DateofTransaction BETWEEN ? AND ?
-        `,
-      [startDateTime, endDateTime]
-    );
-
-    // 3. Cash sales (non-credit)
-    const [cashSales] = await pool.query(
-      `
-            SELECT 
-                SUM(amount_received) AS totalAmountReceived
-            FROM sales
-            WHERE is_credit = 0 AND isActive = 1
-              AND sale_date BETWEEN ? AND ?
-        `,
-      [startDateTime, endDateTime]
-    );
+    const totalUPI = Number(creditHistory[0].totalUPI) || 0;
+    const totalCash = Number(creditHistory[0].totalCash) || 0;
+    const totalCard = Number(creditHistory[0].totalCard) || 0;
 
     const report = {
       fromCreditHistory: {
-        totalUPI: creditHistory[0].totalUPI || 0,
-        totalCash: creditHistory[0].totalCash || 0,
-        totalCard: creditHistory[0].totalCard || 0,
+        totalUPI,
+        totalCash,
+        totalCard,
       },
-      fromFinalSale: {
-        totalAmountPaid: finalSale[0].totalAmountPaid || 0,
-        totalFuelExpenses: finalSale[0].totalFuelExpenses || 0,
-        totalServiceExpenses: finalSale[0].totalServiceExpenses || 0,
-        totalOtherExpenses: finalSale[0].totalOtherExpenses || 0,
-      },
-      fromSales: {
-        totalCashSaleReceived: cashSales[0].totalAmountReceived || 0,
-      },
+      totalCashReceived: totalUPI + totalCash + totalCard,
     };
 
     res.status(200).json({ success: true, report });
