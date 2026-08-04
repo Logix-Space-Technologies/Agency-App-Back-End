@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { getISTTimestamp, getISTDate } = require('../utils/dateUtils');
+const { reconstructDailyStock } = require('../utils/reconstructStock');
 
 // View all stocks with complete information
 exports.viewAllStocks = async (req, res) => {
@@ -505,6 +506,36 @@ exports.viewOpeningClosingStock = async (req, res) => {
   }
 };
 
+
+// NEW, additive endpoint: computes day-wise opening/closing stock on demand,
+// directly from purchase/sales/miscellaneous_damage history, with no dependency
+// on the opening_closing_balance table or any cron job. Does not replace or
+// modify viewOpeningClosingStock / saveOpeningClosingBalance / the cron scripts.
+exports.getReconstructedDailyStock = async (req, res) => {
+  try {
+    const { product_id, fromDate, toDate } = req.body;
+
+    if (!product_id || !fromDate || !toDate) {
+      return res.status(400).json({ error: "product_id, fromDate and toDate are required" });
+    }
+
+    if (fromDate > toDate) {
+      return res.status(400).json({ error: "fromDate cannot be after toDate" });
+    }
+
+    const { data, currentStock, anchor } = await reconstructDailyStock(
+      pool,
+      product_id,
+      fromDate,
+      toDate
+    );
+
+    res.json({ data, currentStock, anchor });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
 
 exports.deleteOldStockData = async (req, res) => {
   try {

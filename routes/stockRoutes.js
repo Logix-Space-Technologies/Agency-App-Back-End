@@ -1,5 +1,5 @@
 const express = require('express');
-const { viewAllStocks, addStocks, searchStock, deleteStock, stockHistory, saveOpeningClosingBalance, viewOpeningClosingStock, deleteOldStockData} = require('../controllers/stockController');
+const { viewAllStocks, addStocks, searchStock, deleteStock, stockHistory, saveOpeningClosingBalance, viewOpeningClosingStock, deleteOldStockData, getReconstructedDailyStock} = require('../controllers/stockController');
 const router = express.Router();
 
 
@@ -11,5 +11,6 @@ router.post('/stockHistory', stockHistory);
 router.post('/openingClosingStock', saveOpeningClosingBalance);
 router.post('/viewOpeningClosing', viewOpeningClosingStock);
 router.post('/deleteOldStockData', deleteOldStockData);
+router.post('/reconstructedDailyStock', getReconstructedDailyStock);
 
 module.exports = router;
