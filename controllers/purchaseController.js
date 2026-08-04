@@ -417,9 +417,9 @@ exports.requestReplacement = async (req, res) => {
   const { productId, quantity, supplierId, description } = req.body;
 
   try {
-    await pool.execute(
-      `UPDATE purchase 
-             SET replacement_provided	 = 1, 
+    await pool.query(
+      `UPDATE purchase
+             SET replacement_provided	 = 1,
                  damage_description = ?,
                  replacement_date = NOW()
              WHERE product_id = ? AND supplier_id = ? AND is_damaged = 1
@@ -456,7 +456,7 @@ exports.getReplacementHistory = async (req, res) => {
   }
 
   try {
-    const [history] = await pool.execute(
+    const [history] = await pool.query(
       `
             SELECT
                 p.product_name,
@@ -497,14 +497,14 @@ exports.getAllPurchases = async (req, res) => {
     const offset = (page - 1) * limit;
 
     // Count query
-    const [[{ total }]] = await pool.execute(`
+    const [[{ total }]] = await pool.query(`
       SELECT COUNT(*) AS total
       FROM purchase
       WHERE isActive = 1
     `);
 
     // Data query
-    const [purchases] = await pool.execute(
+    const [purchases] = await pool.query(
       `
       SELECT
         pr.product_name,
