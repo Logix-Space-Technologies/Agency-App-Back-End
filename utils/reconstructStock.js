@@ -2,14 +2,25 @@
 // purchase / sales / miscellaneous_damage history, anchored to the live
 // `stock` table figure — no pre-computed snapshot table or cron required.
 //
+// "Stock" here means usable stock: quantity minus Damage_Qty, matching the
+// convention used everywhere else in this codebase (viewAllStocks, etc).
+//
 // Formula (per product):
-//   closing(today)  = current live stock (from `stock` table)
-//   net(day)        = purchase_qty(day) - sold_qty(day) - damage_qty(day) - loss_qty(day) - misc_damage_qty(day)
+//   closing(today)  = current live usable stock = stock.quantity - stock.Damage_Qty
+//   net(day)        = purchase_qty(day) - sold_qty(day) - damage_qty(day) - misc_damage_qty(day)
 //   closing(D)      = closing(today) - sum(net(day)) for every day after D up to today
 //   opening(D)      = closing(D) - net(D)
 //
-// This mirrors the formula already used (and trusted) by cron/dailyOpeningClosingCron.js
-// and cron/runDailyReconciliation.js.
+// Verified against the actual stock-mutation code paths (purchaseController.js,
+// salesController.js, dailyStockAllocationController.js, productController.js):
+//   - daily_stock_allocation never touches stock.quantity (pure reservation row),
+//     so it is correctly excluded here.
+//   - loss_count is tracked via Loss_Qty but is never subtracted from
+//     "available"/"usable" stock anywhere else in the app, so it's excluded
+//     from the closing_stock math (still reported per-day for breakdown).
+//   - isDamaged purchases add +q to both quantity and Damage_Qty (net zero
+//     effect on usable stock), so excluding them via `is_damaged = 0` in the
+//     purchase query below gives the same result as including them.
 
 const toDateStr = (value) => {
   const d = value instanceof Date ? value : new Date(value);
@@ -22,17 +33,29 @@ const addDays = (dateStr, days) => {
   return toDateStr(d);
 };
 
+// IMPORTANT: do NOT subtract outstanding daily_stock_allocation here.
+// Confirmed by reading the actual write paths: allocating stock to a
+// marketing staff member (dailyStockAllocationController.js addDailyStockAllocation)
+// only inserts a reservation row — it never touches stock.quantity.
+// stock.quantity is only decremented later, at the moment a sale is
+// finalized (salesController.js addSalesFromDailyAllocation), using the
+// same quantity_sold value that ends up in the `sales` table and that this
+// reconstruction already subtracts via getDailyChangesUpTo(). Subtracting
+// allocations here as well double-counts them against a metric
+// (stock.quantity) they never affected, and was the root cause of the
+// drift found during verification (worst on high-volume/high-allocation
+// products). Damage_Qty IS subtracted because it never reduces
+// stock.quantity directly (stock.quantity only drops via quantity_sold at
+// sale time) — Damage_Qty is a separate running counter for the
+// unusable/damaged portion of quantity, following the same convention
+// used everywhere else in this codebase (viewAllStocks, the deprecated
+// cron scripts, etc).
 async function getCurrentStock(pool, product_id) {
   const [[row]] = await pool.query(
     `SELECT
-        (s.quantity - COALESCE(SUM(dsa.allocated_quantity), 0) - COALESCE(s.Damage_Qty, 0)) AS current_stock
+        (s.quantity - COALESCE(s.Damage_Qty, 0)) AS current_stock
      FROM stock s
-     LEFT JOIN daily_stock_allocation dsa
-       ON s.product_id = dsa.product_id
-       AND dsa.converted_to_sales = 0
-       AND dsa.isActive = 1
-     WHERE s.product_id = ? AND s.isActive = 1
-     GROUP BY s.stock_id`,
+     WHERE s.product_id = ? AND s.isActive = 1`,
     [product_id]
   );
   return row ? Number(row.current_stock) || 0 : 0;
@@ -86,7 +109,13 @@ async function getDailyChangesUpTo(pool, product_id, uptoDate) {
   return changesByDate;
 }
 
-const netOf = (c) => c.purchase - c.sold - c.damage - c.loss - c.misc;
+// loss_count is intentionally NOT subtracted here: Loss_Qty is tracked as its
+// own running counter on the stock table and is never subtracted from
+// "available"/"usable" stock anywhere else in this codebase (viewAllStocks,
+// the deprecated cron scripts, etc). Matching that existing convention rather
+// than introducing a different definition of "stock" here. loss_qty is still
+// returned per-day for reporting/breakdown purposes.
+const netOf = (c) => c.purchase - c.sold - c.damage - c.misc;
 
 /**
  * Returns an array of { date, opening_stock, closing_stock, purchase_qty, sold_qty,
