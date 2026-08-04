@@ -511,26 +511,28 @@ exports.viewOpeningClosingStock = async (req, res) => {
 // directly from purchase/sales/miscellaneous_damage history, with no dependency
 // on the opening_closing_balance table or any cron job. Does not replace or
 // modify viewOpeningClosingStock / saveOpeningClosingBalance / the cron scripts.
+// product_id is optional — omit it to get every active product in one pass
+// (matches the existing "search by date only" behavior of viewOpeningClosing).
 exports.getReconstructedDailyStock = async (req, res) => {
   try {
     const { product_id, fromDate, toDate } = req.body;
 
-    if (!product_id || !fromDate || !toDate) {
-      return res.status(400).json({ error: "product_id, fromDate and toDate are required" });
+    if (!fromDate || !toDate) {
+      return res.status(400).json({ error: "fromDate and toDate are required" });
     }
 
     if (fromDate > toDate) {
       return res.status(400).json({ error: "fromDate cannot be after toDate" });
     }
 
-    const { data, currentStock, anchor } = await reconstructDailyStock(
+    const { data } = await reconstructDailyStock(
       pool,
-      product_id,
+      product_id || null,
       fromDate,
       toDate
     );
 
-    res.json({ data, currentStock, anchor });
+    res.json({ data });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Database error" });
