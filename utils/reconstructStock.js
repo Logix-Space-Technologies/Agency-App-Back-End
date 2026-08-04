@@ -22,6 +22,8 @@
 //     effect on usable stock), so excluding them via `is_damaged = 0` in the
 //     purchase query below gives the same result as including them.
 
+const { getISTDate } = require("./dateUtils");
+
 const toDateStr = (value) => {
   const d = value instanceof Date ? value : new Date(value);
   return d.toISOString().split("T")[0];
@@ -61,9 +63,17 @@ async function getCurrentStock(pool, product_id) {
   return row ? Number(row.current_stock) || 0 : 0;
 }
 
+// Dates are formatted SERVER-SIDE (DATE_FORMAT) and returned as plain
+// 'YYYY-MM-DD' strings rather than JS Date objects. mysql2 returns DATE
+// columns as Date objects set to local midnight; converting those with
+// .toISOString() (UTC) silently shifts the date backward by a day on any
+// server running ahead of UTC (e.g. IST, UTC+5:30) — confirmed by a real
+// off-by-one-day bug found during verification. Formatting on the SQL side
+// avoids any JS Date/timezone conversion entirely, regardless of what
+// timezone the Node process happens to run under.
 async function getDailyChangesUpTo(pool, product_id, uptoDate) {
   const [purchaseRows] = await pool.query(
-    `SELECT purchase_date AS date, SUM(quantity) AS qty
+    `SELECT DATE_FORMAT(purchase_date, '%Y-%m-%d') AS date, SUM(quantity) AS qty
      FROM purchase
      WHERE product_id = ? AND isActive = 1 AND is_damaged = 0 AND purchase_date <= ?
      GROUP BY purchase_date`,
@@ -71,7 +81,7 @@ async function getDailyChangesUpTo(pool, product_id, uptoDate) {
   );
 
   const [salesRows] = await pool.query(
-    `SELECT sale_date AS date,
+    `SELECT DATE_FORMAT(sale_date, '%Y-%m-%d') AS date,
             SUM(quantity_sold) AS sold_qty,
             SUM(damaged_count) AS damage_qty,
             SUM(loss_count) AS loss_qty
@@ -82,10 +92,10 @@ async function getDailyChangesUpTo(pool, product_id, uptoDate) {
   );
 
   const [miscRows] = await pool.query(
-    `SELECT DATE(addedDate) AS date, SUM(quantity) AS qty
+    `SELECT DATE_FORMAT(addedDate, '%Y-%m-%d') AS date, SUM(quantity) AS qty
      FROM miscellaneous_damage
      WHERE product_id = ? AND isActive = 1 AND DATE(addedDate) <= ?
-     GROUP BY DATE(addedDate)`,
+     GROUP BY DATE_FORMAT(addedDate, '%Y-%m-%d')`,
     [product_id, uptoDate]
   );
 
@@ -97,14 +107,14 @@ async function getDailyChangesUpTo(pool, product_id, uptoDate) {
     return changesByDate[d];
   };
 
-  for (const r of purchaseRows) ensure(toDateStr(r.date)).purchase += Number(r.qty) || 0;
+  for (const r of purchaseRows) ensure(r.date).purchase += Number(r.qty) || 0;
   for (const r of salesRows) {
-    const e = ensure(toDateStr(r.date));
+    const e = ensure(r.date);
     e.sold += Number(r.sold_qty) || 0;
     e.damage += Number(r.damage_qty) || 0;
     e.loss += Number(r.loss_qty) || 0;
   }
-  for (const r of miscRows) ensure(toDateStr(r.date)).misc += Number(r.qty) || 0;
+  for (const r of miscRows) ensure(r.date).misc += Number(r.qty) || 0;
 
   return changesByDate;
 }
@@ -123,7 +133,10 @@ const netOf = (c) => c.purchase - c.sold - c.damage - c.misc;
  * (inclusive), for a single product.
  */
 async function reconstructDailyStock(pool, product_id, fromDate, toDate, todayOverride) {
-  const today = todayOverride || toDateStr(new Date());
+  // getISTDate(), not toDateStr(new Date()) — same UTC-shift pitfall as above,
+  // and this is the same IST date helper already used everywhere else in
+  // this codebase (stockController.js, the deprecated cron scripts, etc).
+  const today = todayOverride || getISTDate();
 
   const currentStock = await getCurrentStock(pool, product_id);
   const changesByDate = await getDailyChangesUpTo(pool, product_id, today);
