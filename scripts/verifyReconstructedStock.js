@@ -5,18 +5,27 @@
  * same product/date combinations, and reports any mismatches.
  *
  * Run manually:
- *   node scripts/verifyReconstructedStock.js
+ *   node scripts/verifyReconstructedStock.js          (last 20 days, default)
+ *   node scripts/verifyReconstructedStock.js 10        (last 10 days)
  */
 
 const pool = require("../config/db");
 const { reconstructDailyStock } = require("../utils/reconstructStock");
 
+const windowDays = parseInt(process.argv[2], 10) || 20;
+
 async function main() {
-  const [rows] = await pool.query(`
+  console.log(`Validating against the last ${windowDays} day(s) of opening_closing_balance data...`);
+
+  const [rows] = await pool.query(
+    `
     SELECT product_id, date, opening_stock, closing_stock
     FROM opening_closing_balance
+    WHERE date >= CURDATE() - INTERVAL ? DAY
     ORDER BY product_id, date
-  `);
+  `,
+    [windowDays]
+  );
 
   if (rows.length === 0) {
     console.log("No rows found in opening_closing_balance — nothing to verify against.");
