@@ -115,6 +115,49 @@ exports.cashReport = async (req, res) => {
     const totalCash = Number(creditHistory[0].totalCash) || 0;
     const totalCard = Number(creditHistory[0].totalCard) || 0;
 
+    // Line-by-line drill-down: every individual payment event behind the
+    // totals above, with enough context to trace it back to a sale.
+    // - sale_type comes from `sales` (all rows for one sale_tracking_Id share
+    //   the same sale_type, set once per transaction).
+    // - party_name resolves to the marketing staff name for marketing sales,
+    //   or the customer name for direct/wholesale sales — final_sale.UserId
+    //   points at `users` for one and `Customers` for the other depending on
+    //   sale_type, so both are LEFT JOINed and COALESCE picks whichever matches.
+    // - dates are formatted server-side (DATE_FORMAT) rather than left as JS
+    //   Date objects, for the same reason documented in utils/reconstructStock.js:
+    //   converting a DATETIME via .toISOString() on an IST server silently
+    //   shifts it by a day.
+    const [transactions] = await pool.query(
+      `
+            SELECT
+                sch.sales_credit_history_id AS id,
+                DATE_FORMAT(sch.creditedDate, '%Y-%m-%d %H:%i:%s') AS creditedDate,
+                sch.amount,
+                sch.UPI,
+                sch.Cash,
+                sch.Card,
+                fs.invoiceNumber,
+                fs.TotalAmount,
+                fs.AmountPaid,
+                DATE_FORMAT(fs.DateofTransaction, '%Y-%m-%d') AS saleDate,
+                st.sale_type,
+                COALESCE(u.name, c.Name) AS partyName
+            FROM sales_credit_history sch
+            LEFT JOIN final_sale fs ON fs.sale_tracking_Id = sch.sale_tracking_Id
+            LEFT JOIN (
+                SELECT sale_tracking_Id, MIN(sale_type) AS sale_type
+                FROM sales
+                GROUP BY sale_tracking_Id
+            ) st ON st.sale_tracking_Id = sch.sale_tracking_Id
+            LEFT JOIN users u ON u.user_id = fs.UserId AND st.sale_type = 'marketing'
+            LEFT JOIN Customers c ON c.id = fs.UserId AND st.sale_type IS NOT NULL AND st.sale_type != 'marketing'
+            WHERE sch.isActive = 1
+              AND sch.creditedDate BETWEEN ? AND ?
+            ORDER BY sch.creditedDate ASC
+        `,
+      [startDateTime, endDateTime]
+    );
+
     const report = {
       fromCreditHistory: {
         totalUPI,
@@ -122,6 +165,7 @@ exports.cashReport = async (req, res) => {
         totalCard,
       },
       totalCashReceived: totalUPI + totalCash + totalCard,
+      transactions,
     };
 
     res.status(200).json({ success: true, report });
