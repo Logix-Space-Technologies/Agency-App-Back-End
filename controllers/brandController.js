@@ -2,6 +2,7 @@ const pool = require("../config/db");
 
 // Get All Brands
 exports.getBrands = async (req, res) => {
+  
   try {
     const [brands] = await pool.query(
       "SELECT brand_id, brand_name FROM brands WHERE isActive = 1"

@@ -1820,7 +1820,7 @@ exports.fetchDirectSalesDataForPrintByID = async (req, res) => {
                 p.product_id, 
                 p.product_name,
                 p.mrp,
-                p.hsn_code, 
+                COALESCE(NULLIF(TRIM(p.hsn_code), ''), '') AS hsn_code,
                 pp.marketing_selling_price,
                 pp.direct_selling_price,
                 pp.whole_sale_price,
