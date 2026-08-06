@@ -3,19 +3,19 @@
 // `stock` table figure — no pre-computed snapshot table or cron required.
 // Supports a single product OR all active products in one efficient pass.
 //
-// "Stock" here means usable stock: quantity minus Damage_Qty, matching the
-// convention used everywhere else in this codebase (viewAllStocks, etc).
+// "Stock" here means usable stock: quantity minus outstanding staff
+// allocations minus Damage_Qty, matching the convention used everywhere
+// else in this codebase (viewAllStocks, etc).
 //
 // Formula (per product):
-//   closing(today)  = current live usable stock = stock.quantity - stock.Damage_Qty
+//   closing(today)  = current live usable stock
+//                    = stock.quantity - outstanding_allocated - stock.Damage_Qty
 //   net(day)        = purchase_qty(day) - sold_qty(day) - damage_qty(day) - misc_damage_qty(day)
 //   closing(D)      = closing(today) - sum(net(day)) for every day after D up to today
 //   opening(D)      = closing(D) - net(D)
 //
 // Verified against the actual stock-mutation code paths (purchaseController.js,
 // salesController.js, dailyStockAllocationController.js, productController.js):
-//   - daily_stock_allocation never touches stock.quantity (pure reservation row),
-//     so it is correctly excluded here.
 //   - loss_count is tracked via Loss_Qty but is never subtracted from
 //     "available"/"usable" stock anywhere else in the app, so it's excluded
 //     from the closing_stock math (still reported per-day for breakdown).
@@ -41,29 +41,29 @@ const addDays = (dateStr, days) => {
   return toDateStr(d);
 };
 
-// IMPORTANT: do NOT subtract outstanding daily_stock_allocation here.
-// Confirmed by reading the actual write paths: allocating stock to a
-// marketing staff member (dailyStockAllocationController.js addDailyStockAllocation)
-// only inserts a reservation row — it never touches stock.quantity.
-// stock.quantity is only decremented later, at the moment a sale is
-// finalized (salesController.js addSalesFromDailyAllocation), using the
-// same quantity_sold value that ends up in the `sales` table and that this
-// reconstruction already subtracts below. Subtracting allocations here as
-// well double-counts them against a metric (stock.quantity) they never
-// affected, and was the root cause of drift found during verification
-// (worst on high-volume/high-allocation products). Damage_Qty IS subtracted
-// because it never reduces stock.quantity directly (stock.quantity only
-// drops via quantity_sold at sale time) — Damage_Qty is a separate running
-// counter for the unusable/damaged portion of quantity, following the same
-// convention used everywhere else in this codebase.
+// Anchor matches the Stock Management "Total Stock" formula
+// (controllers/stockController.js viewAllStocks): quantity minus outstanding
+// (not yet converted to a sale) staff allocations minus Damage_Qty. Kept in
+// sync deliberately so this page and Stock Management always agree on
+// "current stock" for today.
 async function getCurrentStockMap(pool, product_id) {
   const whereProduct = product_id ? "AND s.product_id = ?" : "";
   const params = product_id ? [product_id] : [];
   const [rows] = await pool.query(
     `SELECT s.product_id, p.product_name,
-            (s.quantity - COALESCE(s.Damage_Qty, 0)) AS current_stock
+            (
+              s.quantity
+              - COALESCE(dsa.outstanding_allocated, 0)
+              - COALESCE(s.Damage_Qty, 0)
+            ) AS current_stock
      FROM stock s
      JOIN products p ON p.product_id = s.product_id
+     LEFT JOIN (
+       SELECT product_id, SUM(allocated_quantity) AS outstanding_allocated
+       FROM daily_stock_allocation
+       WHERE converted_to_sales = 0 AND isActive = 1
+       GROUP BY product_id
+     ) dsa ON dsa.product_id = s.product_id
      WHERE s.isActive = 1 AND p.isActive = 1 ${whereProduct}`,
     params
   );
