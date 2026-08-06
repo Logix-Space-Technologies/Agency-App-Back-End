@@ -85,18 +85,10 @@ SELECT
     /* ---------- ALLOCATION ---------- */
     COALESCE(SUM(dsa.allocated_quantity), 0) AS allocated_stock,
 
-    /* ---------- CURRENT STOCK ----------
-       Do NOT subtract outstanding daily_stock_allocation here: allocating
-       stock to a marketing staff member never touches stock.quantity (see
-       dailyStockAllocationController.addDailyStockAllocation) — it's only
-       decremented later, at the moment a sale is finalized. Subtracting
-       allocations again on top of that double-counts them, and any
-       allocation row that never gets flagged converted_to_sales=1 (e.g. a
-       day with zero sales for that product) permanently and increasingly
-       deflates this figure. Matches the anchor formula already used by
-       reconstructDailyStock (utils/reconstructStock.js). */
+    /* ---------- CURRENT STOCK ---------- */
     (
         s.quantity
+        - COALESCE(SUM(dsa.allocated_quantity), 0)
         - COALESCE(s.Damage_Qty, 0)
     ) AS current_stock
 
