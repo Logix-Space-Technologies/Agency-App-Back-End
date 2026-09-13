@@ -303,8 +303,57 @@ function buildExpenseSheet(ws, rows) {
     ['center', 'center', 'center', 'center', 'right', 'right']);
 }
 
+// ─── Supplier Purchases (estimated GST) ────────────────────────────────────────
+function buildSupplierPurchaseSheet(ws, rows) {
+  ws.views = [{ state: 'frozen', ySplit: 2 }];
+  titleRow(ws, 'Supplier Purchases — Estimated GST (uses each product\'s current tax rate, not the actual invoice tax)', 10);
+  headerRow(ws,
+    ['Date', 'Invoice No', 'Supplier', 'Product', 'Qty', 'Amount', 'Est. CGST', 'Est. SGST', 'Est. IGST', 'Est. Total Tax'],
+    [14,      18,           22,          26,        8,     15,       13,          13,          13,          15]);
+
+  let tot = { qty: 0, amt: 0, cgst: 0, sgst: 0, igst: 0 };
+
+  rows.forEach((r, idx) => {
+    const rowNum = idx + 3;
+    const bg     = idx % 2 === 1 ? C.altRow : null;
+    const row    = ws.getRow(rowNum);
+
+    setDateCell(row.getCell(1), r.purchase_date, bg);
+
+    const setText = (col, val, h = 'left') => {
+      const c = row.getCell(col);
+      c.value = val; c.font = font(); c.alignment = align(h, true); c.border = bord;
+      if (bg) c.fill = fill(bg);
+    };
+
+    setText(2, r.invoice_number, 'center');
+    setText(3, r.supplier_name);
+    setText(4, r.product_name);
+    setText(5, r.quantity, 'center');
+    setNum(row.getCell(6),  r.total_amount, NUM_FMT, 'right', bg);
+    setNum(row.getCell(7),  r.est_cgst,     NUM_FMT, 'right', bg);
+    setNum(row.getCell(8),  r.est_sgst,     NUM_FMT, 'right', bg);
+    setNum(row.getCell(9),  r.est_igst,     NUM_FMT, 'right', bg);
+    setNum(row.getCell(10), (Number(r.est_cgst) || 0) + (Number(r.est_sgst) || 0) + (Number(r.est_igst) || 0), NUM_FMT, 'right', bg, true);
+    row.height = 16;
+
+    tot.qty  += Number(r.quantity) || 0;
+    tot.amt  += Number(r.total_amount) || 0;
+    tot.cgst += Number(r.est_cgst) || 0;
+    tot.sgst += Number(r.est_sgst) || 0;
+    tot.igst += Number(r.est_igst) || 0;
+  });
+
+  const rnd = v => Math.round(v * 100) / 100;
+  const tr  = rows.length + 3;
+  totalRow(ws, tr,
+    ['TOTAL', '', '', '', tot.qty, rnd(tot.amt), rnd(tot.cgst), rnd(tot.sgst), rnd(tot.igst), rnd(tot.cgst + tot.sgst + tot.igst)],
+    [null, null, null, null, null, NUM_FMT, NUM_FMT, NUM_FMT, NUM_FMT, NUM_FMT],
+    ['center', 'center', 'center', 'center', 'center', 'right', 'right', 'right', 'right', 'right']);
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
-async function generateGstExcel({ totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue, toDate, expenseVouchers = [] }) {
+async function generateGstExcel({ totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue, toDate, expenseVouchers = [], supplierPurchases }) {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'AgencyDb GST Report';
   wb.created = new Date();
@@ -316,6 +365,11 @@ async function generateGstExcel({ totalSales, b2b, b2c, hsnB2B, hsnB2C, stockVal
   buildHsnB2CSheet(wb.addWorksheet('HSN B2C'),    hsnB2C);
   buildStockSheet(wb.addWorksheet('Stock Value'), stockValue, toDate);
   buildExpenseSheet(wb.addWorksheet('Misc Expenses'), expenseVouchers);
+
+  // Only added when the caller explicitly selected suppliers to report on
+  if (supplierPurchases !== undefined) {
+    buildSupplierPurchaseSheet(wb.addWorksheet('Supplier Purchases'), supplierPurchases);
+  }
 
   return wb;
 }

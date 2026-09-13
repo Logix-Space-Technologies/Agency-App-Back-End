@@ -207,4 +207,34 @@ async function getExpenseVouchers(from, to) {
   `, [from, to]);
 }
 
-module.exports = { getTotalSales, getB2B, getB2C, getHsnB2B, getHsnB2C, getStockValue, getExpenseVouchers };
+// ─── Supplier Purchases (with estimated GST, using each product's current rate) ─
+async function getSupplierPurchases(from, to, supplierIds = []) {
+  if (!Array.isArray(supplierIds) || supplierIds.length === 0) return [];
+
+  const placeholders = supplierIds.map(() => '?').join(',');
+  return query(`
+    SELECT
+      p.purchase_date,
+      p.Invoice_Number AS invoice_number,
+      s.supplier_name,
+      pr.product_name,
+      p.quantity,
+      p.total_amount,
+      COALESCE(pp.cgst_percentage, 0) AS cgst_percentage,
+      COALESCE(pp.sgst_percentage, 0) AS sgst_percentage,
+      COALESCE(pp.igst_percentage, 0) AS igst_percentage,
+      ROUND(p.total_amount * COALESCE(pp.cgst_percentage, 0) / 100, 2) AS est_cgst,
+      ROUND(p.total_amount * COALESCE(pp.sgst_percentage, 0) / 100, 2) AS est_sgst,
+      ROUND(p.total_amount * COALESCE(pp.igst_percentage, 0) / 100, 2) AS est_igst
+    FROM purchase p
+    JOIN suppliers s ON s.supplier_id = p.supplier_id
+    JOIN products pr ON pr.product_id = p.product_id
+    LEFT JOIN product_prices pp ON pp.product_id = p.product_id AND pp.isActive = 1
+    WHERE p.isActive = 1
+      AND p.purchase_date BETWEEN ? AND ?
+      AND p.supplier_id IN (${placeholders})
+    ORDER BY s.supplier_name, p.purchase_date
+  `, [from, to, ...supplierIds]);
+}
+
+module.exports = { getTotalSales, getB2B, getB2C, getHsnB2B, getHsnB2C, getStockValue, getExpenseVouchers, getSupplierPurchases };
