@@ -61,11 +61,16 @@ exports.addProduct = async (req, res) => {
             mrp,
             description,
             expiry_date,
-            product_image
+            product_image,
+            commision_rate
         } = req.body;
 
         if (!product_name) {
             return res.status(400).json({ error: "product_name required" });
+        }
+
+        if (commision_rate === undefined || commision_rate === null || commision_rate === "") {
+            return res.status(400).json({ error: "commision_rate is required" });
         }
 
         connection = await pool.getConnection();
@@ -82,9 +87,9 @@ exports.addProduct = async (req, res) => {
 
         // Insert into product_prices
         const [priceResult] = await connection.execute(
-            `INSERT INTO product_prices (product_id, purchase_price, marketing_selling_price, direct_selling_price, effective_date)
-             VALUES (?, ?, ?, ?, NOW())`,
-            [product_id, 0, mrp, mrp]
+            `INSERT INTO product_prices (product_id, purchase_price, commision_rate, marketing_selling_price, direct_selling_price, effective_date)
+             VALUES (?, ?, ?, ?, ?, NOW())`,
+            [product_id, 0, commision_rate, mrp, mrp]
         );
 
         const price_id = priceResult.insertId;
