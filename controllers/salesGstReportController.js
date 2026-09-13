@@ -9,7 +9,7 @@ const dayjs    = require('dayjs');
 const {
   getTotalSales, getB2B, getB2C,
   getHsnB2B, getHsnB2C, getStockValue,
-  getExpenseVouchers,
+  getExpenseVouchers, getSupplierPurchases,
 } = require('../utils/salesExcelGenQueries');
 const { generateGstExcel } = require('../utils/excelBuilder');
 
@@ -23,12 +23,14 @@ function validateDates(from, to) {
 
 exports.fetchGstReport = async (req, res) => {
   try {
-    const { fromDate: from, toDate: to } = req.body.params || {};
+    const { fromDate: from, toDate: to, supplierIds } = req.body.params || {};
 
     const err = validateDates(from, to);
     if (err) return res.status(400).json({ error: err });
 
-    const [totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue, expenseVouchers] = await Promise.all([
+    const hasSupplierFilter = Array.isArray(supplierIds) && supplierIds.length > 0;
+
+    const [totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue, expenseVouchers, supplierPurchases] = await Promise.all([
       getTotalSales(from, to),
       getB2B(from, to),
       getB2C(from, to),
@@ -36,9 +38,10 @@ exports.fetchGstReport = async (req, res) => {
       getHsnB2C(from, to),
       getStockValue(),
       getExpenseVouchers(from, to),
+      hasSupplierFilter ? getSupplierPurchases(from, to, supplierIds) : Promise.resolve(undefined),
     ]);
 
-    const wb = await generateGstExcel({ totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue, toDate: to, expenseVouchers });
+    const wb = await generateGstExcel({ totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue, toDate: to, expenseVouchers, supplierPurchases });
 
     const filename = `GST_Report_${from}_to_${to}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
