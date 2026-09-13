@@ -18,6 +18,8 @@ const salaryRouter = require("./routes/salaryRoutes")
 const customerRouter = require("./routes/customerRoutes")
 const cashFlowRouter = require("./routes/cashFlowRoutes")
 const salesGstReportRoutes = require("./routes/salesGstReport");
+const expenseCategoryRoutes = require("./routes/expenseCategoryRoutes");
+const expenseVoucherRoutes = require("./routes/expenseVoucherRoutes");
 
 
 
@@ -40,6 +42,8 @@ app.use('/api/salary/',salaryRouter)
 app.use('/api/customers', customerRouter)
 app.use('/api/cashflow', cashFlowRouter)
 app.use('/api/gstReport', salesGstReportRoutes)
+app.use('/api/expenseCategories', expenseCategoryRoutes)
+app.use('/api/expenseVouchers', expenseVoucherRoutes)
 
 
 
