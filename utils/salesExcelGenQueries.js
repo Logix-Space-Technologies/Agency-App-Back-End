@@ -189,4 +189,22 @@ async function getStockValue() {
   return r2(rows[0]?.stock_value || 0);
 }
 
-module.exports = { getTotalSales, getB2B, getB2C, getHsnB2B, getHsnB2C, getStockValue };
+// ─── Misc Expense Vouchers ─────────────────────────────────────────────────────
+async function getExpenseVouchers(from, to) {
+  return query(`
+    SELECT
+      v.expense_date,
+      c.expense_category_name,
+      v.description,
+      v.amount,
+      v.gst_amount,
+      v.payment_method,
+      CONCAT('EXP-', LPAD(v.voucher_id, 5, '0')) AS voucher_number
+    FROM misc_expense_vouchers v
+    JOIN expense_categories c ON c.expense_category_id = v.expense_category_id
+    WHERE v.isActive = 1 AND v.expense_date BETWEEN ? AND ?
+    ORDER BY v.expense_date
+  `, [from, to]);
+}
+
+module.exports = { getTotalSales, getB2B, getB2C, getHsnB2B, getHsnB2C, getStockValue, getExpenseVouchers };

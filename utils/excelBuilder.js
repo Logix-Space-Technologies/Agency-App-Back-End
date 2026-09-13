@@ -261,8 +261,50 @@ function buildStockSheet(ws, value, toDate) {
   ws.getRow(3).height = 22;
 }
 
+// ─── Misc Expense Vouchers ──────────────────────────────────────────────────────
+function buildExpenseSheet(ws, rows) {
+  ws.views = [{ state: 'frozen', ySplit: 2 }];
+  titleRow(ws, 'Misc Expense Vouchers', 6);
+  headerRow(ws,
+    ['Date', 'Voucher No', 'Category', 'Description', 'Amount', 'GST Amount'],
+    [14,      16,           20,          32,             16,       16]);
+
+  let totAmount = 0, totGst = 0;
+
+  rows.forEach((r, idx) => {
+    const rowNum = idx + 3;
+    const bg     = idx % 2 === 1 ? C.altRow : null;
+    const row    = ws.getRow(rowNum);
+
+    setDateCell(row.getCell(1), r.expense_date, bg);
+
+    const setText = (col, val, h = 'left') => {
+      const c = row.getCell(col);
+      c.value = val; c.font = font(); c.alignment = align(h, true); c.border = bord;
+      if (bg) c.fill = fill(bg);
+    };
+
+    setText(2, r.voucher_number, 'center');
+    setText(3, r.expense_category_name);
+    setText(4, r.description || '');
+    setNum(row.getCell(5), r.amount,     NUM_FMT, 'right', bg);
+    setNum(row.getCell(6), r.gst_amount, NUM_FMT, 'right', bg);
+    row.height = 16;
+
+    totAmount += Number(r.amount) || 0;
+    totGst    += Number(r.gst_amount) || 0;
+  });
+
+  const rnd = v => Math.round(v * 100) / 100;
+  const tr  = rows.length + 3;
+  totalRow(ws, tr,
+    ['TOTAL', '', '', '', rnd(totAmount), rnd(totGst)],
+    [null, null, null, null, NUM_FMT, NUM_FMT],
+    ['center', 'center', 'center', 'center', 'right', 'right']);
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
-async function generateGstExcel({ totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue, toDate }) {
+async function generateGstExcel({ totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue, toDate, expenseVouchers = [] }) {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'AgencyDb GST Report';
   wb.created = new Date();
@@ -273,6 +315,7 @@ async function generateGstExcel({ totalSales, b2b, b2c, hsnB2B, hsnB2C, stockVal
   buildHsnB2BSheet(wb.addWorksheet('HSN B2B'),    hsnB2B);
   buildHsnB2CSheet(wb.addWorksheet('HSN B2C'),    hsnB2C);
   buildStockSheet(wb.addWorksheet('Stock Value'), stockValue, toDate);
+  buildExpenseSheet(wb.addWorksheet('Misc Expenses'), expenseVouchers);
 
   return wb;
 }

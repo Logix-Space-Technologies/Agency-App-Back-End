@@ -9,6 +9,7 @@ const dayjs    = require('dayjs');
 const {
   getTotalSales, getB2B, getB2C,
   getHsnB2B, getHsnB2C, getStockValue,
+  getExpenseVouchers,
 } = require('../utils/salesExcelGenQueries');
 const { generateGstExcel } = require('../utils/excelBuilder');
 
@@ -27,16 +28,17 @@ exports.fetchGstReport = async (req, res) => {
     const err = validateDates(from, to);
     if (err) return res.status(400).json({ error: err });
 
-    const [totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue] = await Promise.all([
+    const [totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue, expenseVouchers] = await Promise.all([
       getTotalSales(from, to),
       getB2B(from, to),
       getB2C(from, to),
       getHsnB2B(from, to),
       getHsnB2C(from, to),
       getStockValue(),
+      getExpenseVouchers(from, to),
     ]);
 
-    const wb = await generateGstExcel({ totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue, toDate: to });
+    const wb = await generateGstExcel({ totalSales, b2b, b2c, hsnB2B, hsnB2C, stockValue, toDate: to, expenseVouchers });
 
     const filename = `GST_Report_${from}_to_${to}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

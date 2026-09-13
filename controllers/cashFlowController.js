@@ -32,8 +32,18 @@ exports.getCashFlow = async (req, res) => {
       [fromDate, toDate]
     );
 
+    // Misc Expense Vouchers (Debit)
+    const [expenseVouchers] = await pool.query(
+      `SELECT v.expense_date AS date, v.amount AS debit, NULL AS credit,
+              CONCAT('Expense - ', c.expense_category_name) AS type
+       FROM misc_expense_vouchers v
+       JOIN expense_categories c ON c.expense_category_id = v.expense_category_id
+       WHERE v.isActive = 1 AND v.expense_date BETWEEN ? AND ?`,
+      [fromDate, toDate]
+    );
+
     // Merge + sort
-    const allRecords = [...purchases, ...salaries, ...sales].sort(
+    const allRecords = [...purchases, ...salaries, ...sales, ...expenseVouchers].sort(
       (a, b) => new Date(a.date) - new Date(b.date)
     );
 
@@ -196,8 +206,22 @@ const [salesDamage] = await pool.query(query2, params);
       [fromDate, toDate]
     );
 
+    // MISC EXPENSE VOUCHERS (DEBIT)
+    const [miscExpense] = await pool.query(
+      `SELECT
+          v.expense_date AS date,
+          v.amount AS debit,
+          NULL AS credit,
+          CONCAT('EXP-', LPAD(v.voucher_id, 5, '0')) AS saleTrackingId,
+          'Misc Expense' AS type
+       FROM misc_expense_vouchers v
+       WHERE v.isActive = 1
+         AND v.expense_date BETWEEN ? AND ?`,
+      [fromDate, toDate]
+    );
 
-    
+
+
     // MERGE + SORT
     const allRecords = [
       ...profit,
@@ -206,7 +230,8 @@ const [salesDamage] = await pool.query(query2, params);
       ...salary,
       ...fuel,
       ...vehicle,
-      ...other
+      ...other,
+      ...miscExpense
     ].sort((a, b) => new Date(a.date) - new Date(b.date));
     //console.log(allRecords);
 
@@ -226,6 +251,7 @@ const summary = allRecords.reduce(
     if (r.type === "Sales Loss") acc.salesLostExpense += debit;
     if (r.type === "Sales Damaged") acc.salesDamagedExpense += debit;
     if (r.type === "Sales Income") acc.salesIncome += credit;
+    if (r.type === "Misc Expense") acc.miscExpense += debit;
 
     return acc;
   },
@@ -237,6 +263,7 @@ const summary = allRecords.reduce(
     salesLostExpense: 0,
     salesDamagedExpense: 0,
     salesIncome: 0,
+    miscExpense: 0,
     totalDebit: 0,
     totalCredit: 0
   }
