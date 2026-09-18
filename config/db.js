@@ -16,7 +16,13 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
+  // Without this, mysql2 returns DECIMAL/NUMERIC columns as strings (to avoid
+  // float precision loss), which silently turns `sum + row.amount` into
+  // string concatenation instead of addition anywhere a running total is
+  // computed in JS. Money fields in this app are well within JS's safe
+  // integer/float range, so the precision tradeoff is not a concern here.
+  decimalNumbers: true
 });
 
 pool.on('error', (err) => {
