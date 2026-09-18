@@ -283,7 +283,7 @@ exports.editUser = async (req, res) => {
 // Search User
 exports.getMenuItems = async (req, res) => {
   try {
-    const { role } = req.body;
+    const { role, user_id } = req.body;
     if (!role) {
       return res.status(400).json({ error: "Role is required." });
     }
@@ -332,6 +332,48 @@ exports.getMenuItems = async (req, res) => {
         text: row.link_text,
         childUserAccess: row.child_user_access ? 1 : 0
       });
+    }
+  }
+
+  // Layer per-user page overrides on top of the role-based menu, so a
+  // specific person can be granted a special page without changing their
+  // role or anyone else's access.
+  if (user_id) {
+    const [overrideRows] = await pool.query(`
+      SELECT
+        p.id AS parent_id,
+        p.name AS parent_name,
+        p.menu_id AS menu_id,
+        p.short_name,
+        c.href AS link_href,
+        c.name AS link_text
+      FROM user_page_access upa
+      JOIN menu_items c ON c.href = upa.href AND c.isActive = 1
+      JOIN menu_items p ON p.id = c.parent_id AND p.isActive = 1
+      WHERE upa.user_id = ? AND upa.isActive = 1
+      ORDER BY p.sort_order, c.sort_order
+    `, [user_id]);
+
+    for (const row of overrideRows) {
+      const pid = row.parent_id;
+      if (!navMap[pid]) {
+        navMap[pid] = {
+          id: pid,
+          name: row.parent_name,
+          menuId: row.menu_id,
+          shortName: row.short_name || undefined,
+          ParentUserAccess: 1,
+          links: []
+        };
+      }
+      const alreadyPresent = navMap[pid].links.some((l) => l.href === row.link_href);
+      if (!alreadyPresent) {
+        navMap[pid].links.push({
+          href: row.link_href,
+          text: row.link_text,
+          childUserAccess: 1
+        });
+      }
     }
   }
 
@@ -514,7 +556,7 @@ exports.toggleBlock = async (req, res) => {
 
 exports.getLinksForUser = async (req, res) => {
   try {
-    const { role, route } = req.body;
+    const { role, route, userId } = req.body;
 
     if (!role) {
       return res.status(400).json({ error: "Role is required" });
@@ -523,13 +565,23 @@ exports.getLinksForUser = async (req, res) => {
       `SELECT href FROM menu_items WHERE href IS NOT NULL AND FIND_IN_SET(?, access_roles) > 0`,
       [role]
     );
+
+    let hrefList = rows || [];
+
+    if (userId) {
+      const [overrideRows] = await pool.query(
+        `SELECT href FROM user_page_access WHERE user_id = ? AND isActive = 1`,
+        [userId]
+      );
+      hrefList = hrefList.concat(overrideRows || []);
+    }
+
     if (!route) {
       return res
         .status(400)
         .json({ success: false, message: "Route is required" });
     }
 
-    let hrefList = rows || [];
     //console.log(hrefList);
 
     const isAllowed = hrefList.some((r) => r.href == route);
@@ -542,6 +594,85 @@ exports.getLinksForUser = async (req, res) => {
   } catch (error) {
     console.error("Error in toggleBlock:", error);
     res.status(500).json({ error: "Database error" });
+  }
+};
+
+
+// Every page in the system, grouped by its parent menu — used by the
+// per-user access override UI so an admin can grant any specific person
+// any specific page, regardless of role.
+exports.getAllMenuLinksFlat = async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT
+        c.id,
+        c.name,
+        c.href,
+        p.id AS parent_id,
+        p.name AS parent_name
+      FROM menu_items c
+      JOIN menu_items p ON p.id = c.parent_id AND p.isActive = 1
+      WHERE c.isActive = 1 AND c.href IS NOT NULL
+      ORDER BY p.sort_order, c.sort_order
+    `);
+    res.json(rows);
+  } catch (error) {
+    console.error("Error in getAllMenuLinksFlat:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+// This specific user's current page overrides (beyond their role).
+exports.getUserPageOverrides = async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId is required" });
+
+    const [rows] = await pool.query(
+      `SELECT href FROM user_page_access WHERE user_id = ? AND isActive = 1`,
+      [userId]
+    );
+    res.json(rows.map((r) => r.href));
+  } catch (error) {
+    console.error("Error in getUserPageOverrides:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+// Replaces this user's full set of page overrides with the given list of
+// hrefs (same "submit the whole set" pattern as the role-based access
+// editor), so the UI just needs to send whatever's currently checked.
+exports.setUserPageOverrides = async (req, res) => {
+  let connection;
+  try {
+    const { userId, hrefs, addedBy } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId is required" });
+    if (!Array.isArray(hrefs)) return res.status(400).json({ error: "hrefs must be an array" });
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    await connection.query(
+      `UPDATE user_page_access SET isActive = 0 WHERE user_id = ?`,
+      [userId]
+    );
+
+    if (hrefs.length > 0) {
+      const values = hrefs.map((href) => [userId, href, 1, addedBy || null, getISTTimestamp()]);
+      await connection.query(
+        `INSERT INTO user_page_access (user_id, href, isActive, addedBy, created) VALUES ?`,
+        [values]
+      );
+    }
+
+    await connection.commit();
+    res.json({ message: "User page access updated successfully" });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Error in setUserPageOverrides:", error);
+    res.status(500).json({ error: "Database error" });
+  } finally {
+    if (connection) connection.release();
   }
 };
 
