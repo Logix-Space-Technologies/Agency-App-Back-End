@@ -1,6 +1,6 @@
 const pool = require("../config/db");
 const puppeteer = require("puppeteer");
-const archiver = require("archiver");
+const { ZipArchive } = require("archiver");
 // Kept in sync manually with src/components/headerInfo.js on the frontend
 const headerInfo = {
   agencyName: "Sree Kailasam Agencies",
@@ -196,7 +196,7 @@ exports.downloadInvoicesZip = async (req, res) => {
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename="invoices.zip"`);
 
-    const archive = archiver("zip", { zlib: { level: 9 } });
+    const archive = new ZipArchive({ zlib: { level: 9 } });
     archive.on("error", (err) => {
       throw err;
     });
