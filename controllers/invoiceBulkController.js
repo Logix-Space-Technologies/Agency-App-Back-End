@@ -221,7 +221,10 @@ exports.downloadInvoicesZip = async (req, res) => {
       );
       const invoiceNumber = invRows[0]?.invoiceNumber?.replace(/\//g, "-") || trackingId;
 
-      archive.append(pdfBuffer, { name: `${invoiceNumber}.pdf` });
+      // page.pdf() returns a Uint8Array on this Puppeteer version, not a
+      // true Node Buffer - archiver's strict Buffer.isBuffer() check
+      // rejects it otherwise.
+      archive.append(Buffer.from(pdfBuffer), { name: `${invoiceNumber}.pdf` });
     }
 
     await page.close();
