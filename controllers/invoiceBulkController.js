@@ -208,7 +208,11 @@ exports.downloadInvoicesZip = async (req, res) => {
       const html = await buildInvoiceHtml(trackingId);
       if (!html) continue;
 
-      await page.setContent(html, { waitUntil: "networkidle0" });
+      // "domcontentloaded" instead of "networkidle0": our invoice HTML has no
+      // external resources (images/fonts/CSS), so there's nothing for
+      // "network idle" to ever detect on some headless/sandboxed setups,
+      // which was hanging until the 30s timeout on every single invoice.
+      await page.setContent(html, { waitUntil: "domcontentloaded" });
       const pdfBuffer = await page.pdf({ format: "A4", printBackground: true, margin: { top: "15mm", bottom: "15mm", left: "10mm", right: "10mm" } });
 
       const [invRows] = await pool.query(
