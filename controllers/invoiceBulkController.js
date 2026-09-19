@@ -109,7 +109,7 @@ async function buildInvoiceHtml(saleTrackingId) {
           <td>${index + 1}</td>
           <td>${item.product_name}</td>
           <td class="num">${item.quantity_sold}</td>
-          <td class="num">₹${Number(item.amount_received || 0).toFixed(2)}</td>
+          <td class="num">Rs. ${Number(item.amount_received || 0).toFixed(2)}</td>
         </tr>`
     )
     .join("");
@@ -164,11 +164,11 @@ async function buildInvoiceHtml(saleTrackingId) {
             ${rows}
             <tr class="total-row">
               <td colspan="3">Total</td>
-              <td class="num">₹${Number(invoice.TotalAmount || 0).toFixed(2)}</td>
+              <td class="num">Rs. ${Number(invoice.TotalAmount || 0).toFixed(2)}</td>
             </tr>
             <tr>
               <td colspan="3">Amount Paid</td>
-              <td class="num">₹${Number(invoice.AmountPaid || 0).toFixed(2)}</td>
+              <td class="num">Rs. ${Number(invoice.AmountPaid || 0).toFixed(2)}</td>
             </tr>
           </tbody>
         </table>
