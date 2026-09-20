@@ -1,5 +1,5 @@
 const express = require('express');
-const { fecthAllCreditReportCustomers,fetchDailyDataForPrint,cashReport,incCredit, fecthAllCreditReportUser, fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails, fetchFinalSaleListBySearchValue, fetchSalesDataForPrintByID, fetchDirectSaleListByDate, fetchDirectSalesDataForPrintByID,submitAllProductReturns,getSaleDetailsForReturn, deleteDirectSaleProduct, deleteAllDirectSaleProducts, viewSalesData, getSalesQtyDetailsForPrint, getProductwiseDetailsForPrint, getUserwiseDetailsForPrint,checkInvoiceExists,getLastInvoiceNum, fetchCustomerCreditAmount, fetchSalesDataByIDSaleTrackingID, submitProductReturn, getGSTInvoiceNumber, getNGSTInvoiceNumber} = require('../controllers/salesController');
+const { fecthAllCreditReportCustomers,fetchDailyDataForPrint,cashReport,incCredit, updateSaleExpenses, fecthAllCreditReportUser, fecthAllCreditReport,fecthAllCustomers,fecthLatestPrices,addDirectSales,getAllSales, addSales, searchSales, deleteSales,addSalesFromDailyAllocation,getProductSaleMeta,getSaleDetails, fetchFinalSaleListBySearchValue, fetchSalesDataForPrintByID, fetchDirectSaleListByDate, fetchDirectSalesDataForPrintByID,submitAllProductReturns,getSaleDetailsForReturn, deleteDirectSaleProduct, deleteAllDirectSaleProducts, viewSalesData, getSalesQtyDetailsForPrint, getProductwiseDetailsForPrint, getUserwiseDetailsForPrint,checkInvoiceExists,getLastInvoiceNum, fetchCustomerCreditAmount, fetchSalesDataByIDSaleTrackingID, submitProductReturn, getGSTInvoiceNumber, getNGSTInvoiceNumber} = require('../controllers/salesController');
 const router = express.Router();
 
 
@@ -18,6 +18,7 @@ router.post('/latest_price', fecthLatestPrices);
 router.post('/user-credit', fecthAllCreditReportUser);
 router.post('/customer-credit', fecthAllCreditReportCustomers);
 router.post('/inc-credit', incCredit);
+router.post('/updateExpenses', updateSaleExpenses);
 router.post('/cashReport', cashReport);
 router.post('/fetchDailyDataForPrint', fetchDailyDataForPrint);
 router.post('/fetchFinalSaleListBySearchValue', fetchFinalSaleListBySearchValue);
