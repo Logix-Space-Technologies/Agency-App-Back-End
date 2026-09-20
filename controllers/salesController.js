@@ -235,6 +235,37 @@ exports.incCredit = async (req, res) => {
   }
 };
 
+// Lets an admin correct/fill in a sale's Fuel/Vehicle/Other expenses after
+// the fact (e.g. a marketing staff settlement where the fuel cost wasn't
+// known yet at settlement time). Final Amount and Credit are computed live
+// from these columns everywhere they're displayed, so a plain update here
+// is all that's needed - nothing else to recalculate.
+exports.updateSaleExpenses = async (req, res) => {
+  try {
+    const { allocation_id, fuelExpenses, vehicleExpenses, otherExpenses } = req.body;
+
+    if (!allocation_id) {
+      return res.status(400).json({ error: "allocation_id is required" });
+    }
+
+    const [result] = await pool.query(
+      `UPDATE final_sale
+       SET FuelExpenses = ?, VehcileServiceExpenses = ?, OtherExpenses = ?
+       WHERE id = ?`,
+      [fuelExpenses || 0, vehicleExpenses || 0, otherExpenses || 0, allocation_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Sale record not found" });
+    }
+
+    res.json({ message: "Expenses updated successfully" });
+  } catch (error) {
+    console.error("Error in updateSaleExpenses:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
 exports.fecthAllCreditReportCustomers = async (req, res) => {
   const { customer_id, startDate, endDate, page = 1, limit = 15 } = req.body;
 
