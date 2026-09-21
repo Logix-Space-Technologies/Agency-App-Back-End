@@ -269,11 +269,36 @@ exports.getProductPrice = async(req,res)=>{
     }
 }
 
-// get all product prices for PRINT (no pagination)
+// get all product prices for PRINT (no pagination) - respects the same
+// brand/product/supplier filters as the on-screen search, so print matches
+// whatever's currently filtered instead of always printing everything.
 exports.getProductPriceForPrint = async (req, res) => {
   try {
-    const [product_prices] = await pool.query(`
-      SELECT
+    const { brandId, productId, supplierId } = req.body || {};
+
+    let whereClause = ` WHERE pp.isActive = 1 `;
+    const params = [];
+
+    if (productId) {
+      whereClause += ` AND p.product_id = ?`;
+      params.push(productId);
+    }
+
+    if (brandId) {
+      whereClause += ` AND b.brand_id = ?`;
+      params.push(brandId);
+    }
+
+    if (supplierId) {
+      whereClause += ` AND p.product_id IN (
+        SELECT DISTINCT product_id FROM purchase
+        WHERE supplier_id = ? AND isActive = 1
+      )`;
+      params.push(supplierId);
+    }
+
+    const [product_prices] = await pool.query(
+      `SELECT
         pp.price_id,
         b.brand_name,
         p.product_id,
@@ -292,9 +317,10 @@ exports.getProductPriceForPrint = async (req, res) => {
       JOIN product_prices pp ON p.product_id = pp.product_id
       JOIN brands b ON b.brand_id = p.brand_id
       JOIN categories c ON c.category_id = p.category_id
-      WHERE pp.isActive = 1
-      ORDER BY p.product_name
-    `);
+      ${whereClause}
+      ORDER BY p.product_name`,
+      params
+    );
 
     res.json(product_prices);
   } catch (error) {
@@ -337,7 +363,7 @@ exports.addProductPrice = async (req, res) => {
 
 exports.searchProductPrice = async (req, res) => {
     try {
-        const { brandId, productId } = req.body;
+        const { brandId, productId, supplierId } = req.body;
         const page = parseInt(req.body.page) || 1;
         const limit = parseInt(req.body.limit) || 15;
         const offset = (page - 1) * limit;
@@ -353,6 +379,17 @@ exports.searchProductPrice = async (req, res) => {
         if (brandId) {
             whereClause += ` AND b.brand_id = ?`;
             params.push(brandId);
+        }
+
+        // Products don't have a fixed supplier - a product can be bought
+        // from different suppliers over time - so "filter by supplier"
+        // means "has ever been purchased from this supplier".
+        if (supplierId) {
+            whereClause += ` AND p.product_id IN (
+                SELECT DISTINCT product_id FROM purchase
+                WHERE supplier_id = ? AND isActive = 1
+            )`;
+            params.push(supplierId);
         }
 
         /* ---------- TOTAL COUNT ---------- */
