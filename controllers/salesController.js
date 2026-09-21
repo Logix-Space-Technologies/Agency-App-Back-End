@@ -1523,7 +1523,7 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
     );
 
     const [finalSaleRecord] = await connection.execute(
-      `SELECT AmountPaid, TotalAmount, invoiceNumber FROM final_sale WHERE sale_tracking_Id = ?`,
+      `SELECT id, AmountPaid, TotalAmount, invoiceNumber FROM final_sale WHERE sale_tracking_Id = ?`,
       [sale_tracking_id]
     );
 
