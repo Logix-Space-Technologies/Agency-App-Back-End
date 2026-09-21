@@ -266,6 +266,145 @@ exports.updateSaleExpenses = async (req, res) => {
   }
 };
 
+// Corrects an already-settled sale line (quantity sold / damaged / loss / amount
+// received) from /view-ind-dsa. Since stock and stock_History were already
+// adjusted at settlement time, only the DELTA between old and new values is
+// applied to stock, and a new stock_History adjustment row is written so the
+// original sale entry stays intact for audit purposes. final_sale.TotalAmount
+// and isSettled are recomputed from the sales rows rather than patched, so
+// they can't drift if this is called more than once.
+exports.updateSaleItem = async (req, res) => {
+  let connection;
+  try {
+    const {
+      sale_id,
+      dsa_id,
+      quantity_sold,
+      amount_received,
+      damaged_count = 0,
+      loss_count = 0,
+      user_id = "",
+    } = req.body;
+
+    if (!sale_id) {
+      return res.status(400).json({ error: "sale_id is required" });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [existingRows] = await connection.execute(
+      `SELECT sale_id, product_id, price_id, quantity_sold, amount_received, damaged_count, loss_count, sale_tracking_id
+       FROM sales WHERE sale_id = ? AND isActive = 1 FOR UPDATE`,
+      [sale_id]
+    );
+
+    if (existingRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: "Sale item not found" });
+    }
+
+    const existing = existingRows[0];
+    const newQty = parseFloat(quantity_sold ?? existing.quantity_sold);
+    const newAmount = parseFloat(amount_received ?? existing.amount_received);
+    const newDamaged = parseFloat(damaged_count ?? existing.damaged_count) || 0;
+    const newLoss = parseFloat(loss_count ?? existing.loss_count) || 0;
+
+    const deltaQty = newQty - parseFloat(existing.quantity_sold);
+    const deltaDamaged = newDamaged - parseFloat(existing.damaged_count);
+    const deltaLoss = newLoss - parseFloat(existing.loss_count);
+
+    await connection.execute(
+      `UPDATE sales
+       SET quantity_sold = ?, amount_received = ?, damaged_count = ?, loss_count = ?
+       WHERE sale_id = ?`,
+      [newQty, newAmount, newDamaged, newLoss, sale_id]
+    );
+
+    if (deltaQty !== 0 || deltaDamaged !== 0 || deltaLoss !== 0) {
+      await connection.execute(
+        `UPDATE stock
+         SET quantity = quantity - ?, Damage_Qty = Damage_Qty + ?, Loss_Qty = Loss_Qty + ?
+         WHERE product_id = ? AND isActive = 1`,
+        [deltaQty, deltaDamaged, deltaLoss, existing.product_id]
+      );
+
+      const [stockIdResult] = await connection.execute(
+        "SELECT `stock_id` FROM `stock` WHERE `product_id` = ? AND `price_id` = ? AND `isActive` = 1",
+        [existing.product_id, existing.price_id]
+      );
+
+      if (stockIdResult.length > 0 && deltaQty !== 0) {
+        const addedBy = user_id || (req.user ? req.user.id : 0);
+        await connection.execute(
+          "INSERT INTO `stock_History`(`stock_Id`, `Qty`, `stock_type`, `AddedDate`, `AddedBy`, `CreditOrDebit`, `ReferenceInvoiceOrSale`) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [
+            stockIdResult[0].stock_id,
+            -deltaQty,
+            "sale_edit",
+            getISTDate(),
+            addedBy,
+            deltaQty > 0 ? "debit" : "credit",
+            existing.sale_tracking_id,
+          ]
+        );
+      }
+    }
+
+    if (dsa_id && deltaQty !== 0) {
+      await connection.execute(
+        `UPDATE daily_stock_allocation SET allocated_quantity = allocated_quantity - ? WHERE daily_stock_id = ?`,
+        [deltaQty, dsa_id]
+      );
+    }
+
+    const [[{ totalAmount } = { totalAmount: 0 }]] = await connection.execute(
+      `SELECT COALESCE(SUM(amount_received), 0) AS totalAmount FROM sales WHERE sale_tracking_id = ? AND isActive = 1`,
+      [existing.sale_tracking_id]
+    );
+
+    const [finalSaleRows] = await connection.execute(
+      `SELECT id, AmountPaid, FuelExpenses, VehcileServiceExpenses, OtherExpenses FROM final_sale WHERE sale_tracking_Id = ? AND isActive = 1 FOR UPDATE`,
+      [existing.sale_tracking_id]
+    );
+
+    if (finalSaleRows.length > 0) {
+      const fs = finalSaleRows[0];
+      const totalDeductions =
+        parseFloat(fs.FuelExpenses || 0) +
+        parseFloat(fs.VehcileServiceExpenses || 0) +
+        parseFloat(fs.OtherExpenses || 0);
+      const isSettled =
+        parseFloat(fs.AmountPaid || 0) >= totalAmount - totalDeductions ? 1 : 0;
+      const isCredit = parseFloat(fs.AmountPaid || 0) < newAmount ? 1 : 0;
+
+      await connection.execute(
+        `UPDATE final_sale SET TotalAmount = ?, isSettled = ? WHERE id = ?`,
+        [totalAmount, isSettled, fs.id]
+      );
+      await connection.execute(
+        `UPDATE sales SET is_credit = ? WHERE sale_id = ?`,
+        [isCredit, sale_id]
+      );
+    }
+
+    await logUserActivity({
+      req,
+      user_id,
+      action: `Sale item edited - sale_id ${sale_id}`,
+    });
+
+    await connection.commit();
+    res.json({ message: "Sale item updated successfully" });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error("Error in updateSaleItem:", error);
+    res.status(500).json({ error: "Database error" });
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
 exports.fecthAllCreditReportCustomers = async (req, res) => {
   const { customer_id, startDate, endDate, page = 1, limit = 15 } = req.body;
 
