@@ -307,7 +307,7 @@ exports.searchDailyStockAllocationIndividual = async (req, res) => {
 
       const [result] = await pool.query(
         `
-        SELECT 
+        SELECT
           d.daily_stock_id,
           d.marketing_staff_id,
           d.product_id,
@@ -321,11 +321,11 @@ exports.searchDailyStockAllocationIndividual = async (req, res) => {
           d.isActive,
           d.converted_to_sales
         FROM daily_stock_allocation d
-        JOIN products p 
+        JOIN products p
           ON p.product_id = d.product_id
-        JOIN product_prices ppp 
+        JOIN product_prices ppp
           ON ppp.product_id = p.product_id
-        WHERE 
+        WHERE
           d.date = ?
           AND d.marketing_staff_id = ?
           AND d.isActive = 1
@@ -334,9 +334,70 @@ exports.searchDailyStockAllocationIndividual = async (req, res) => {
         [date, marketing_staff_id]
       );
 
+      // Attach the resulting sale/settlement info for rows already converted to a sale,
+      // so the frontend can offer edit/print for "Sold" rows. There is no stored FK from
+      // daily_stock_allocation to sales/final_sale, so we match by staff + product + date.
+      const [saleRows] = await pool.query(
+        `
+        SELECT
+          s.sale_id,
+          s.product_id,
+          s.quantity_sold,
+          s.amount_received,
+          s.damaged_count,
+          s.loss_count,
+          s.is_credit,
+          s.sale_tracking_id,
+          fs.id AS final_sale_id,
+          fs.invoiceNumber,
+          fs.TotalAmount,
+          fs.AmountPaid,
+          fs.FuelExpenses,
+          fs.VehcileServiceExpenses,
+          fs.OtherExpenses,
+          fs.isSettled
+        FROM sales s
+        JOIN final_sale fs ON fs.sale_tracking_Id = s.sale_tracking_id
+        WHERE s.marketing_staff_id = ?
+          AND DATE(s.sale_date) = ?
+          AND s.sale_type = 'marketing'
+          AND s.isActive = 1
+          AND fs.isActive = 1
+        `,
+        [marketing_staff_id, date]
+      );
+
+      const saleByProduct = {};
+      for (const row of saleRows) {
+        saleByProduct[row.product_id] = row;
+      }
+
+      const enrichedResult = result.map((row) => {
+        const sale = saleByProduct[row.product_id];
+        if (!sale) return row;
+        return {
+          ...row,
+          sale_id: sale.sale_id,
+          sale_tracking_id: sale.sale_tracking_id,
+          final_sale_id: sale.final_sale_id,
+          invoiceNumber: sale.invoiceNumber,
+          quantity_sold: sale.quantity_sold,
+          amount_received: sale.amount_received,
+          damaged_count: sale.damaged_count,
+          loss_count: sale.loss_count,
+          is_credit: sale.is_credit,
+          TotalAmount: sale.TotalAmount,
+          AmountPaid: sale.AmountPaid,
+          FuelExpenses: sale.FuelExpenses,
+          VehcileServiceExpenses: sale.VehcileServiceExpenses,
+          OtherExpenses: sale.OtherExpenses,
+          isSettled: sale.isSettled,
+        };
+      });
+
       return res.json({
         type: "details",
-        data: result
+        data: enrichedResult
       });
     }
 
