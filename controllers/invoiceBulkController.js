@@ -1,11 +1,13 @@
 const pool = require("../config/db");
 const puppeteer = require("puppeteer");
 const { ZipArchive } = require("archiver");
+const { amountToWords } = require("../utils/numberToWords");
 // Kept in sync manually with src/components/headerInfo.js on the frontend
 const headerInfo = {
   agencyName: "Sree Kailasam Agencies",
   address: "Mamood, Erumakuzhy , Nooranad PO, Alappuzha 690504",
   phone: " 9447608738 , 9847154715 , 0479-2387042 ",
+  gstNumber: "32DSDPS2166F1ZU",
 };
 
 // In-memory job store for bulk-download progress. A single pm2 process, no
@@ -103,10 +105,17 @@ const INVOICE_STYLES = `
   .details { display: flex; justify-content: space-between; margin-bottom: 16px; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 14px; }
   .details div { font-size: 11px; line-height: 1.6; }
   table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-  th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; }
-  th { background: #f1f5f9; font-weight: 600; }
+  th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; font-size: 10.5px; }
+  th { background: #f1f5f9; font-weight: 600; text-transform: uppercase; font-size: 9.5px; }
   td.num, th.num { text-align: right; }
+  td.center, th.center { text-align: center; }
   .total-row { font-weight: bold; background: #f1f5f9; }
+  .product-gst td { font-size: 9.5px; color: #64748b; border-top: none; background: #fafafa; padding: 2px 8px 6px; }
+  .totals { margin-top: 12px; display: flex; flex-direction: column; align-items: flex-end; }
+  .totals table { width: 320px; margin-top: 0; }
+  .totals td { border: none; padding: 3px 4px; font-size: 11px; }
+  .totals tr.grand-total td { border-top: 2px solid #0f172a; font-size: 13px; font-weight: 800; padding-top: 6px; }
+  .amount-words { width: 320px; margin-top: 4px; padding-top: 6px; border-top: 1px solid #cbd5e1; font-size: 10px; color: #475569; text-align: right; }
   .footer { margin-top: 20px; text-align: center; font-size: 10px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 10px; }
 `;
 
@@ -141,9 +150,13 @@ async function buildInvoiceFragment(saleTrackingId) {
   const invoice = finalSaleRows[0];
 
   const [items] = await pool.query(
-    `SELECT s.quantity_sold, s.amount_received, s.sale_type, p.product_name, s.marketing_staff_id, u.name AS staff_name
+    `SELECT s.quantity_sold, s.amount_received, s.sale_type, s.damaged_count, s.marketing_staff_id,
+            p.product_name, p.mrp, COALESCE(NULLIF(TRIM(p.hsn_code), ''), '') AS hsn_code,
+            pp.cgst_percentage, pp.sgst_percentage,
+            u.name AS staff_name
      FROM sales s
      JOIN products p ON p.product_id = s.product_id
+     JOIN product_prices pp ON pp.price_id = s.price_id
      LEFT JOIN users u ON u.user_id = s.marketing_staff_id
      WHERE s.sale_tracking_id = ? AND s.isActive = 1`,
     [saleTrackingId]
@@ -151,18 +164,77 @@ async function buildInvoiceFragment(saleTrackingId) {
 
   const isMarketing = items.length > 0 && items[0].sale_type === "marketing";
   const staffName = isMarketing ? items[0].staff_name : null;
+  // Marketing/route-staff sales never carry GST/HSN data - same rule as the
+  // shared marketingSaleReceiptPrint.js / directSaleReceiptPrint.js printers.
+  const isGst = !isMarketing && Number(invoice.isGstBilling) === 1;
+
+  let totalAmt = 0;
+  let totalTaxableAmt = 0;
+  let totalCgst = 0;
+  let totalSgst = 0;
 
   const rows = items
-    .map(
-      (item, index) => `
+    .filter((item) => parseFloat(item.quantity_sold) > 0)
+    .map((item, index) => {
+      const quantity = parseFloat(item.quantity_sold) || 0;
+      const damagedCount = parseFloat(item.damaged_count) || 0;
+      const soldQty = quantity - damagedCount;
+      const sellingPrice = soldQty > 0 ? parseFloat(item.amount_received) / soldQty : 0;
+      const amount = sellingPrice * soldQty;
+
+      if (isGst) {
+        const gst = parseFloat(item.cgst_percentage || 0) + parseFloat(item.sgst_percentage || 0);
+        const taxableValue = amount / (1 + gst / 100);
+        const cgstAmount = taxableValue * (parseFloat(item.cgst_percentage || 0) / 100);
+        const sgstAmount = taxableValue * (parseFloat(item.sgst_percentage || 0) / 100);
+
+        totalCgst += cgstAmount;
+        totalSgst += sgstAmount;
+        totalTaxableAmt += taxableValue;
+        totalAmt += amount;
+
+        return `
+          <tr>
+            <td>${index + 1}</td>
+            <td>${item.product_name}</td>
+            <td class="center">${item.hsn_code || ""}</td>
+            <td class="center">${gst}%</td>
+            <td class="num">${item.mrp ?? "N/A"}</td>
+            <td class="num">Rs. ${sellingPrice.toFixed(2)}</td>
+            <td class="center">${quantity}</td>
+            <td class="num">Rs. ${(cgstAmount + sgstAmount).toFixed(2)}</td>
+            <td class="num">Rs. ${taxableValue.toFixed(2)}</td>
+            <td class="num">Rs. ${amount.toFixed(2)}</td>
+          </tr>
+          <tr class="product-gst">
+            <td colspan="10">CGST: Rs. ${cgstAmount.toFixed(2)} &nbsp;|&nbsp; SGST: Rs. ${sgstAmount.toFixed(2)}</td>
+          </tr>`;
+      }
+
+      totalAmt += amount;
+      return `
         <tr>
           <td>${index + 1}</td>
           <td>${item.product_name}</td>
-          <td class="num">${item.quantity_sold}</td>
-          <td class="num">Rs. ${Number(item.amount_received || 0).toFixed(2)}</td>
-        </tr>`
-    )
+          <td class="num">${quantity}</td>
+          <td class="num">Rs. ${amount.toFixed(2)}</td>
+        </tr>`;
+    })
     .join("");
+
+  const totalsRows = isGst
+    ? `
+      <tr><td>Taxable Amount</td><td class="num">Rs. ${totalTaxableAmt.toFixed(2)}</td></tr>
+      <tr><td>Total CGST</td><td class="num">Rs. ${totalCgst.toFixed(2)}</td></tr>
+      <tr><td>Total SGST</td><td class="num">Rs. ${totalSgst.toFixed(2)}</td></tr>
+      <tr><td>Total Tax</td><td class="num">Rs. ${(totalCgst + totalSgst).toFixed(2)}</td></tr>
+      <tr class="grand-total"><td>Total Amount</td><td class="num">Rs. ${totalAmt.toFixed(2)}</td></tr>
+      <tr><td>Amount Paid</td><td class="num">Rs. ${Number(invoice.AmountPaid || 0).toFixed(2)}</td></tr>
+    `
+    : `
+      <tr class="grand-total"><td>Total Amount</td><td class="num">Rs. ${totalAmt.toFixed(2)}</td></tr>
+      <tr><td>Amount Paid</td><td class="num">Rs. ${Number(invoice.AmountPaid || 0).toFixed(2)}</td></tr>
+    `;
 
   const fragment = `
     <div class="invoice-card">
@@ -170,38 +242,41 @@ async function buildInvoiceFragment(saleTrackingId) {
         <h1>${headerInfo.agencyName}</h1>
         <p>${headerInfo.address}</p>
         <p>${headerInfo.phone}</p>
+        ${isGst ? `<p>GSTIN: ${headerInfo.gstNumber}</p>` : ""}
       </div>
-      <div class="invoice-title">${invoice.isGstBilling ? "TAX INVOICE" : "INVOICE"} - ${invoice.invoiceNumber}</div>
+      <div class="invoice-title">${isGst ? "TAX INVOICE" : "INVOICE"} - ${invoice.invoiceNumber}</div>
       <div class="details">
         <div>
           <strong>Bill To:</strong><br/>
           ${isMarketing ? `${staffName || "Route Staff"} (Marketing Route)` : (invoice.customer_name || "N/A")}<br/>
           ${!isMarketing && invoice.customer_place ? invoice.customer_place + "<br/>" : ""}
           ${!isMarketing && invoice.customer_mobile ? invoice.customer_mobile + "<br/>" : ""}
-          ${!isMarketing && invoice.customer_gst ? "GSTIN: " + invoice.customer_gst : ""}
+          ${isGst ? "Customer GSTIN: " + (invoice.customer_gst || "N/A") : ""}
         </div>
         <div style="text-align:right;">
           <strong>Date:</strong> ${new Date(invoice.DateofTransaction).toLocaleDateString("en-IN")}<br/>
           <strong>Invoice No:</strong> ${invoice.invoiceNumber}<br/>
-          <strong>Billing Type:</strong> ${invoice.isGstBilling ? "GST" : "Non-GST"}
+          <strong>Billing Type:</strong> ${isGst ? "GST" : "Non-GST"}
         </div>
       </div>
       <table>
         <thead>
-          <tr><th>#</th><th>Product</th><th class="num">Qty</th><th class="num">Amount</th></tr>
+          <tr>
+            <th>#</th>
+            <th>Product</th>
+            ${isGst ? `<th class="center">HSN Code</th><th class="center">GST %</th><th class="num">MRP</th><th class="num">Selling Price</th><th class="center">Quantity</th><th class="num">Tax</th><th class="num">Taxable Amount</th><th class="num">Total Amount</th>` : `<th class="num">Qty</th><th class="num">Amount</th>`}
+          </tr>
         </thead>
         <tbody>
           ${rows}
-          <tr class="total-row">
-            <td colspan="3">Total</td>
-            <td class="num">Rs. ${Number(invoice.TotalAmount || 0).toFixed(2)}</td>
-          </tr>
-          <tr>
-            <td colspan="3">Amount Paid</td>
-            <td class="num">Rs. ${Number(invoice.AmountPaid || 0).toFixed(2)}</td>
-          </tr>
         </tbody>
       </table>
+      <div class="totals">
+        <table>
+          ${totalsRows}
+        </table>
+        <div class="amount-words"><strong>Amount in Words:</strong> ${amountToWords(totalAmt)}</div>
+      </div>
       <div class="footer">${headerInfo.agencyName} - ${headerInfo.address}</div>
     </div>
   `;
