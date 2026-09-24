@@ -432,10 +432,16 @@ exports.damagedProductSearch = async (req, res) => {
       detailsTotalRecords / detailsLimit
     );
 
-    // ⭐ CHANGE: get all products
-    const [allProducts] = await pool.query(`
-      SELECT product_id, product_name FROM products
-    `);
+    // Base the summary rows on every product, unless the search was
+    // narrowed to one product - previously this always pulled every
+    // product regardless of the productId filter, so a product search
+    // still showed every other product (with all-zero counts) alongside it.
+    const [allProducts] = await pool.query(
+      productId
+        ? `SELECT product_id, product_name FROM products WHERE product_id = ?`
+        : `SELECT product_id, product_name FROM products`,
+      productId ? [productId] : []
+    );
 
     // ⭐ CHANGE: initialize all products with zero values
     let productSummaryMap = {};
