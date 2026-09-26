@@ -75,6 +75,12 @@ SELECT
     COALESCE(MAX(sa.today_loss_qty), 0) AS today_loss_qty,
     COALESCE(MAX(sa.total_loss_qty), 0) AS total_loss_qty,
 
+    /* ---------- MISC. DAMAGE (previously invisible on this report even
+       though it silently reduces Damage_Qty / Total same as sale-time
+       damage does) ---------- */
+    COALESCE(MAX(md.today_misc_damage_qty), 0) AS today_misc_damage_qty,
+    COALESCE(MAX(md.total_misc_damage_qty), 0) AS total_misc_damage_qty,
+
     /* ---------- ACTIVE PRICE (PRODUCT LEVEL) ---------- */
     pp.price_id,
     pp.purchase_price,
@@ -93,7 +99,7 @@ SELECT
     ) AS current_stock
 
 FROM stock s
-JOIN products p 
+JOIN products p
     ON s.product_id = p.product_id
 
 /* ✅ FIX: ACTIVE PRICE BY PRODUCT (NOT FILTERING STOCK) */
@@ -101,7 +107,7 @@ LEFT JOIN product_prices pp
     ON pp.product_id = s.product_id
     AND pp.isActive = 1
 
-LEFT JOIN categories c 
+LEFT JOIN categories c
     ON p.category_id = c.category_id
 
 LEFT JOIN daily_stock_allocation dsa
@@ -114,15 +120,27 @@ LEFT JOIN (
         product_id,
         SUM(damaged_count) AS total_damage_qty,
         SUM(loss_count) AS total_loss_qty,
-        SUM(CASE WHEN sale_date = CURDATE()
+        SUM(CASE WHEN sale_date = ?
                  THEN damaged_count ELSE 0 END) AS today_damage_qty,
-        SUM(CASE WHEN sale_date = CURDATE()
+        SUM(CASE WHEN sale_date = ?
                  THEN loss_count ELSE 0 END) AS today_loss_qty
     FROM sales
     WHERE isActive = 1
     GROUP BY product_id
 ) sa
     ON sa.product_id = s.product_id
+
+LEFT JOIN (
+    SELECT
+        product_id,
+        SUM(quantity) AS total_misc_damage_qty,
+        SUM(CASE WHEN DATE(addedDate) = ?
+                 THEN quantity ELSE 0 END) AS today_misc_damage_qty
+    FROM miscellaneous_damage
+    WHERE isActive = 1
+    GROUP BY product_id
+) md
+    ON md.product_id = s.product_id
 
 WHERE s.isActive = 1
 
@@ -150,7 +168,11 @@ ORDER BY current_stock DESC;
 ;
 
         
-        const [stocks] = await pool.query(query);
+        // Passed in rather than using CURDATE(): CURDATE() is the DB server's
+        // own date, which silently disagrees with "today" in IST for part of
+        // the day whenever the server isn't itself running in IST.
+        const today = getISTDate();
+        const [stocks] = await pool.query(query, [today, today, today]);
         
         // Calculate total stock (stock + allocated)
         const stocksWithTotal = stocks.map(stock => ({
