@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { getISTTimestamp } = require('../utils/dateUtils');
+const { logUserActivity } = require('../utils/logUserActivity');
 
 // add expense voucher
 exports.addExpenseVoucher = async (req, res) => {
@@ -29,6 +30,49 @@ exports.addExpenseVoucher = async (req, res) => {
         const voucher_number = `EXP-${String(voucher_id).padStart(5, '0')}`;
 
         res.json({ message: 'Expense voucher created successfully', voucher_id, voucher_number });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Database error' });
+    }
+};
+
+// edit expense voucher
+exports.updateExpenseVoucher = async (req, res) => {
+    try {
+        const {
+            voucher_id,
+            expense_category_id,
+            description,
+            amount,
+            gst_amount = 0,
+            expense_date,
+            payment_method = 'cash',
+            loggedInUserId,
+        } = req.body;
+
+        if (!voucher_id) return res.status(400).json({ error: "voucher_id is required" });
+        if (!expense_category_id) return res.status(400).json({ error: "expense_category_id is required" });
+        if (amount === undefined || amount === null || amount === "") return res.status(400).json({ error: "amount is required" });
+        if (!expense_date) return res.status(400).json({ error: "expense_date is required" });
+
+        const [result] = await pool.query(
+            `UPDATE misc_expense_vouchers
+             SET expense_category_id = ?, description = ?, amount = ?, gst_amount = ?, expense_date = ?, payment_method = ?
+             WHERE voucher_id = ? AND isActive = 1`,
+            [expense_category_id, description || null, amount, gst_amount, expense_date, payment_method, voucher_id]
+        );
+
+        if (result.affectedRows === 0) return res.status(404).json({ error: 'Voucher not found' });
+
+        await logUserActivity({
+            req,
+            user_id: loggedInUserId,
+            action: `Expense voucher edited - EXP-${String(voucher_id).padStart(5, '0')}`,
+            reference_type: "expense_voucher",
+            reference_id: voucher_id,
+        });
+
+        res.json({ message: 'Expense voucher updated successfully' });
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Database error' });
