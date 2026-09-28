@@ -878,6 +878,20 @@ exports.getLogDetails = async (req, res) => {
         return res.json({ success: true, type: "sale", data: detail });
       }
 
+      case "expense_voucher": {
+        const [rows] = await pool.query(
+          `SELECT v.voucher_id, CONCAT('EXP-', LPAD(v.voucher_id, 5, '0')) AS voucher_number,
+                  c.expense_category_name, v.description, v.amount, v.gst_amount,
+                  v.expense_date, v.payment_method, v.isActive
+           FROM misc_expense_vouchers v
+           LEFT JOIN expense_categories c ON c.expense_category_id = v.expense_category_id
+           WHERE v.voucher_id = ?`,
+          [reference_id]
+        );
+        if (rows.length === 0) return res.json({ success: true, type: null });
+        return res.json({ success: true, type: "expense_voucher", data: rows[0] });
+      }
+
       case "sale_item": {
         const [saleRows] = await pool.query(
           `SELECT sale_tracking_id FROM sales WHERE sale_id = ?`,
