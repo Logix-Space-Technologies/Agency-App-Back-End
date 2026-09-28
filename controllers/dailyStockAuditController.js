@@ -232,15 +232,26 @@ exports.generateDailyStockAuditReport = async (req, res) => {
     console.log(`[stockAudit] launching browser (${rows.length} products, ${reportType})`);
     browser = await puppeteer.launch({
       headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      // --disable-dev-shm-usage: Chrome uses /dev/shm heavily when rendering
+      // (especially for a large multi-page document like a 368-product
+      // detailed report), and EC2's default /dev/shm is tiny (64MB) - once
+      // it fills up, Chrome crashes mid-render with a printToPDF protocol
+      // error instead of a normal timeout. This makes it spill to disk
+      // (/tmp) instead.
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
       timeout: 120000,
     });
     console.log("[stockAudit] browser launched, opening page");
     const page = await browser.newPage();
+    // page.pdf()'s own options don't take a `timeout` key - the previous
+    // attempt hit exactly 30000ms despite passing one, confirming that.
+    // setDefaultTimeout() is what actually governs printToPDF's protocol
+    // timeout.
+    page.setDefaultTimeout(120000);
     console.log("[stockAudit] setting content");
-    await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 120000 });
+    await page.setContent(html, { waitUntil: "domcontentloaded" });
     console.log("[stockAudit] content set, rendering pdf");
-    const pdfBuffer = await page.pdf({ ...PDF_OPTIONS, timeout: 120000 });
+    const pdfBuffer = await page.pdf(PDF_OPTIONS);
     console.log("[stockAudit] pdf rendered, closing browser");
     await browser.close();
     browser = null;
