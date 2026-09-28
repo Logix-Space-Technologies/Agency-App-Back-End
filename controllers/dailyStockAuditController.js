@@ -7,6 +7,7 @@ const headerInfo = {
   agencyName: "Sree Kailasam Agencies",
   address: "Mamood, Erumakuzhy , Nooranad PO, Alappuzha 690504",
   phone: " 9447608738 , 9847154715 , 0479-2387042 ",
+  email: "sreekailasamagencies@gmail.com",
 };
 
 const REPORT_STYLES = `
