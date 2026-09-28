@@ -317,11 +317,19 @@ exports.getMenuItems = async (req, res) => {
     `, [role, role]);
 
   const navMap = {};
+  // navMap is keyed by parent_id, but a plain object always enumerates
+  // integer-like keys in ascending numeric order (regardless of insertion
+  // order) - so Object.values(navMap) would silently reorder items by id
+  // instead of respecting sort_order (e.g. id 64 always after id 11, even
+  // when 64's sort_order puts it first). Tracking the order pids are first
+  // seen in - which follows the SQL's ORDER BY sort_order - fixes that.
+  const orderedParentIds = [];
 
   for (const row of rows) {
     const pid = row.parent_id;
 
     if (!navMap[pid]) {
+      orderedParentIds.push(pid);
       navMap[pid] = {
         id: pid,
         name: row.parent_name,
@@ -363,6 +371,7 @@ exports.getMenuItems = async (req, res) => {
     for (const row of overrideRows) {
       const pid = row.parent_id;
       if (!navMap[pid]) {
+        orderedParentIds.push(pid);
         navMap[pid] = {
           id: pid,
           name: row.parent_name,
@@ -383,7 +392,7 @@ exports.getMenuItems = async (req, res) => {
     }
   }
 
-  res.json(Object.values(navMap));
+  res.json(orderedParentIds.map((pid) => navMap[pid]));
   } catch (error) {
     res.status(500).json({ error: "Database error" });
   }
