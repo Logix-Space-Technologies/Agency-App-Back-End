@@ -296,7 +296,11 @@ async function processBulkDownload(jobId, saleTrackingIds, mode) {
   try {
     browser = await puppeteer.launch({
       headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      // --disable-dev-shm-usage: EC2's default /dev/shm is tiny (64MB) and
+      // Chrome leans on it heavily when rendering; for a large batch this
+      // can crash printToPDF outright instead of just timing out. Makes
+      // Chrome spill to disk (/tmp) instead. See dailyStockAuditController.js.
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
     });
     const page = await browser.newPage();
 
