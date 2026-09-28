@@ -11,17 +11,27 @@
 //   closing(today)  = current live usable stock
 //                    = stock.quantity - outstanding_allocated - stock.Damage_Qty
 //   net(day)        = purchase_qty(day) - sold_qty(day) - damage_qty(day) - misc_damage_qty(day)
+//                    + replacement_purchase_qty(day) + returned_qty(day) - damaged_replacement_qty(day)
 //   closing(D)      = closing(today) - sum(net(day)) for every day after D up to today
 //   opening(D)      = closing(D) - net(D)
 //
 // Verified against the actual stock-mutation code paths (purchaseController.js,
 // salesController.js, dailyStockAllocationController.js, productController.js):
-//   - loss_count is tracked via Loss_Qty but is never subtracted from
-//     "available"/"usable" stock anywhere else in the app, so it's excluded
-//     from the closing_stock math (still reported per-day for breakdown).
+//   - loss_count and a return's damaged_refund_qty are tracked but never
+//     subtracted from "available"/"usable" stock anywhere else in the app
+//     (a damaged refund re-enters quantity and Damage_Qty together, net
+//     zero), so neither is part of the closing_stock math - both are still
+//     reported per-day for breakdown.
 //   - isDamaged purchases add +q to both quantity and Damage_Qty (net zero
 //     effect on usable stock), so excluding them via `is_damaged = 0` in the
 //     purchase query below gives the same result as including them.
+//   - replacement_provided purchases only reduce Damage_Qty (no change to
+//     quantity), so they're excluded from ordinary purchase inflow and
+//     tracked separately as a net ADD to usable stock.
+//   - a return's returned_qty adds straight back to usable stock, and its
+//     damaged_replacement_qty is a net subtraction (a new good unit goes out
+//     on top of the damaged one coming back) - see the matching fix in
+//     submitAllProductReturns (salesController.js).
 //
 // Only scans purchase/sales/misc_damage rows within [fromDate, today] — not
 // the product's full history — since the anchor (closing(today) = live
@@ -92,10 +102,35 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
   const purchaseParams = product_id
     ? [fromDate, uptoDate, product_id]
     : [fromDate, uptoDate];
+  // replacement_provided purchases are excluded here (not just is_damaged
+  // ones): a supplier replacement only moves Damage_Qty (handled via
+  // replacement_qty below), it never adds to raw quantity, so counting it
+  // as ordinary inflow here would overstate the day's purchases.
   const [purchaseRows] = await pool.query(
     `SELECT product_id, DATE_FORMAT(purchase_date, '%Y-%m-%d') AS date, SUM(quantity) AS qty
      FROM purchase
-     WHERE isActive = 1 AND is_damaged = 0 AND purchase_date BETWEEN ? AND ? ${productFilter}
+     WHERE isActive = 1 AND is_damaged = 0 AND replacement_provided = 0
+       AND purchase_date BETWEEN ? AND ? ${productFilter}
+     GROUP BY product_id, purchase_date`,
+    purchaseParams
+  );
+
+  // Informational only (net zero on usable stock: adds equally to quantity
+  // and Damage_Qty), but worth surfacing on the audit view.
+  const [damagedPurchaseRows] = await pool.query(
+    `SELECT product_id, DATE_FORMAT(purchase_date, '%Y-%m-%d') AS date, SUM(quantity) AS qty
+     FROM purchase
+     WHERE isActive = 1 AND is_damaged = 1 AND purchase_date BETWEEN ? AND ? ${productFilter}
+     GROUP BY product_id, purchase_date`,
+    purchaseParams
+  );
+
+  // Reduces Damage_Qty only (no change to raw quantity), so it's a net
+  // ADD to usable stock - a previously-damaged unit becomes sellable again.
+  const [replacementPurchaseRows] = await pool.query(
+    `SELECT product_id, DATE_FORMAT(purchase_date, '%Y-%m-%d') AS date, SUM(quantity) AS qty
+     FROM purchase
+     WHERE isActive = 1 AND replacement_provided = 1 AND purchase_date BETWEEN ? AND ? ${productFilter}
      GROUP BY product_id, purchase_date`,
     purchaseParams
   );
@@ -125,15 +160,49 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
     miscParams
   );
 
-  // { [product_id]: { [date]: {purchase,sold,damage,loss,misc} } }
+  // Good units add straight back to usable stock; damaged-refund units are
+  // net zero (they re-enter quantity and Damage_Qty together); damaged-
+  // replacement units are a net subtraction (a new good unit is handed out
+  // on top of the returned damaged one) - see the matching fix in
+  // submitAllProductReturns (salesController.js).
+  const returnParams = product_id
+    ? [fromDate, uptoDate, product_id]
+    : [fromDate, uptoDate];
+  const [returnRows] = await pool.query(
+    `SELECT product_id, DATE_FORMAT(date, '%Y-%m-%d') AS date,
+            SUM(returned_quantity) AS returned_qty,
+            SUM(damaged_refund_quantity) AS damaged_refund_qty,
+            SUM(damaged_replacement_quantity) AS damaged_replacement_qty
+     FROM direct_sale_return
+     WHERE DATE(date) BETWEEN ? AND ? ${productFilter}
+     GROUP BY product_id, DATE_FORMAT(date, '%Y-%m-%d')`,
+    returnParams
+  );
+
+  // { [product_id]: { [date]: {purchase,damagedPurchase,replacementPurchase,sold,damage,loss,misc,returned,damagedRefund,damagedReplacement} } }
   const map = {};
   const ensure = (pid, d) => {
     if (!map[pid]) map[pid] = {};
-    if (!map[pid][d]) map[pid][d] = { purchase: 0, sold: 0, damage: 0, loss: 0, misc: 0 };
+    if (!map[pid][d]) {
+      map[pid][d] = {
+        purchase: 0,
+        damagedPurchase: 0,
+        replacementPurchase: 0,
+        sold: 0,
+        damage: 0,
+        loss: 0,
+        misc: 0,
+        returned: 0,
+        damagedRefund: 0,
+        damagedReplacement: 0,
+      };
+    }
     return map[pid][d];
   };
 
   for (const r of purchaseRows) ensure(r.product_id, r.date).purchase += Number(r.qty) || 0;
+  for (const r of damagedPurchaseRows) ensure(r.product_id, r.date).damagedPurchase += Number(r.qty) || 0;
+  for (const r of replacementPurchaseRows) ensure(r.product_id, r.date).replacementPurchase += Number(r.qty) || 0;
   for (const r of salesRows) {
     const e = ensure(r.product_id, r.date);
     e.sold += Number(r.sold_qty) || 0;
@@ -141,17 +210,24 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
     e.loss += Number(r.loss_qty) || 0;
   }
   for (const r of miscRows) ensure(r.product_id, r.date).misc += Number(r.qty) || 0;
+  for (const r of returnRows) {
+    const e = ensure(r.product_id, r.date);
+    e.returned += Number(r.returned_qty) || 0;
+    e.damagedRefund += Number(r.damaged_refund_qty) || 0;
+    e.damagedReplacement += Number(r.damaged_replacement_qty) || 0;
+  }
 
   return map;
 }
 
-// loss_count is intentionally NOT subtracted here: Loss_Qty is tracked as its
-// own running counter on the stock table and is never subtracted from
-// "available"/"usable" stock anywhere else in this codebase (viewAllStocks,
-// the deprecated cron scripts, etc). Matching that existing convention rather
-// than introducing a different definition of "stock" here. loss_qty is still
-// returned per-day for reporting/breakdown purposes.
-const netOf = (c) => c.purchase - c.sold - c.damage - c.misc;
+// loss_count and damaged_refund_qty are intentionally NOT part of this net:
+// Loss_Qty is tracked as its own running counter and is never subtracted
+// from "available"/"usable" stock anywhere else in this codebase
+// (viewAllStocks, etc), and a damaged refund re-enters quantity and
+// Damage_Qty together (net zero). Both are still returned per-day below for
+// reporting/breakdown purposes.
+const netOf = (c) =>
+  c.purchase - c.sold - c.damage - c.misc + c.replacementPurchase + c.returned - c.damagedReplacement;
 
 function buildProductRows(product_id, product_name, currentStock, changesByDate, fromDate, toDate) {
   const sortedDates = Object.keys(changesByDate).sort();
@@ -186,10 +262,15 @@ function buildProductRows(product_id, product_name, currentStock, changesByDate,
       opening_stock: opening,
       closing_stock: closing,
       purchase_qty: change ? change.purchase : 0,
+      damaged_purchase_qty: change ? change.damagedPurchase : 0,
+      replacement_purchase_qty: change ? change.replacementPurchase : 0,
       sold_qty: change ? change.sold : 0,
       damage_qty: change ? change.damage : 0,
       loss_qty: change ? change.loss : 0,
       misc_damage_qty: change ? change.misc : 0,
+      returned_qty: change ? change.returned : 0,
+      damaged_refund_qty: change ? change.damagedRefund : 0,
+      damaged_replacement_qty: change ? change.damagedReplacement : 0,
     });
 
     cursor = addDays(cursor, 1);
