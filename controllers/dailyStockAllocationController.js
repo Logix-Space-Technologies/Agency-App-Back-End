@@ -2,6 +2,41 @@ const pool = require('../config/db');
 const { getISTTimestamp } = require('../utils/dateUtils');
 const { logUserActivity } = require("../utils/logUserActivity");
 
+// Every never-converted daily_stock_allocation row for one product - the
+// exact thing that gets summed into "Outstanding Staff Allocation" on the
+// Stock History Day Summary. Surfaced so staff can see *which* allocations
+// (including any stale placeholder accounts) make up that number, instead
+// of it being an opaque total.
+exports.getOutstandingAllocationsByProduct = async (req, res) => {
+  try {
+    const { product_id } = req.body;
+    if (!product_id) {
+      return res.status(400).json({ error: "product_id is required" });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT
+         dsa.daily_stock_id,
+         dsa.marketing_staff_id,
+         u.name AS staff_name,
+         dsa.date,
+         dsa.allocated_quantity
+       FROM daily_stock_allocation dsa
+       LEFT JOIN users u ON u.user_id = dsa.marketing_staff_id
+       WHERE dsa.product_id = ?
+         AND dsa.isActive = 1
+         AND dsa.converted_to_sales = 0
+       ORDER BY dsa.date DESC`,
+      [product_id]
+    );
+
+    res.json({ data: rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
 
 //view all
 exports.getAllocationByStaffAndDate = async (req, res) => {
