@@ -282,7 +282,9 @@ exports.addDailyStockAllocation = async (req, res) => {
         await logUserActivity({
         req,
         user_id : addedBy,
-        action: `Daily stock allocation added - ${marketing_staff_id}`
+        action: `Daily stock allocation added - ${marketing_staff_id}`,
+        reference_type: "daily_stock_allocation_batch",
+        reference_id: `${marketing_staff_id}|${saleDate}`,
         });
 
       res.json({ message: 'daily stock allocations added successfully' });
@@ -499,7 +501,9 @@ exports.deleteDailyStockAllocation = async (req,res)=>{
         await logUserActivity({
             req,
             user_id :loggedInUserId,
-            action: `Allocation data deleted - ${dailyStockId} (daily stock id)`
+            action: `Allocation data deleted - ${dailyStockId} (daily stock id)`,
+            reference_type: "daily_stock_allocation",
+            reference_id: dailyStockId,
         });
       res.json({
         message:"Daily stock allocation deleted successfully",
