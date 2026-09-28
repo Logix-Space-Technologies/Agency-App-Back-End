@@ -2179,12 +2179,20 @@ exports.submitAllProductReturns = async (req, res) => {
       if (damaged_refund_quantity > 0 || damaged_replacement_quantity > 0) {
         let damaged_count =
           damaged_refund_quantity + damaged_replacement_quantity;
+        // The damaged unit physically re-enters the warehouse when the
+        // customer returns it, at the same time it's marked unsellable -
+        // quantity and Damage_Qty must move together here (net zero effect
+        // on available stock), otherwise available stock is overstated as
+        // lost even though nothing sellable actually left.
         await connection.execute(
-          `UPDATE stock SET Damage_Qty = Damage_Qty + ? WHERE product_id = ?`,
-          [damaged_count, product_id]
+          `UPDATE stock SET quantity = quantity + ?, Damage_Qty = Damage_Qty + ? WHERE product_id = ?`,
+          [damaged_count, damaged_count, product_id]
         );
       }
       if (damaged_replacement_quantity > 0) {
+        // A new good unit is handed to the customer as the replacement, on
+        // top of the quantity added back above for the damaged unit they
+        // returned - this is what actually reduces available stock.
         await connection.execute(
           `UPDATE stock SET quantity = quantity - ? WHERE product_id = ?`,
           [damaged_replacement_quantity, product_id]
