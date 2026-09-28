@@ -21,6 +21,7 @@ const salesGstReportRoutes = require("./routes/salesGstReport");
 const expenseCategoryRoutes = require("./routes/expenseCategoryRoutes");
 const expenseVoucherRoutes = require("./routes/expenseVoucherRoutes");
 const invoiceBulkRoutes = require("./routes/invoiceBulkRoutes");
+const dailyStockAuditRoutes = require("./routes/dailyStockAuditRoutes");
 
 
 
@@ -46,6 +47,7 @@ app.use('/api/gstReport', salesGstReportRoutes)
 app.use('/api/expenseCategories', expenseCategoryRoutes)
 app.use('/api/expenseVouchers', expenseVoucherRoutes)
 app.use('/api/invoices', invoiceBulkRoutes)
+app.use('/api/stockAudit', dailyStockAuditRoutes)
 
 
 

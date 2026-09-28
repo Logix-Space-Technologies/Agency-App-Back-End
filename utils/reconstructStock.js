@@ -40,6 +40,22 @@
 
 const { getISTDate } = require("./dateUtils");
 
+// product_id may be a single id, an array of ids, or null/undefined ("all
+// active products"). mysql2 auto-expands an array parameter into IN (...).
+function buildProductFilter(product_id, column = "product_id") {
+  if (Array.isArray(product_id)) {
+    // An empty array means "none selected" - same as no filter/all products
+    // here, since the caller (reconstructDailyStock) always means "all" by
+    // an empty/omitted selection, never "match nothing".
+    if (product_id.length === 0) return { clause: "", params: [] };
+    return { clause: `AND ${column} IN (?)`, params: [product_id] };
+  }
+  if (product_id) {
+    return { clause: `AND ${column} = ?`, params: [product_id] };
+  }
+  return { clause: "", params: [] };
+}
+
 const toDateStr = (value) => {
   const d = value instanceof Date ? value : new Date(value);
   return d.toISOString().split("T")[0];
@@ -57,8 +73,7 @@ const addDays = (dateStr, days) => {
 // sync deliberately so this page and Stock Management always agree on
 // "current stock" for today.
 async function getCurrentStockMap(pool, product_id) {
-  const whereProduct = product_id ? "AND s.product_id = ?" : "";
-  const params = product_id ? [product_id] : [];
+  const { clause: whereProduct, params } = buildProductFilter(product_id, "s.product_id");
   const [rows] = await pool.query(
     `SELECT s.product_id, p.product_name,
             (
@@ -97,11 +112,8 @@ async function getCurrentStockMap(pool, product_id) {
 // avoids any JS Date/timezone conversion entirely, regardless of what
 // timezone the Node process happens to run under.
 async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
-  const productFilter = product_id ? "AND product_id = ?" : "";
+  const { clause: productFilter, params: productParams } = buildProductFilter(product_id);
 
-  const purchaseParams = product_id
-    ? [fromDate, uptoDate, product_id]
-    : [fromDate, uptoDate];
   // replacement_provided purchases are excluded here (not just is_damaged
   // ones): a supplier replacement only moves Damage_Qty (handled via
   // replacement_qty below), it never adds to raw quantity, so counting it
@@ -112,7 +124,7 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
      WHERE isActive = 1 AND is_damaged = 0 AND replacement_provided = 0
        AND purchase_date BETWEEN ? AND ? ${productFilter}
      GROUP BY product_id, purchase_date`,
-    purchaseParams
+    [fromDate, uptoDate, ...productParams]
   );
 
   // Informational only (net zero on usable stock: adds equally to quantity
@@ -122,7 +134,7 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
      FROM purchase
      WHERE isActive = 1 AND is_damaged = 1 AND purchase_date BETWEEN ? AND ? ${productFilter}
      GROUP BY product_id, purchase_date`,
-    purchaseParams
+    [fromDate, uptoDate, ...productParams]
   );
 
   // Reduces Damage_Qty only (no change to raw quantity), so it's a net
@@ -132,12 +144,9 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
      FROM purchase
      WHERE isActive = 1 AND replacement_provided = 1 AND purchase_date BETWEEN ? AND ? ${productFilter}
      GROUP BY product_id, purchase_date`,
-    purchaseParams
+    [fromDate, uptoDate, ...productParams]
   );
 
-  const salesParams = product_id
-    ? [fromDate, uptoDate, product_id]
-    : [fromDate, uptoDate];
   const [salesRows] = await pool.query(
     `SELECT product_id, DATE_FORMAT(sale_date, '%Y-%m-%d') AS date,
             SUM(quantity_sold) AS sold_qty,
@@ -146,18 +155,15 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
      FROM sales
      WHERE isActive = 1 AND sale_date BETWEEN ? AND ? ${productFilter}
      GROUP BY product_id, sale_date`,
-    salesParams
+    [fromDate, uptoDate, ...productParams]
   );
 
-  const miscParams = product_id
-    ? [fromDate, uptoDate, product_id]
-    : [fromDate, uptoDate];
   const [miscRows] = await pool.query(
     `SELECT product_id, DATE_FORMAT(addedDate, '%Y-%m-%d') AS date, SUM(quantity) AS qty
      FROM miscellaneous_damage
      WHERE isActive = 1 AND DATE(addedDate) BETWEEN ? AND ? ${productFilter}
      GROUP BY product_id, DATE_FORMAT(addedDate, '%Y-%m-%d')`,
-    miscParams
+    [fromDate, uptoDate, ...productParams]
   );
 
   // Good units add straight back to usable stock; damaged-refund units are
@@ -165,9 +171,6 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
   // replacement units are a net subtraction (a new good unit is handed out
   // on top of the returned damaged one) - see the matching fix in
   // submitAllProductReturns (salesController.js).
-  const returnParams = product_id
-    ? [fromDate, uptoDate, product_id]
-    : [fromDate, uptoDate];
   const [returnRows] = await pool.query(
     `SELECT product_id, DATE_FORMAT(date, '%Y-%m-%d') AS date,
             SUM(returned_quantity) AS returned_qty,
@@ -176,7 +179,7 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
      FROM direct_sale_return
      WHERE DATE(date) BETWEEN ? AND ? ${productFilter}
      GROUP BY product_id, DATE_FORMAT(date, '%Y-%m-%d')`,
-    returnParams
+    [fromDate, uptoDate, ...productParams]
   );
 
   // { [product_id]: { [date]: {purchase,damagedPurchase,replacementPurchase,sold,damage,loss,misc,returned,damagedRefund,damagedReplacement} } }
