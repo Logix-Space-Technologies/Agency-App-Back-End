@@ -54,7 +54,9 @@ exports.loginUser = async (req, res) => {
     await logUserActivity({
         req,
         user_id :user.user_id,
-        action: `The user ${user.name} is logined`
+        action: `The user ${user.name} is logined`,
+        reference_type: "user",
+        reference_id: user.user_id,
       });
 
     res.json({
@@ -189,7 +191,9 @@ exports.addUser = async (req, res) => {
         await logUserActivity({
             req,
             user_id :userId,
-            action: `User ${name} is added`
+            action: `User ${name} is added`,
+            reference_type: "user",
+            reference_id: result.insertId,
           });
     res.json({ message: "User added successfully", user_id: result.insertId });
   } catch (error) {
@@ -271,7 +275,9 @@ exports.editUser = async (req, res) => {
     await logUserActivity({
             req,
             user_id :loggedInUserId,
-            action: `User ${name}'s data is edited`
+            action: `User ${name}'s data is edited`,
+            reference_type: "user",
+            reference_id: user_id,
           });
     res.json({ message: "User updated successfully" });
   } catch (error) {
@@ -542,7 +548,9 @@ exports.toggleBlock = async (req, res) => {
         await logUserActivity({
             req,
             user_id :loggedInUserId,
-            action: `User with name ${name}'s block status changed`
+            action: `User with name ${name}'s block status changed`,
+            reference_type: "user",
+            reference_id: userId,
           });
     res.json({
       message: isBlocked ? "User blocked successfully" : "User unblocked successfully",
@@ -740,6 +748,9 @@ exports.getUserActivityByDate = async (req, res) => {
       SELECT
         u.name,
         TRIM(SUBSTRING_INDEX(l.action, '-', 1)) AS action,
+        l.action AS full_action,
+        l.reference_type,
+        l.reference_id,
         l.ip_address,
         DATE_FORMAT(l.created_at, '%d-%m-%Y %H:%i:%s') AS created_at
       FROM user_activity_log l
@@ -776,5 +787,134 @@ exports.getUserActivityByDate = async (req, res) => {
       success: false,
       message: "Server error"
     });
+  }
+};
+
+// Looks up the actual record behind a user_activity_log entry, keyed by the
+// reference_type/reference_id stored on it - lets the log viewer show real
+// details (what sale, what purchase, what user) instead of just the one-line
+// action text. Historical rows logged before reference_type/reference_id
+// existed simply return { type: null }.
+async function getSaleDetail(saleTrackingId) {
+  const [finalSaleRows] = await pool.query(
+    `SELECT fs.id, fs.invoiceNumber, fs.TotalAmount, fs.AmountPaid, fs.DateofTransaction,
+            fs.isActive, fs.isGstBilling,
+            (SELECT sale_type FROM sales WHERE sale_tracking_id = fs.sale_tracking_Id LIMIT 1) AS sale_type,
+            COALESCE(u.name, c.Name) AS party_name
+     FROM final_sale fs
+     LEFT JOIN users u ON u.user_id = fs.UserId
+     LEFT JOIN Customers c ON c.id = fs.UserId
+     WHERE fs.sale_tracking_Id = ?`,
+    [saleTrackingId]
+  );
+
+  const [items] = await pool.query(
+    `SELECT s.sale_id, s.product_id, p.product_name, s.quantity_sold, s.amount_received,
+            s.damaged_count, s.loss_count, s.isActive
+     FROM sales s
+     LEFT JOIN products p ON p.product_id = s.product_id
+     WHERE s.sale_tracking_id = ?`,
+    [saleTrackingId]
+  );
+
+  if (finalSaleRows.length === 0 && items.length === 0) return null;
+  return { finalSale: finalSaleRows[0] || null, items };
+}
+
+exports.getLogDetails = async (req, res) => {
+  try {
+    const { reference_type, reference_id } = req.body;
+    if (!reference_type || !reference_id) {
+      return res.json({ success: true, type: null });
+    }
+
+    switch (reference_type) {
+      case "user": {
+        const [rows] = await pool.query(
+          `SELECT user_id, name, email, phone, role, Place_Of_Allocation, isBlocked, created_at
+           FROM users WHERE user_id = ?`,
+          [reference_id]
+        );
+        if (rows.length === 0) return res.json({ success: true, type: null });
+        return res.json({ success: true, type: "user", data: rows[0] });
+      }
+
+      case "customer": {
+        const [rows] = await pool.query(
+          `SELECT id, Name, Place, Mobile, EmailId, GstNumber, WalletAmount FROM Customers WHERE id = ?`,
+          [reference_id]
+        );
+        if (rows.length === 0) return res.json({ success: true, type: null });
+        return res.json({ success: true, type: "customer", data: rows[0] });
+      }
+
+      case "purchase": {
+        const [rows] = await pool.query(
+          `SELECT p.id, p.product_id, pr.product_name, p.quantity, p.purchase_price, p.total_amount,
+                  p.Invoice_Number, p.purchase_date, p.is_damaged, p.replacement_provided,
+                  p.is_freebie, p.damage_description, p.isActive, sup.supplier_name
+           FROM purchase p
+           LEFT JOIN products pr ON pr.product_id = p.product_id
+           LEFT JOIN suppliers sup ON sup.supplier_id = p.supplier_id
+           WHERE p.id = ?`,
+          [reference_id]
+        );
+        if (rows.length === 0) return res.json({ success: true, type: null });
+        return res.json({ success: true, type: "purchase", data: rows[0] });
+      }
+
+      case "sale": {
+        const detail = await getSaleDetail(reference_id);
+        if (!detail) return res.json({ success: true, type: null });
+        return res.json({ success: true, type: "sale", data: detail });
+      }
+
+      case "sale_item": {
+        const [saleRows] = await pool.query(
+          `SELECT sale_tracking_id FROM sales WHERE sale_id = ?`,
+          [reference_id]
+        );
+        if (saleRows.length === 0) return res.json({ success: true, type: null });
+        const detail = await getSaleDetail(saleRows[0].sale_tracking_id);
+        if (!detail) return res.json({ success: true, type: null });
+        return res.json({ success: true, type: "sale", data: { ...detail, editedSaleId: Number(reference_id) } });
+      }
+
+      case "daily_stock_allocation": {
+        const [rows] = await pool.query(
+          `SELECT dsa.daily_stock_id, dsa.marketing_staff_id, u.name AS staff_name,
+                  dsa.product_id, p.product_name, dsa.date, dsa.allocated_quantity,
+                  dsa.converted_to_sales, dsa.isActive
+           FROM daily_stock_allocation dsa
+           LEFT JOIN users u ON u.user_id = dsa.marketing_staff_id
+           LEFT JOIN products p ON p.product_id = dsa.product_id
+           WHERE dsa.daily_stock_id = ?`,
+          [reference_id]
+        );
+        if (rows.length === 0) return res.json({ success: true, type: null });
+        return res.json({ success: true, type: "daily_stock_allocation", data: rows[0] });
+      }
+
+      case "daily_stock_allocation_batch": {
+        const [staffId, allocDate] = String(reference_id).split("|");
+        const [rows] = await pool.query(
+          `SELECT dsa.daily_stock_id, dsa.product_id, p.product_name, dsa.allocated_quantity,
+                  dsa.converted_to_sales, dsa.isActive, u.name AS staff_name, dsa.date
+           FROM daily_stock_allocation dsa
+           LEFT JOIN users u ON u.user_id = dsa.marketing_staff_id
+           LEFT JOIN products p ON p.product_id = dsa.product_id
+           WHERE dsa.marketing_staff_id = ? AND dsa.date = ?`,
+          [staffId, allocDate]
+        );
+        if (rows.length === 0) return res.json({ success: true, type: null });
+        return res.json({ success: true, type: "daily_stock_allocation_batch", data: rows });
+      }
+
+      default:
+        return res.json({ success: true, type: null });
+    }
+  } catch (error) {
+    console.error("Error fetching log details:", error);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 };

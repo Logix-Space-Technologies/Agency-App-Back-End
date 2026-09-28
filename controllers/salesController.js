@@ -392,6 +392,8 @@ exports.updateSaleItem = async (req, res) => {
       req,
       user_id,
       action: `Sale item edited - sale_id ${sale_id}`,
+      reference_type: "sale_item",
+      reference_id: sale_id,
     });
 
     await connection.commit();
@@ -897,7 +899,9 @@ exports.addDirectSales = async (req, res) => {
       await logUserActivity({
         req,
         user_id :employee_id,
-        action: `Customer with name ${name} is added`
+        action: `Customer with name ${name} is added`,
+        reference_type: "customer",
+        reference_id: customer_id,
       });
     }
     const sale_tracking_id = generateUniqueSaleTrackingId();
@@ -1087,7 +1091,9 @@ exports.addDirectSales = async (req, res) => {
     await logUserActivity({
         req,
         user_id :employee_id,
-        action: `Sale created for the customer ${name}`
+        action: `Sale created for the customer ${name}`,
+        reference_type: "sale",
+        reference_id: sale_tracking_id,
       });
     await connection.commit();
     //connection.release();
@@ -1538,7 +1544,9 @@ exports.addSalesFromDailyAllocation = async (req, res) => {
           await logUserActivity({
           req,
           user_id : user_id,
-          action : `Sale created - ${marketing_staff_id}`
+          action : `Sale created - ${marketing_staff_id}`,
+          reference_type: "sale",
+          reference_id: sale_tracking_id,
         });
         await connection.commit();
     res.json({ message: "Sales added successfully", sales: salesResults,finalSaleRecord: finalSaleRecord });
@@ -2360,7 +2368,9 @@ exports.deleteDirectSaleProduct = async (req, res) => {
         await logUserActivity({
         req,
         user_id :loggedInUserId,
-        action: `Product deleted from sales data - ${sale_tracking_id} (Sale tracking ID), ${product_id} (Product ID)`
+        action: `Product deleted from sales data - ${sale_tracking_id} (Sale tracking ID), ${product_id} (Product ID)`,
+        reference_type: "sale",
+        reference_id: sale_tracking_id,
       });
       // Commit the transaction
       await connection.commit();
@@ -2434,7 +2444,9 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
         await logUserActivity({
         req,
         user_id :loggedInUserId,
-        action: `All Products deleted from sales entry - ${sale_tracking_id} (Sale tracking ID)`
+        action: `All Products deleted from sales entry - ${sale_tracking_id} (Sale tracking ID)`,
+        reference_type: "sale",
+        reference_id: sale_tracking_id,
       });
       await connection.commit();
      return res.status(200).json({ message: "All products deleted successfully." });

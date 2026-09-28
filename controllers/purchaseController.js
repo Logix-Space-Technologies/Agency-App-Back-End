@@ -96,8 +96,11 @@ exports.createEnhancedPurchase = async (req, res) => {
         ]
       );
 
-      activityLogActions.push(`Purchase added with invoice number ${invoiceNumber}`);
       const purchaseId = purchaseResult.insertId;
+      activityLogActions.push({
+        action: `Purchase added with invoice number ${invoiceNumber}`,
+        reference_id: purchaseId,
+      });
 
 
       // Handle stock updates based on purchase type
@@ -161,8 +164,14 @@ exports.createEnhancedPurchase = async (req, res) => {
     connection.release();
     connection = null;
 
-    for (const action of activityLogActions) {
-      await logUserActivity({ req, user_id: addedBy, action });
+    for (const entry of activityLogActions) {
+      await logUserActivity({
+        req,
+        user_id: addedBy,
+        action: entry.action,
+        reference_type: "purchase",
+        reference_id: entry.reference_id,
+      });
     }
 
     res.status(201).json({ message: "Purchase processed successfully!" });
@@ -990,7 +999,9 @@ exports.deletePurchase = async (req, res) => {
         await logUserActivity({
         req,
         user_id :loggedInUserId,
-        action: `Purchase data deleted - ${purchase_id}`
+        action: `Purchase data deleted - ${purchase_id}`,
+        reference_type: "purchase",
+        reference_id: purchase_id,
       });
       await connection.commit();
     res.json({
