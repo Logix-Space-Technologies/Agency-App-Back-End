@@ -226,13 +226,22 @@ exports.generateDailyStockAuditReport = async (req, res) => {
       ? buildDetailedReportHtml(date, rows, allocationsByProduct)
       : buildSummaryReportHtml(date, rows);
 
+    // Logged step-by-step (with a higher, explicit timeout on each Puppeteer
+    // call) so a future hang shows exactly which stage it's stuck in instead
+    // of a bare "Timed out after 30000ms" with no indication of where.
+    console.log(`[stockAudit] launching browser (${rows.length} products, ${reportType})`);
     browser = await puppeteer.launch({
       headless: "new",
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      timeout: 120000,
     });
+    console.log("[stockAudit] browser launched, opening page");
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "domcontentloaded" });
-    const pdfBuffer = await page.pdf(PDF_OPTIONS);
+    console.log("[stockAudit] setting content");
+    await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 120000 });
+    console.log("[stockAudit] content set, rendering pdf");
+    const pdfBuffer = await page.pdf({ ...PDF_OPTIONS, timeout: 120000 });
+    console.log("[stockAudit] pdf rendered, closing browser");
     await browser.close();
     browser = null;
 
