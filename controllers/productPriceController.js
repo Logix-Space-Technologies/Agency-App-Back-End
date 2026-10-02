@@ -274,12 +274,15 @@ exports.getProductPrice = async(req,res)=>{
 // whatever's currently filtered instead of always printing everything.
 exports.getProductPriceForPrint = async (req, res) => {
   try {
-    const { brandId, productId, supplierId } = req.body || {};
+    const { brandId, productId, productIds, supplierId } = req.body || {};
 
     let whereClause = ` WHERE pp.isActive = 1 `;
     const params = [];
 
-    if (productId) {
+    if (Array.isArray(productIds) && productIds.length > 0) {
+      whereClause += ` AND p.product_id IN (?)`;
+      params.push(productIds);
+    } else if (productId) {
       whereClause += ` AND p.product_id = ?`;
       params.push(productId);
     }
@@ -363,7 +366,7 @@ exports.addProductPrice = async (req, res) => {
 
 exports.searchProductPrice = async (req, res) => {
     try {
-        const { brandId, productId, supplierId } = req.body;
+        const { brandId, productId, productIds, supplierId } = req.body;
         const page = parseInt(req.body.page) || 1;
         const limit = parseInt(req.body.limit) || 15;
         const offset = (page - 1) * limit;
@@ -371,7 +374,10 @@ exports.searchProductPrice = async (req, res) => {
         let whereClause = ` WHERE pp.isActive = 1 `;
         const params = [];
 
-        if (productId) {
+        if (Array.isArray(productIds) && productIds.length > 0) {
+            whereClause += ` AND p.product_id IN (?)`;
+            params.push(productIds);
+        } else if (productId) {
             whereClause += ` AND p.product_id = ?`;
             params.push(productId);
         }
