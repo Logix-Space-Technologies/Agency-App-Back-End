@@ -308,7 +308,57 @@ exports.stockHistory = async (req, res) => {
     // Execute
     const [result] = await pool.query(query, queryParams);
 
-    res.json(result);
+    // Stock handed to a route/staff member (daily_stock_allocation) never
+    // gets a stock_History row - it's a reservation against stock.quantity,
+    // not a change to it (see addDailyStockAllocation) - so without this,
+    // stock that's genuinely already out the door for a sale that hasn't
+    // been settled yet is invisible in this ledger. Surfaced as read-only
+    // informational rows (CreditOrDebit = "reserved", not a real credit or
+    // debit) for allocations still outstanding (not yet converted to a sale
+    // or deleted); once settled, the real sale already appears via its own
+    // "sale" stock_History row from addSalesFromDailyAllocation.
+    let allocQuery = `
+      SELECT
+        dsa.daily_stock_id,
+        dsa.allocated_quantity AS Qty,
+        dsa.date AS AddedDate,
+        p.product_name,
+        u.name AS staff_name
+      FROM daily_stock_allocation dsa
+      JOIN products p ON p.product_id = dsa.product_id
+      LEFT JOIN users u ON u.user_id = dsa.marketing_staff_id
+      WHERE dsa.isActive = 1 AND dsa.converted_to_sales = 0
+    `;
+    const allocParams = [];
+    if (product_id) {
+      allocQuery += ` AND dsa.product_id = ?`;
+      allocParams.push(product_id);
+    }
+    if (fromDate && toDate) {
+      allocQuery += ` AND dsa.date BETWEEN ? AND ?`;
+      allocParams.push(fromDate, toDate);
+    }
+    const [allocRows] = await pool.query(allocQuery, allocParams);
+
+    const allocationEntries = allocRows.map((a) => ({
+      purchase_id: `alloc-${a.daily_stock_id}`,
+      stock_Id: null,
+      Qty: a.Qty,
+      stock_type: "allocation",
+      AddedDate: a.AddedDate,
+      AddedBy: null,
+      CreditOrDebit: "reserved",
+      ReferenceInvoiceOrSale: null,
+      sale_type: a.staff_name || "Unknown staff",
+      invoiceNumber: null,
+      product_name: a.product_name,
+    }));
+
+    const combined = [...result, ...allocationEntries].sort(
+      (a, b) => new Date(b.AddedDate) - new Date(a.AddedDate)
+    );
+
+    res.json(combined);
 
   } catch (error) {
     console.error(error);
