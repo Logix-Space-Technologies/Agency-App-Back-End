@@ -283,14 +283,18 @@ process.on("SIGTERM", closeSharedBrowser);
 exports.generateDailyStockAuditReport = async (req, res) => {
   let page;
   try {
-    const { date, productIds, reportType } = req.body;
+    const { date, productIds, reportType, nonZeroOnly } = req.body;
 
     if (!date) {
       return res.status(400).json({ error: "date is required" });
     }
 
     const idsFilter = Array.isArray(productIds) && productIds.length > 0 ? productIds : null;
-    const { data: rows } = await reconstructDailyStock(pool, idsFilter, date, date);
+    let { data: rows } = await reconstructDailyStock(pool, idsFilter, date, date);
+
+    if (nonZeroOnly) {
+      rows = rows.filter((r) => r.closing_stock > 0);
+    }
 
     if (rows.length === 0) {
       return res.status(404).json({ error: "No products found for the given selection" });
