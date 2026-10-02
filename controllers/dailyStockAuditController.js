@@ -195,23 +195,63 @@ const PDF_OPTIONS = {
 // generation from several seconds to well under one, and removes the
 // crash-prone launch step from the hot path entirely.
 let sharedBrowserPromise = null;
+let idleCloseTimer = null;
+
+// The EC2 box this runs on has only 1GB of RAM total, shared with the Node
+// process itself. A resident Chromium process costs roughly 100-200MB even
+// sitting idle, which is too much to hold onto permanently on a box this
+// small - it would quietly starve the rest of the app of memory between
+// reports instead of just this feature. So the browser is kept warm for a
+// few minutes after each use (to make back-to-back summary+detailed
+// downloads fast) and then closed automatically if nothing asks for it
+// again; the next request after that just pays one cold-launch again.
+const IDLE_CLOSE_MS = 5 * 60 * 1000;
+
+function scheduleIdleClose() {
+  if (idleCloseTimer) clearTimeout(idleCloseTimer);
+  idleCloseTimer = setTimeout(() => {
+    console.log("[stockAudit] closing idle shared browser to free memory");
+    closeSharedBrowser();
+  }, IDLE_CLOSE_MS);
+  idleCloseTimer.unref();
+}
 
 async function getBrowser() {
   if (sharedBrowserPromise) {
     const existing = await sharedBrowserPromise.catch(() => null);
-    if (existing && existing.connected) return existing;
+    if (existing && existing.connected) {
+      scheduleIdleClose();
+      return existing;
+    }
     sharedBrowserPromise = null;
   }
 
   sharedBrowserPromise = puppeteer.launch({
     headless: "new",
-    // --disable-dev-shm-usage: Chrome uses /dev/shm heavily when rendering
-    // (especially for a large multi-page document like a 368-product
-    // detailed report), and EC2's default /dev/shm is tiny (64MB) - once
-    // it fills up, Chrome crashes mid-render with a printToPDF protocol
-    // error instead of a normal timeout. This makes it spill to disk
-    // (/tmp) instead.
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      // Chrome uses /dev/shm heavily when rendering (especially for a large
+      // multi-page document like a 368-product detailed report), and EC2's
+      // default /dev/shm is tiny (64MB) - once it fills up, Chrome crashes
+      // mid-render with a printToPDF protocol error instead of a normal
+      // timeout. This makes it spill to disk (/tmp) instead.
+      "--disable-dev-shm-usage",
+      // The rest trim Chromium's baseline memory/CPU footprint - none of
+      // these features (GPU compositing, extensions, sync, translate,
+      // audio, background network chatter) are used for rendering a static
+      // HTML table to PDF, so there's no reason to pay for them on a 1GB box.
+      "--disable-gpu",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--disable-translate",
+      "--metrics-recording-only",
+      "--mute-audio",
+      "--no-first-run",
+      "--js-flags=--max-old-space-size=128",
+    ],
     timeout: 120000,
   });
 
@@ -220,6 +260,7 @@ async function getBrowser() {
     console.log("[stockAudit] shared browser disconnected, will relaunch on next request");
     sharedBrowserPromise = null;
   });
+  scheduleIdleClose();
   return browser;
 }
 
@@ -227,6 +268,10 @@ async function getBrowser() {
 // the Chromium child process running as an orphan, permanently wasting
 // memory on a box that's already tight on it.
 async function closeSharedBrowser() {
+  if (idleCloseTimer) {
+    clearTimeout(idleCloseTimer);
+    idleCloseTimer = null;
+  }
   if (!sharedBrowserPromise) return;
   const browser = await sharedBrowserPromise.catch(() => null);
   sharedBrowserPromise = null;
