@@ -37,6 +37,27 @@
 // the product's full history — since the anchor (closing(today) = live
 // stock) makes anything before fromDate unnecessary for computing the
 // requested window.
+//
+// outstanding_allocated is a POINT-IN-TIME snapshot (stock currently out
+// with marketing staff, not yet settled or returned), not a dated ledger -
+// daily_stock_allocation has no "settled on"/"deleted on" timestamp, only
+// current converted_to_sales/isActive flags. Baking today's outstanding
+// total into the anchor as a constant is correct for today, but every day
+// BEFORE a still-outstanding allocation was created was wrongly treated as
+// if that allocation already existed and had already been excluded - this
+// under-stated every such day's closing stock by that allocation's quantity,
+// and was the main source of stock history/daily audit reading negative
+// for products with regular staff allocations, even though current_stock
+// (today's own anchor) was always correct.
+// Fix: for allocations that are STILL outstanding today (so their quantity
+// is part of the anchor's constant subtraction), add an extra subtraction on
+// their own creation date (`date`) - before that date they correctly aren't
+// excluded; from that date through today the extra subtraction cancels out
+// against the anchor, landing back on the correct (anchor-matching) value.
+// Allocations already settled or deleted need no such correction: settlement
+// subtracts from `quantity` via a dated `sales` row (already captured above),
+// and deletion never touched `quantity` to begin with (see the comment in
+// deleteDailyStockAllocation).
 
 const { getISTDate } = require("./dateUtils");
 
@@ -147,11 +168,36 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
     [fromDate, uptoDate, ...productParams]
   );
 
+  // quantity_sold/damaged_count do NOT mean the same thing across every sale
+  // creation path, even though they share one column:
+  //   - addSalesFromDailyAllocation (sale_type='marketing', salesController.js)
+  //     treats them as two SEPARATE pools: quantity_sold = units genuinely
+  //     sold, damaged_count = units separately damaged. Its stock update
+  //     subtracts both from `quantity` individually, so netOf() correctly
+  //     subtracts sold + damage for these rows.
+  //   - addDirectSales (sale_type IN 'direct'/'wholesale'/'home_marketing',
+  //     DirectSales.jsx always sends one of these three) treats quantity_sold
+  //     as the GROSS amount dispensed, with damaged_count as a SUBSET of it
+  //     (confirmed by its billing formula: amount_received = (quantity -
+  //     damaged_quantity) * price). Its stock update only ever removes
+  //     (quantity_sold - damaged_count) from usable stock - damaged_count
+  //     itself is added back into `quantity` and only excluded via
+  //     Damage_Qty, which already shows up once in the `quantity_sold`
+  //     figure. Subtracting damage_qty a second time here double-counts it
+  //     and was the source of stock history/daily audit drifting negative
+  //     over time even though the live `stock` table (current_stock) stayed
+  //     correct - the live table was never double-decremented, only this
+  //     day-by-day replay was.
+  // grossSaleDamageOverlap isolates that already-counted portion so netOf()
+  // can add it back for gross-convention rows, while damage_qty itself is
+  // left untouched so the report's own Damage column still shows the true
+  // total.
   const [salesRows] = await pool.query(
     `SELECT product_id, DATE_FORMAT(sale_date, '%Y-%m-%d') AS date,
             SUM(quantity_sold) AS sold_qty,
             SUM(damaged_count) AS damage_qty,
-            SUM(loss_count) AS loss_qty
+            SUM(loss_count) AS loss_qty,
+            SUM(CASE WHEN sale_type IN ('direct', 'wholesale', 'home_marketing') THEN damaged_count ELSE 0 END) AS gross_sale_damage_overlap
      FROM sales
      WHERE isActive = 1 AND sale_date BETWEEN ? AND ? ${productFilter}
      GROUP BY product_id, sale_date`,
@@ -182,7 +228,18 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
     [fromDate, uptoDate, ...productParams]
   );
 
-  // { [product_id]: { [date]: {purchase,damagedPurchase,replacementPurchase,sold,damage,loss,misc,returned,damagedRefund,damagedReplacement} } }
+  // See the top-of-file comment on outstanding_allocated: only allocations
+  // that are STILL outstanding today need this correction, grouped by the
+  // day they were handed out.
+  const [outstandingAllocationRows] = await pool.query(
+    `SELECT product_id, DATE_FORMAT(date, '%Y-%m-%d') AS date, SUM(allocated_quantity) AS qty
+     FROM daily_stock_allocation
+     WHERE converted_to_sales = 0 AND isActive = 1 AND date BETWEEN ? AND ? ${productFilter}
+     GROUP BY product_id, DATE_FORMAT(date, '%Y-%m-%d')`,
+    [fromDate, uptoDate, ...productParams]
+  );
+
+  // { [product_id]: { [date]: {purchase,damagedPurchase,replacementPurchase,sold,damage,loss,misc,returned,damagedRefund,damagedReplacement,newOutstandingAllocation} } }
   const map = {};
   const ensure = (pid, d) => {
     if (!map[pid]) map[pid] = {};
@@ -193,11 +250,13 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
         replacementPurchase: 0,
         sold: 0,
         damage: 0,
+        grossSaleDamageOverlap: 0,
         loss: 0,
         misc: 0,
         returned: 0,
         damagedRefund: 0,
         damagedReplacement: 0,
+        newOutstandingAllocation: 0,
       };
     }
     return map[pid][d];
@@ -210,6 +269,7 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
     const e = ensure(r.product_id, r.date);
     e.sold += Number(r.sold_qty) || 0;
     e.damage += Number(r.damage_qty) || 0;
+    e.grossSaleDamageOverlap += Number(r.gross_sale_damage_overlap) || 0;
     e.loss += Number(r.loss_qty) || 0;
   }
   for (const r of miscRows) ensure(r.product_id, r.date).misc += Number(r.qty) || 0;
@@ -219,6 +279,7 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
     e.damagedRefund += Number(r.damaged_refund_qty) || 0;
     e.damagedReplacement += Number(r.damaged_replacement_qty) || 0;
   }
+  for (const r of outstandingAllocationRows) ensure(r.product_id, r.date).newOutstandingAllocation += Number(r.qty) || 0;
 
   return map;
 }
@@ -229,8 +290,15 @@ async function getDailyChangesMap(pool, product_id, fromDate, uptoDate) {
 // (viewAllStocks, etc), and a damaged refund re-enters quantity and
 // Damage_Qty together (net zero). Both are still returned per-day below for
 // reporting/breakdown purposes.
+// + c.grossSaleDamageOverlap cancels out the damage already baked into
+// c.sold for gross-convention sales (direct/wholesale/home_marketing) - see
+// the comment on grossSaleDamageOverlap above. It's 0 for every other sale
+// type, so this is a no-op everywhere else.
+// - c.newOutstandingAllocation un-bakes the anchor's constant
+// outstanding_allocated subtraction on the day each still-outstanding
+// allocation was actually created - see the top-of-file comment.
 const netOf = (c) =>
-  c.purchase - c.sold - c.damage - c.misc + c.replacementPurchase + c.returned - c.damagedReplacement;
+  c.purchase - c.sold - c.damage + c.grossSaleDamageOverlap - c.misc + c.replacementPurchase + c.returned - c.damagedReplacement - c.newOutstandingAllocation;
 
 function buildProductRows(product_id, product_name, currentStock, changesByDate, fromDate, toDate) {
   const sortedDates = Object.keys(changesByDate).sort();
