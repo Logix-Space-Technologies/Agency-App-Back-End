@@ -308,7 +308,14 @@ exports.generateDailyStockAuditReport = async (req, res) => {
     if (isDetailed) {
       const productIdList = rows.map((r) => r.product_id);
       const [allocRows] = await pool.query(
-        `SELECT dsa.product_id, dsa.daily_stock_id, dsa.marketing_staff_id, u.name AS staff_name, dsa.date, dsa.allocated_quantity
+        // DATE_FORMAT here, not raw dsa.date: mysql2 returns DATE columns as
+        // JS Date objects, and the allocation row renderer below does
+        // String(a.date).slice(0, 10) expecting a 'YYYY-MM-DD' string - on a
+        // Date object, String(...) gives something like "Fri Oct 02 2026
+        // 00:00:00 GMT+0530 (...)", whose first 10 characters are "Fri Oct
+        // 02" (no hyphens), which is exactly what printed as literal
+        // "undefined-undefined-Fri Oct 02" in the generated report.
+        `SELECT dsa.product_id, dsa.daily_stock_id, dsa.marketing_staff_id, u.name AS staff_name, DATE_FORMAT(dsa.date, '%Y-%m-%d') AS date, dsa.allocated_quantity
          FROM daily_stock_allocation dsa
          LEFT JOIN users u ON u.user_id = dsa.marketing_staff_id
          WHERE dsa.isActive = 1 AND dsa.converted_to_sales = 0 AND dsa.product_id IN (?)
