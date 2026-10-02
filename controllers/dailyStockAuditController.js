@@ -186,8 +186,57 @@ const PDF_OPTIONS = {
   margin: { top: "15mm", bottom: "15mm", left: "10mm", right: "10mm" },
 };
 
+// Launching a fresh Chromium process per request (the previous approach) is
+// the actual cause of most "Failed to generate the report" errors, even for
+// a single, tiny product: a cold Chromium launch is the slowest and most
+// memory-hungry step by far on a small EC2 instance, and it's paid on every
+// single request regardless of report size. Keeping one browser alive and
+// reusing it (a new tab per request, not a new process) cuts report
+// generation from several seconds to well under one, and removes the
+// crash-prone launch step from the hot path entirely.
+let sharedBrowserPromise = null;
+
+async function getBrowser() {
+  if (sharedBrowserPromise) {
+    const existing = await sharedBrowserPromise.catch(() => null);
+    if (existing && existing.connected) return existing;
+    sharedBrowserPromise = null;
+  }
+
+  sharedBrowserPromise = puppeteer.launch({
+    headless: "new",
+    // --disable-dev-shm-usage: Chrome uses /dev/shm heavily when rendering
+    // (especially for a large multi-page document like a 368-product
+    // detailed report), and EC2's default /dev/shm is tiny (64MB) - once
+    // it fills up, Chrome crashes mid-render with a printToPDF protocol
+    // error instead of a normal timeout. This makes it spill to disk
+    // (/tmp) instead.
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    timeout: 120000,
+  });
+
+  const browser = await sharedBrowserPromise;
+  browser.on("disconnected", () => {
+    console.log("[stockAudit] shared browser disconnected, will relaunch on next request");
+    sharedBrowserPromise = null;
+  });
+  return browser;
+}
+
+// Without this, a pm2 restart/redeploy kills the Node process but can leave
+// the Chromium child process running as an orphan, permanently wasting
+// memory on a box that's already tight on it.
+async function closeSharedBrowser() {
+  if (!sharedBrowserPromise) return;
+  const browser = await sharedBrowserPromise.catch(() => null);
+  sharedBrowserPromise = null;
+  if (browser) await browser.close().catch(() => {});
+}
+process.on("SIGINT", closeSharedBrowser);
+process.on("SIGTERM", closeSharedBrowser);
+
 exports.generateDailyStockAuditReport = async (req, res) => {
-  let browser;
+  let page;
   try {
     const { date, productIds, reportType } = req.body;
 
@@ -227,24 +276,13 @@ exports.generateDailyStockAuditReport = async (req, res) => {
       ? buildDetailedReportHtml(date, rows, allocationsByProduct)
       : buildSummaryReportHtml(date, rows);
 
-    // Logged step-by-step (with a higher, explicit timeout on each Puppeteer
-    // call) so a future hang shows exactly which stage it's stuck in instead
-    // of a bare "Timed out after 30000ms" with no indication of where.
-    console.log(`[stockAudit] launching browser (${rows.length} products, ${reportType})`);
-    browser = await puppeteer.launch({
-      headless: "new",
-      // --disable-dev-shm-usage: Chrome uses /dev/shm heavily when rendering
-      // (especially for a large multi-page document like a 368-product
-      // detailed report), and EC2's default /dev/shm is tiny (64MB) - once
-      // it fills up, Chrome crashes mid-render with a printToPDF protocol
-      // error instead of a normal timeout. This makes it spill to disk
-      // (/tmp) instead.
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-      timeout: 120000,
-    });
-    console.log("[stockAudit] browser launched, opening page");
-    const page = await browser.newPage();
-    // page.pdf()'s own options don't take a `timeout` key - the previous
+    // Logged step-by-step so a future hang or crash shows exactly which
+    // stage it's stuck in instead of a bare, unhelpful error.
+    console.log(`[stockAudit] getting browser (${rows.length} products, ${reportType})`);
+    const browser = await getBrowser();
+    console.log("[stockAudit] opening page");
+    page = await browser.newPage();
+    // page.pdf()'s own options don't take a `timeout` key - a previous
     // attempt hit exactly 30000ms despite passing one, confirming that.
     // setDefaultTimeout() is what actually governs printToPDF's protocol
     // timeout.
@@ -253,16 +291,16 @@ exports.generateDailyStockAuditReport = async (req, res) => {
     await page.setContent(html, { waitUntil: "domcontentloaded" });
     console.log("[stockAudit] content set, rendering pdf");
     const pdfBuffer = await page.pdf(PDF_OPTIONS);
-    console.log("[stockAudit] pdf rendered, closing browser");
-    await browser.close();
-    browser = null;
+    console.log("[stockAudit] pdf rendered, closing page");
+    await page.close();
+    page = null;
 
     const filename = `daily-stock-audit-${isDetailed ? "detailed" : "summary"}-${date}.pdf`;
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.send(Buffer.from(pdfBuffer));
   } catch (error) {
-    if (browser) await browser.close();
+    if (page) await page.close().catch(() => {});
     console.error("Error generating daily stock audit report:", error);
     res.status(500).json({ error: "Failed to generate report" });
   }
