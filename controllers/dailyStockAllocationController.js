@@ -480,6 +480,50 @@ exports.searchDailyStockAllocationIndividual = async (req, res) => {
     res.status(500).json({ error: "Database error" });
   }
 };
+// Soft-deletes allocation rows for one staff+date that were left at Qty 0,
+// marked sold, with no sales row at all (a settlement mistake). Rows that
+// have any active sale - even a 0-quantity or damage-only one - are kept, so
+// Edit/Print for real sales is never affected. Stock is untouched: settled
+// allocations never counted toward outstanding stock.
+exports.cleanupEmptyAllocations = async (req, res) => {
+  try {
+    const { marketing_staff_id, date, loggedInUserId } = req.body;
+    if (!marketing_staff_id || !date) {
+      return res.status(400).json({ error: "marketing_staff_id and date are required" });
+    }
+
+    const [result] = await pool.query(
+      `UPDATE daily_stock_allocation d
+       SET d.isActive = 0
+       WHERE d.marketing_staff_id = ? AND d.date = ?
+         AND d.isActive = 1 AND d.converted_to_sales = 1 AND d.allocated_quantity = 0
+         AND NOT EXISTS (
+           SELECT 1 FROM sales s
+           WHERE s.marketing_staff_id = d.marketing_staff_id
+             AND s.product_id = d.product_id
+             AND DATE(s.sale_date) = d.date
+             AND s.sale_type = 'marketing' AND s.isActive = 1
+         )`,
+      [marketing_staff_id, date]
+    );
+
+    if (result.affectedRows > 0) {
+      await logUserActivity({
+        req,
+        user_id: loggedInUserId,
+        action: `Cleaned up ${result.affectedRows} empty allocation row(s) - ${marketing_staff_id} on ${date}`,
+        reference_type: "daily_stock_allocation_batch",
+        reference_id: `${marketing_staff_id}|${date}`,
+      });
+    }
+
+    res.json({ removed: result.affectedRows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
 // delete
 exports.deleteDailyStockAllocation = async (req,res)=>{
     try{

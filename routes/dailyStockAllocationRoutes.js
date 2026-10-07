@@ -1,5 +1,5 @@
 const express = require('express');
-const { getAllocationByProductAndDate,getAllocationByStaffAndDate, viewAllDailyStockAllocation, addDailyStockAllocation, searchDailyStockAllocation,searchDailyStockAllocationIndividual, deleteDailyStockAllocation, getOutstandingAllocationsByProduct } = require('../controllers/dailyStockAllocationController');
+const { getAllocationByProductAndDate,getAllocationByStaffAndDate, viewAllDailyStockAllocation, addDailyStockAllocation, searchDailyStockAllocation,searchDailyStockAllocationIndividual, deleteDailyStockAllocation, getOutstandingAllocationsByProduct, cleanupEmptyAllocations } = require('../controllers/dailyStockAllocationController');
 const router = express.Router();
 
 router.post('/',viewAllDailyStockAllocation);
@@ -10,6 +10,7 @@ router.post('/del',deleteDailyStockAllocation);
 router.post('/getAllocationByProductAndDate',getAllocationByProductAndDate);
 router.post('/getAllocationByStaffAndDate',getAllocationByStaffAndDate);
 router.post('/outstandingByProduct',getOutstandingAllocationsByProduct);
+router.post('/cleanupEmpty',cleanupEmptyAllocations);
 
 
 
