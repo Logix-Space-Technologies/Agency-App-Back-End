@@ -488,7 +488,8 @@ exports.deleteDailyStockAllocation = async (req,res)=>{
 
         if (!productId) return res.status(400).json({ error: "Product id is required" });
 
-        if (!allocatedQuantity || isNaN(allocatedQuantity)) return res.status(400).json({ error: "Allocated quantity is required and must be a number" });
+        // 0 is valid here: rows left at Qty 0 by a mistaken settlement still need removing.
+        if (allocatedQuantity === undefined || allocatedQuantity === null || allocatedQuantity === "" || isNaN(allocatedQuantity)) return res.status(400).json({ error: "Allocated quantity is required and must be a number" });
 
         const [result] = await pool.query('UPDATE `daily_stock_allocation` SET `isActive` = 0 WHERE `daily_stock_id` = ? AND `product_id` = ?', [dailyStockId, productId]);
         
