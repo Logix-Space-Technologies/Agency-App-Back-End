@@ -1,5 +1,5 @@
 const pool = require('../config/db');
-const { getISTTimestamp } = require('../utils/dateUtils');
+const { getISTTimestamp, isTooOld, MAX_BACKDATE_DAYS } = require('../utils/dateUtils');
 const { logUserActivity } = require("../utils/logUserActivity");
 
 // Every never-converted daily_stock_allocation row for one product - the
@@ -253,6 +253,9 @@ exports.addDailyStockAllocation = async (req, res) => {
       }
       if (!saleDate) {
         return res.status(400).json({ error: "Sale date required" });
+      }
+      if (isTooOld(saleDate)) {
+        return res.status(400).json({ error: `Date cannot be more than ${MAX_BACKDATE_DAYS} days in the past.` });
       }
       if (!Array.isArray(allocations) || allocations.length === 0) {
         return res.status(400).json({ error: "allocations are required" });

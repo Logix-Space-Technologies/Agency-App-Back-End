@@ -25,7 +25,22 @@ function getISTDate(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
+const MAX_BACKDATE_DAYS = 3;
+
+// Earliest allowed entry date (IST, YYYY-MM-DD): today minus MAX_BACKDATE_DAYS.
+function getMinBackdate(days = MAX_BACKDATE_DAYS) {
+  return getISTDate(new Date(Date.now() - days * 24 * 60 * 60 * 1000));
+}
+
+// true when dateStr (YYYY-MM-DD) is more than MAX_BACKDATE_DAYS before today (IST).
+function isTooOld(dateStr) {
+  return String(dateStr).slice(0, 10) < getMinBackdate();
+}
+
 module.exports = {
   getISTTimestamp,
-  getISTDate
+  getISTDate,
+  getMinBackdate,
+  isTooOld,
+  MAX_BACKDATE_DAYS
 };

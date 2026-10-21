@@ -2,7 +2,7 @@ const { config } = require("dotenv");
 const pool = require("../config/db");
 
 const { v4: uuidv4 } = require("uuid");
-const { getISTTimestamp, getISTDate } = require('../utils/dateUtils');
+const { getISTTimestamp, getISTDate, isTooOld, MAX_BACKDATE_DAYS } = require('../utils/dateUtils');
 const { logUserActivity } = require("../utils/logUserActivity");
 
 exports.fetchDailyDataForPrint = async (req, res) => {
@@ -801,6 +801,9 @@ exports.addDirectSales = async (req, res) => {
 
 
     const { id, name, place, mobile, email, date, amount_paying_now, gst_number } = customer;
+    if (date && isTooOld(date)) {
+      return res.status(400).json({ message: `Sale date cannot be more than ${MAX_BACKDATE_DAYS} days in the past.` });
+    }
     const sale_type = req.body.saleType;
     const current_date = new Date();
     const added_date = new Intl.DateTimeFormat("en-CA", {
