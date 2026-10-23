@@ -1812,6 +1812,42 @@ exports.fetchFinalSaleListBySearchValue = async (req, res) => {
 };
 
 //fetch data for with allocation ID - final sale -ID
+// Marketing sale receipts also show what was handed out and what came back.
+// daily_stock_allocation has no FK to sales, so rows are matched by staff +
+// date + product. On a settled allocation row, allocated_quantity is the
+// leftover after quantity_sold (damaged/loss are NOT subtracted from it), so
+// the original allocation is leftover + sold, and the balance still with the
+// staff is allocation - sold - damaged - loss.
+async function addAllocationBalances(details, saleId) {
+  if (!details.length) return details;
+  const [[fs]] = await pool.query(
+    "SELECT UserId, DATE_FORMAT(DateofTransaction, '%Y-%m-%d') AS d FROM final_sale WHERE id = ?",
+    [saleId]
+  );
+  if (!fs) return details;
+  const [rows] = await pool.query(
+    `SELECT product_id, SUM(allocated_quantity) AS leftover
+     FROM daily_stock_allocation
+     WHERE marketing_staff_id = ? AND date = ? AND isActive = 1
+     GROUP BY product_id`,
+    [fs.UserId, fs.d]
+  );
+  const leftoverByProduct = {};
+  for (const r of rows) leftoverByProduct[r.product_id] = Number(r.leftover) || 0;
+
+  return details.map((d) => {
+    const sold = Number(d.quantity_sold) || 0;
+    const damaged = Number(d.damaged_count) || 0;
+    const loss = Number(d.loss_count) || 0;
+    const allocated = (leftoverByProduct[d.product_id] || 0) + sold;
+    return {
+      ...d,
+      allocated_quantity: allocated,
+      balance_available: Math.max(0, allocated - sold - damaged - loss),
+    };
+  });
+}
+
 exports.fetchSalesDataForPrintByID = async (req, res) => {
   try {
     let { allocationID } = req.body;
@@ -1875,7 +1911,7 @@ exports.fetchSalesDataForPrintByID = async (req, res) => {
     res.json({
       success: true,
       saledata: finalSalerows,
-      details: productData,
+      details: await addAllocationBalances(productData, allocationID),
       payments: transactionData[0] || {}, // handle no data scenario
     });
   } catch (error) {
