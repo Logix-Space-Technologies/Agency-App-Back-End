@@ -83,6 +83,9 @@ exports.cashReport = async (req, res) => {
     const startDateTime = fromDate + " 00:00:00";
     const endDateTime = (toDate || fromDate) + " 23:59:59";
 
+    // Payments belonging to a deleted invoice (final_sale.isActive = 0) are
+    // excluded below, so deleting and re-entering an invoice doesn't count its
+    // cash twice.
     // Money actually received in this window, broken down by method.
     // sales_credit_history is populated by every real payment event in the
     // system — new marketing/direct sale payments (addSalesFromDailyAllocation,
@@ -101,12 +104,16 @@ exports.cashReport = async (req, res) => {
     const [creditHistory] = await pool.query(
       `
             SELECT
-                SUM(UPI) AS totalUPI,
-                SUM(Cash) AS totalCash,
-                SUM(Card) AS totalCard
-            FROM sales_credit_history
-            WHERE isActive = 1
-              AND creditedDate BETWEEN ? AND ?
+                SUM(sch.UPI) AS totalUPI,
+                SUM(sch.Cash) AS totalCash,
+                SUM(sch.Card) AS totalCard
+            FROM sales_credit_history sch
+            WHERE sch.isActive = 1
+              AND sch.creditedDate BETWEEN ? AND ?
+              AND NOT EXISTS (
+                SELECT 1 FROM final_sale f
+                WHERE f.sale_tracking_Id = sch.sale_tracking_Id AND f.isActive = 0
+              )
         `,
       [startDateTime, endDateTime]
     );
@@ -153,6 +160,10 @@ exports.cashReport = async (req, res) => {
             LEFT JOIN Customers c ON c.id = fs.UserId AND st.sale_type IS NOT NULL AND st.sale_type != 'marketing'
             WHERE sch.isActive = 1
               AND sch.creditedDate BETWEEN ? AND ?
+              AND NOT EXISTS (
+                SELECT 1 FROM final_sale f
+                WHERE f.sale_tracking_Id = sch.sale_tracking_Id AND f.isActive = 0
+              )
             ORDER BY sch.creditedDate ASC
         `,
       [startDateTime, endDateTime]
@@ -2402,7 +2413,11 @@ exports.deleteDirectSaleProduct = async (req, res) => {
         const [finalSaleUpdate] =  await connection.execute(
             "UPDATE `final_sale` SET isActive = 0 WHERE `sale_tracking_Id`= ?",
             [sale_tracking_id]
-        );          
+        );
+        await connection.execute(
+            "UPDATE `sales_credit_history` SET isActive = 0 WHERE `sale_tracking_Id`= ?",
+            [sale_tracking_id]
+        );
         }
         await logUserActivity({
         req,
@@ -2460,6 +2475,11 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
     //Delete stock history
     await connection.execute(
       "DELETE FROM `stock_History` WHERE `ReferenceInvoiceOrSale` = ?",
+      [sale_tracking_id]
+    );
+    // The invoice's payments leave the cash report along with the invoice
+    await connection.execute(
+      "UPDATE `sales_credit_history` SET isActive = 0 WHERE `sale_tracking_Id` = ?",
       [sale_tracking_id]
     );
     //Update all products
