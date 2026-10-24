@@ -162,13 +162,33 @@ exports.updateStaffSalary = async (req, res) => {
 // Salary
 exports.searchUserSalaryDetails = async (req, res) => {
   try {
-    const { user_id } = req.body;
-    if (!user_id)
-      return res.status(400).json({ error: "User data is required" });
+    const { user_id, fromDate, toDate } = req.body;
+    if (!user_id && !fromDate && !toDate)
+      return res.status(400).json({ error: "Select a user or a date range" });
+
+    // Dates filter on AddedDate - the "Salary Paid Date" shown in the list.
+    let where = "u.isActive = 1";
+    const params = [];
+    if (user_id) {
+      where += " AND s.UserId = ?";
+      params.push(user_id);
+    }
+    if (fromDate) {
+      where += " AND s.AddedDate >= ?";
+      params.push(fromDate);
+    }
+    if (toDate) {
+      where += " AND s.AddedDate <= ?";
+      params.push(toDate);
+    }
 
     const [result] = await pool.query(
-       "SELECT u.name,s.UserId, s.id,s.Amount, s.Month, s.Year, DATE_FORMAT(s.AddedDate, '%Y-%m-%d') AS AddedDate,s.Remarks FROM Salary s JOIN users u ON s.UserId= u.user_id WHERE s.UserId = ? AND u.isActive = 1 ORDER BY s.id DESC",
-      [user_id]
+      `SELECT u.name, s.UserId, s.id, s.Amount, s.Month, s.Year,
+              DATE_FORMAT(s.AddedDate, '%Y-%m-%d') AS AddedDate, s.Remarks
+       FROM Salary s JOIN users u ON s.UserId = u.user_id
+       WHERE ${where}
+       ORDER BY s.AddedDate DESC, s.id DESC`,
+      params
     );
 
     res.json(result);
