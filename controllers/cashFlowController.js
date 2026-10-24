@@ -17,10 +17,13 @@ exports.getCashFlow = async (req, res) => {
     );
 
     // Salary (Debit)
+    // AddedDate is the "Salary Paid Date" chosen on the form; `Date` is only
+    // the moment the row was typed in, so a salary paid on the 20th but
+    // entered on the 24th was missing from the 20th's report.
     const [salaries] = await pool.query(
-      `SELECT Date AS date, Amount AS debit, NULL AS credit, 'Salary' AS type
+      `SELECT AddedDate AS date, Amount AS debit, NULL AS credit, 'Salary' AS type
        FROM Salary
-       WHERE Date BETWEEN ? AND ?`,
+       WHERE AddedDate BETWEEN ? AND ?`,
       [fromDate, toDate]
     );
 

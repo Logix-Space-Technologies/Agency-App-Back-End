@@ -169,6 +169,43 @@ exports.cashReport = async (req, res) => {
       [startDateTime, endDateTime]
     );
 
+    // Money paid OUT in the same window: salary and expense vouchers (the same
+    // sources the Cash Flow page uses for those two). Supplier payments are
+    // deliberately not part of this net.
+    const dayFrom = fromDate;
+    const dayTo = toDate || fromDate;
+
+    const [salaryRows] = await pool.query(
+      `SELECT DATE_FORMAT(s.AddedDate, '%Y-%m-%d') AS date, s.Amount AS amount,
+              CONCAT('Salary - ', COALESCE(u.name, 'Staff')) AS description
+       FROM Salary s
+       LEFT JOIN users u ON u.user_id = s.UserId
+       WHERE s.AddedDate BETWEEN ? AND ?`,
+      [dayFrom, dayTo]
+    );
+
+    const [voucherRows] = await pool.query(
+      `SELECT DATE_FORMAT(v.expense_date, '%Y-%m-%d') AS date, v.amount AS amount,
+              CONCAT('Expense - ', COALESCE(c.expense_category_name, 'Voucher'),
+                     IF(v.description IS NULL OR v.description = '', '', CONCAT(' (', v.description, ')'))) AS description
+       FROM misc_expense_vouchers v
+       LEFT JOIN expense_categories c ON c.expense_category_id = v.expense_category_id
+       WHERE v.isActive = 1 AND v.expense_date BETWEEN ? AND ?`,
+      [dayFrom, dayTo]
+    );
+
+    const sumOf = (rows) => rows.reduce((t, r) => t + (Number(r.amount) || 0), 0);
+    const tag = (rows, type) => rows.map((r) => ({ ...r, type, amount: Number(r.amount) || 0 }));
+    const payouts = {
+      totalSalary: sumOf(salaryRows),
+      totalExpenses: sumOf(voucherRows),
+      items: [
+        ...tag(salaryRows, "Salary"),
+        ...tag(voucherRows, "Expense"),
+      ].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    };
+    payouts.total = payouts.totalSalary + payouts.totalExpenses;
+
     const report = {
       fromCreditHistory: {
         totalUPI,
@@ -176,6 +213,8 @@ exports.cashReport = async (req, res) => {
         totalCard,
       },
       totalCashReceived: totalUPI + totalCash + totalCard,
+      payouts,
+      netCash: totalUPI + totalCash + totalCard - payouts.total,
       transactions,
     };
 
