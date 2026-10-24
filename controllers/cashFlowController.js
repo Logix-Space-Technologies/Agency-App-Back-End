@@ -288,7 +288,10 @@ summary.netProfit = summary.totalCredit - summary.totalDebit;
         currentPage: Number(page),
         limit: Number(limit)
       },
-        summary
+        summary,
+      // Every row of the period (not just this page), trimmed to what the
+      // Day / Month / Year wise summary needs.
+      periodRows: allRecords.map((r) => ({ date: r.date, type: r.type, credit: r.credit, debit: r.debit }))
     });
 
   } catch (error) {
