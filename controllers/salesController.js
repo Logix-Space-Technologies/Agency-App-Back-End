@@ -169,9 +169,9 @@ exports.cashReport = async (req, res) => {
       [startDateTime, endDateTime]
     );
 
-    // Money paid OUT in the same window: salary and expense vouchers (the same
-    // sources the Cash Flow page uses for those two). Supplier payments are
-    // deliberately not part of this net.
+    // Money paid OUT in the same window: salary, expense vouchers and supplier
+    // payments (the same sources the Cash Flow page uses). Purchase bills are
+    // not counted; stock bought on credit only costs cash when it is settled.
     const dayFrom = fromDate;
     const dayTo = toDate || fromDate;
 
@@ -194,17 +194,31 @@ exports.cashReport = async (req, res) => {
       [dayFrom, dayTo]
     );
 
+    const [purchaseRows] = await pool.query(
+      `SELECT DATE_FORMAT(ps.transaction_date, '%Y-%m-%d %H:%i:%s') AS date, ps.total_amount AS amount,
+              CONCAT('Supplier payment - ', COALESCE(sp.supplier_name, 'Supplier'),
+                     IF(ps.remarks IS NULL OR ps.remarks = '', '', CONCAT(' (', ps.remarks, ')')),
+                     ' [Cash ', COALESCE(ps.cash_amount, 0), ', UPI ', COALESCE(ps.upi_amount, 0),
+                     ', Card ', COALESCE(ps.card_amount, 0), ', Cheque ', COALESCE(ps.cheque_amount, 0), ']') AS description
+       FROM purchase_settlement ps
+       LEFT JOIN suppliers sp ON sp.supplier_id = ps.supplier_id
+       WHERE ps.isActive = 1 AND DATE(ps.transaction_date) BETWEEN ? AND ?`,
+      [dayFrom, dayTo]
+    );
+
     const sumOf = (rows) => rows.reduce((t, r) => t + (Number(r.amount) || 0), 0);
     const tag = (rows, type) => rows.map((r) => ({ ...r, type, amount: Number(r.amount) || 0 }));
     const payouts = {
       totalSalary: sumOf(salaryRows),
       totalExpenses: sumOf(voucherRows),
+      totalPurchase: sumOf(purchaseRows),
       items: [
         ...tag(salaryRows, "Salary"),
         ...tag(voucherRows, "Expense"),
+        ...tag(purchaseRows, "Purchase"),
       ].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
     };
-    payouts.total = payouts.totalSalary + payouts.totalExpenses;
+    payouts.total = payouts.totalSalary + payouts.totalExpenses + payouts.totalPurchase;
 
     const report = {
       fromCreditHistory: {
