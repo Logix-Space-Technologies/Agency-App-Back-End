@@ -23,6 +23,9 @@ const expenseVoucherRoutes = require("./routes/expenseVoucherRoutes");
 const invoiceBulkRoutes = require("./routes/invoiceBulkRoutes");
 const dailyStockAuditRoutes = require("./routes/dailyStockAuditRoutes");
 const backdatedEntriesRoutes = require("./routes/backdatedEntriesRoutes");
+const appMobileRoutes = require("./routes/appMobileRoutes");
+const appAdminRoutes = require("./routes/appAdminRoutes");
+const { startAppLogCleanup } = require("./utils/appLog");
 
 
 
@@ -50,8 +53,13 @@ app.use('/api/expenseVouchers', expenseVoucherRoutes)
 app.use('/api/invoices', invoiceBulkRoutes)
 app.use('/api/stockAudit', dailyStockAuditRoutes)
 app.use('/api/backdated', backdatedEntriesRoutes)
+app.use('/api/app', appMobileRoutes)
+app.use('/api/appadmin', appAdminRoutes)
 
 
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port http://localhost:${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port http://localhost:${PORT}`);
+  startAppLogCleanup();
+});
