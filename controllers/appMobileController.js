@@ -218,6 +218,40 @@ exports.updateShop = async (req, res) => {
   }
 };
 
+
+// What this shop usually buys, most bought first, with the price and quantity of the last sale.
+// Rejected invoices are ignored. Ranked by how many invoices had the item, then total pieces, then recency.
+exports.getShopHistory = async (req, res) => {
+  try {
+    const shopId = Number(req.params.id);
+    const routeIds = await assignedRouteIds(req.staff.user_id);
+    const [shop] = await pool.query("SELECT route_id FROM app_shops WHERE shop_id = ? AND isActive = 1", [shopId]);
+    if (!shop[0] || !routeIds.includes(shop[0].route_id)) {
+      return res.status(403).json({ message: "This shop is not on your routes" });
+    }
+    const [rows] = await pool.query(
+      `SELECT agg.product_id, agg.orders, agg.total_qty, li.sold_price AS last_price, li.quantity AS last_qty,
+              DATE_FORMAT(inv.invoice_date, '%Y-%m-%d') AS last_date
+       FROM (
+         SELECT it.product_id, COUNT(DISTINCT i.app_invoice_id) AS orders, SUM(it.quantity) AS total_qty,
+                MAX(i.app_invoice_id) AS last_invoice_id
+         FROM app_invoice_items it
+         JOIN app_invoices i ON i.app_invoice_id = it.app_invoice_id
+         WHERE i.shop_id = ? AND i.status <> 'rejected'
+         GROUP BY it.product_id
+       ) agg
+       JOIN app_invoice_items li ON li.app_invoice_id = agg.last_invoice_id AND li.product_id = agg.product_id
+       JOIN app_invoices inv ON inv.app_invoice_id = agg.last_invoice_id
+       ORDER BY agg.orders DESC, agg.total_qty DESC, agg.last_invoice_id DESC`,
+      [shopId]
+    );
+    res.json({ history: rows });
+  } catch (error) {
+    console.error("App getShopHistory error:", error);
+    res.status(500).json({ message: "Could not load this shop's history" });
+  }
+};
+
 // ---------------------------------------------------------------- products
 
 // Latest marketing selling price per product, the same price the web app uses for marketing staff.
