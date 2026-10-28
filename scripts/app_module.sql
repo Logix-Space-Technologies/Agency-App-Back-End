@@ -108,18 +108,29 @@ CREATE TABLE IF NOT EXISTS `app_invoice_items` (
   KEY `idx_app_items_invoice` (`app_invoice_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Sidebar links for the new admin pages. Copies the parent, roles and menu id of the
--- existing "/backdated-entries" link, so the new links appear in the same menu group.
--- Check the result in the menu afterwards and move them if you want another group.
+-- Sidebar: a new "Mobile App" group holding the five admin pages. Safe to run again.
+-- 1. The "Mobile App" menu group (admin only), placed last.
+INSERT INTO menu_items (name, menu_id, short_name, parent_id, access_roles, isActive, sort_order)
+SELECT 'Mobile App', 'mobile_app', 'App', NULL, 'admin', 1, COALESCE(MAX(sort_order), 0) + 1
+FROM menu_items
+WHERE parent_id IS NULL
+HAVING NOT EXISTS (SELECT 1 FROM menu_items WHERE name = 'Mobile App' AND parent_id IS NULL);
+
+-- 2. Add any of the five links that do not exist yet, directly under it.
 INSERT INTO menu_items (name, href, menu_id, parent_id, access_roles, isActive, sort_order)
-SELECT n.name, n.href, m.menu_id, m.parent_id, m.access_roles, 1, m.sort_order + n.step
-FROM menu_items m
-JOIN (
+SELECT n.name, n.href, p.menu_id, p.id, 'admin', 1, n.step
+FROM (
   SELECT 'App Routes' AS name, '/app-routes' AS href, 1 AS step
   UNION ALL SELECT 'App Staff and Allocation', '/app-staff', 2
   UNION ALL SELECT 'App Shops and Map', '/app-shops', 3
   UNION ALL SELECT 'App Invoices Settlement', '/app-invoices', 4
   UNION ALL SELECT 'App Activity Log', '/app-activity-log', 5
 ) n
-WHERE m.href = '/backdated-entries'
-  AND NOT EXISTS (SELECT 1 FROM menu_items x WHERE x.href = n.href);
+JOIN menu_items p ON p.name = 'Mobile App' AND p.parent_id IS NULL
+WHERE NOT EXISTS (SELECT 1 FROM menu_items x WHERE x.href = n.href);
+
+-- 3. Links added earlier under another group move into Mobile App.
+UPDATE menu_items c
+JOIN menu_items p ON p.name = 'Mobile App' AND p.parent_id IS NULL
+SET c.parent_id = p.id, c.menu_id = p.menu_id, c.access_roles = 'admin'
+WHERE c.href IN ('/app-routes', '/app-staff', '/app-shops', '/app-invoices', '/app-activity-log');

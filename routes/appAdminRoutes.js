@@ -18,6 +18,8 @@ router.post("/logs/purge", c.purgeLogs);
 
 router.post("/invoices", c.listInvoices);
 router.post("/invoices/detail", c.invoiceDetail);
+router.post("/invoices/products", c.invoiceProducts);
+router.post("/invoices/update", c.updateInvoice);
 router.post("/invoices/settle", c.settleInvoices);
 router.post("/invoices/reject", c.rejectInvoice);
 
