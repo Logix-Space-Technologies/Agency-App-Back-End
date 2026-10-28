@@ -220,32 +220,88 @@ exports.updateShop = async (req, res) => {
 
 
 // What this shop usually buys, most bought first, with the price and quantity of the last sale.
-// Rejected invoices are ignored. Ranked by how many invoices had the item, then total pieces, then recency.
+// Counts invoices made in the app and earlier direct or wholesale sales to the same customer in the
+// office system (matched by the shop's customer link or its phone numbers). Rejected app invoices are
+// ignored. Ranked by number of orders, then total pieces, then recency.
+const lastTen = (v) => String(v || "").replace(/\D/g, "").slice(-10);
+
 exports.getShopHistory = async (req, res) => {
   try {
     const shopId = Number(req.params.id);
     const routeIds = await assignedRouteIds(req.staff.user_id);
-    const [shop] = await pool.query("SELECT route_id FROM app_shops WHERE shop_id = ? AND isActive = 1", [shopId]);
-    if (!shop[0] || !routeIds.includes(shop[0].route_id)) {
-      return res.status(403).json({ message: "This shop is not on your routes" });
-    }
-    const [rows] = await pool.query(
-      `SELECT agg.product_id, agg.orders, agg.total_qty, li.sold_price AS last_price, li.quantity AS last_qty,
-              DATE_FORMAT(inv.invoice_date, '%Y-%m-%d') AS last_date
-       FROM (
-         SELECT it.product_id, COUNT(DISTINCT i.app_invoice_id) AS orders, SUM(it.quantity) AS total_qty,
-                MAX(i.app_invoice_id) AS last_invoice_id
-         FROM app_invoice_items it
-         JOIN app_invoices i ON i.app_invoice_id = it.app_invoice_id
-         WHERE i.shop_id = ? AND i.status <> 'rejected'
-         GROUP BY it.product_id
-       ) agg
-       JOIN app_invoice_items li ON li.app_invoice_id = agg.last_invoice_id AND li.product_id = agg.product_id
-       JOIN app_invoices inv ON inv.app_invoice_id = agg.last_invoice_id
-       ORDER BY agg.orders DESC, agg.total_qty DESC, agg.last_invoice_id DESC`,
+    const [shopRows] = await pool.query(
+      "SELECT route_id, customer_id, phone, owner_phone FROM app_shops WHERE shop_id = ? AND isActive = 1",
       [shopId]
     );
-    res.json({ history: rows });
+    const shop = shopRows[0];
+    if (!shop || !routeIds.includes(shop.route_id)) {
+      return res.status(403).json({ message: "This shop is not on your routes" });
+    }
+
+    const [appRows] = await pool.query(
+      `SELECT it.product_id, CONCAT('a', i.app_invoice_id) AS ord, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS d,
+              i.app_invoice_id AS seq, it.quantity, it.sold_price AS price
+       FROM app_invoice_items it
+       JOIN app_invoices i ON i.app_invoice_id = it.app_invoice_id
+       WHERE i.shop_id = ? AND i.status <> 'rejected'`,
+      [shopId]
+    );
+
+    // The same shop may already be a customer in the office system.
+    const phones = [...new Set([lastTen(shop.phone), lastTen(shop.owner_phone)].filter((p) => p.length >= 8))];
+    const [custRows] = await pool.query(
+      `SELECT id FROM Customers
+       WHERE id = ? ${phones.length ? "OR RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(Mobile, ' ', ''), '-', ''), '+', ''), '.', ''), 10) IN (?)" : ""}`,
+      phones.length ? [shop.customer_id || 0, phones] : [shop.customer_id || 0]
+    );
+    const customerIds = custRows.map((c) => c.id);
+
+    let webRows = [];
+    if (customerIds.length) {
+      [webRows] = await pool.query(
+        `SELECT s.product_id, CONCAT('w', f.sale_tracking_Id) AS ord, DATE_FORMAT(f.DateofTransaction, '%Y-%m-%d') AS d,
+                f.id AS seq, s.quantity_sold AS quantity,
+                s.amount_received / NULLIF(s.quantity_sold - s.damaged_count, 0) AS price
+         FROM sales s
+         JOIN final_sale f ON f.sale_tracking_Id = s.sale_tracking_Id AND f.isActive = 1
+         WHERE f.UserId IN (?) AND s.isActive = 1 AND s.sale_type IN ('direct', 'wholesale')`,
+        [customerIds]
+      );
+      // Settled app invoices were posted to the office system as sales; they are already counted above.
+      const [posted] = await pool.query(
+        "SELECT final_sale_tracking_id FROM app_invoices WHERE shop_id = ? AND final_sale_tracking_id IS NOT NULL",
+        [shopId]
+      );
+      const postedIds = new Set(posted.map((p) => `w${p.final_sale_tracking_id}`));
+      webRows = webRows.filter((w) => !postedIds.has(w.ord));
+    }
+
+    const byProduct = new Map();
+    for (const e of [...appRows, ...webRows]) {
+      const price = Number(e.price);
+      if (!Number.isFinite(price) || price <= 0) continue;
+      const h = byProduct.get(e.product_id) || { product_id: e.product_id, orderSet: new Set(), total_qty: 0, last: null };
+      h.orderSet.add(e.ord);
+      h.total_qty += Number(e.quantity) || 0;
+      const newer = !h.last || e.d > h.last.d || (e.d === h.last.d && Number(e.seq) > Number(h.last.seq));
+      if (newer) h.last = { d: e.d, seq: e.seq, quantity: Number(e.quantity) || 0, price };
+      byProduct.set(e.product_id, h);
+    }
+
+    const history = [...byProduct.values()]
+      .map((h) => ({
+        product_id: h.product_id,
+        orders: h.orderSet.size,
+        total_qty: h.total_qty,
+        last_price: money(h.last.price),
+        last_qty: h.last.quantity,
+        last_date: h.last.d,
+        _recency: `${h.last.d}-${String(h.last.seq).padStart(10, "0")}`,
+      }))
+      .sort((x, y) => y.orders - x.orders || y.total_qty - x.total_qty || (x._recency < y._recency ? 1 : -1))
+      .map(({ _recency, ...rest }) => rest);
+
+    res.json({ history });
   } catch (error) {
     console.error("App getShopHistory error:", error);
     res.status(500).json({ message: "Could not load this shop's history" });
