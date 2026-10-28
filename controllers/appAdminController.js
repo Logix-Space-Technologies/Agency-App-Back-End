@@ -3,6 +3,7 @@ const pool = require("../config/db");
 const { purgeOldAppLogs, RETENTION_DAYS } = require("../utils/appLog");
 const { logUserActivity } = require("../utils/logUserActivity");
 const { deletedByAdmin, statusExpr } = require("../utils/appInvoiceStatus");
+const { duesByShop, postAllocation } = require("../utils/appDues");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 const PRICE_ALERT_PCT = Number(process.env.APP_PRICE_ALERT_PCT) || 10;
@@ -223,7 +224,8 @@ exports.listShops = async (req, res) => {
        ${from} WHERE ${where} AND s.latitude IS NOT NULL LIMIT 3000`,
       params
     );
-    res.json({ shops: rows, total, page, limit, pins });
+    const dues = await duesByShop(pool, rows.map((r) => r.shop_id));
+    res.json({ shops: rows.map((r) => ({ ...r, dues: (dues[r.shop_id] || { dues: 0 }).dues })), total, page, limit, pins });
   } catch (error) {
     console.error("listShops error:", error);
     res.status(500).json({ message: "Could not load shops" });
@@ -389,7 +391,24 @@ exports.invoiceDetail = async (req, res) => {
       const pct = it.system_price > 0 ? Number(((diff / it.system_price) * 100).toFixed(2)) : 0;
       return { ...it, diff, diff_pct: pct, high_diff: Math.abs(pct) >= PRICE_ALERT_PCT, stock_after: it.stock_now - it.quantity };
     });
-    res.json({ invoice: rows[0], items: lines, priceAlertPct: PRICE_ALERT_PCT });
+    const [later] = await pool.query(
+      `SELECT a.amount, a.cash_amount, a.upi_amount, a.card_amount, a.posted,
+              DATE_FORMAT(a.created_at, '%Y-%m-%d %H:%i:%s') AS created_at, u.name AS staff_name
+       FROM app_payment_allocations a JOIN app_payments p ON p.payment_id = a.payment_id
+       LEFT JOIN users u ON u.user_id = p.staff_id
+       WHERE a.invoice_id = ? ORDER BY a.allocation_id`,
+      [id]
+    );
+    const [withBill] = await pool.query(
+      `SELECT p.total_amount, p.cash_amount, p.upi_amount, p.card_amount
+       FROM app_payments p WHERE p.with_invoice_id = ?`,
+      [id]
+    );
+    const dues = await duesByShop(pool, [rows[0].shop_id]);
+    res.json({
+      invoice: rows[0], items: lines, priceAlertPct: PRICE_ALERT_PCT,
+      collections: later, duesReceivedWithBill: withBill, shopDues: (dues[rows[0].shop_id] || { dues: 0 }).dues,
+    });
   } catch (error) {
     console.error("invoiceDetail error:", error);
     res.status(500).json({ message: "Could not load the invoice" });
@@ -466,6 +485,13 @@ exports.updateInvoice = async (req, res) => {
     const paid = money(cash + upi + card);
     if (paid > total + 0.005) throw Object.assign(new Error("Payment is more than the invoice total"), { status: 400 });
     const credit = money(total - paid);
+    const [[{ collected }]] = await connection.query(
+      "SELECT COALESCE(SUM(amount), 0) AS collected FROM app_payment_allocations WHERE invoice_id = ?",
+      [app_invoice_id]
+    );
+    if (credit + 0.005 < collected) {
+      throw Object.assign(new Error(`Rs. ${collected} was collected later against this invoice. The unpaid part cannot be less than that.`), { status: 400 });
+    }
     const flag = maxPct >= PRICE_ALERT_PCT ? 1 : 0;
     maxPct = Math.round(maxPct * 100) / 100;
 
@@ -603,6 +629,13 @@ const settleOne = async (req, invoiceId, adminId) => {
               system_invoice_number = ? WHERE app_invoice_id = ?`,
       [adminId || null, now, tracking, invoiceNumber, invoiceId]
     );
+    // Money collected against this invoice before it was settled goes into the books now.
+    const [waiting] = await connection.query(
+      `SELECT *, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at_text
+       FROM app_payment_allocations WHERE invoice_id = ? AND posted = 0`,
+      [invoiceId]
+    );
+    for (const a of waiting) await postAllocation(connection, a, tracking);
     await connection.commit();
 
     await logUserActivity({
@@ -641,6 +674,13 @@ exports.rejectInvoice = async (req, res) => {
     const { app_invoice_id, reason, userId } = req.body;
     const why = text(reason, 500);
     if (!why) return res.status(400).json({ message: "Enter a reason for rejecting" });
+    const [[{ taken }]] = await pool.query(
+      "SELECT COALESCE(SUM(amount), 0) AS taken FROM app_payment_allocations WHERE invoice_id = ?",
+      [app_invoice_id]
+    );
+    if (taken > 0) {
+      return res.status(400).json({ message: `Rs. ${taken} was already collected against this invoice, so it cannot be rejected. Edit it instead.` });
+    }
     const [result] = await pool.query(
       `UPDATE app_invoices SET status = 'rejected', reject_reason = ?, settled_by = ?, settled_at = ?
        WHERE app_invoice_id = ? AND status = 'pending'`,
