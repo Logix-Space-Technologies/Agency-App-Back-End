@@ -3,6 +3,7 @@ const pool = require("../config/db");
 const { signToken, RENEW_AFTER_DAYS } = require("../middleware/appAuth");
 const { appLog } = require("../utils/appLog");
 const { deletedByAdmin, statusExpr } = require("../utils/appInvoiceStatus");
+const { outstandingInvoices, duesByShop, collectDues } = require("../utils/appDues");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 // A sold price this far from the current marketing price is flagged for the admin.
@@ -357,13 +358,28 @@ const loadInvoice = async (invoiceId, staffId) => {
      WHERE it.app_invoice_id = ? ORDER BY it.item_id`,
     [invoiceId]
   );
-  return { ...rows[0], items };
+  // Money taken for older bills while making this one, and what is still owed on this invoice.
+  const [[{ received }]] = await pool.query(
+    "SELECT COALESCE(SUM(total_amount), 0) AS received FROM app_payments WHERE with_invoice_id = ?",
+    [invoiceId]
+  );
+  const [[{ later }]] = await pool.query(
+    "SELECT COALESCE(SUM(amount), 0) AS later FROM app_payment_allocations WHERE invoice_id = ?",
+    [invoiceId]
+  );
+  const shopDues = (await duesByShop(pool, [rows[0].shop_id]))[rows[0].shop_id];
+  return {
+    ...rows[0], items,
+    dues_received: Number(received),
+    collected_later: Number(later),
+    shop_dues: shopDues ? shopDues.dues : 0,
+  };
 };
 
 exports.createInvoice = async (req, res) => {
   const staffId = req.staff.user_id;
   try {
-    const { client_uuid, shop_id, items, payment = {}, notes, latitude, longitude } = req.body;
+    const { client_uuid, shop_id, items, payment = {}, dues_payment = {}, notes, latitude, longitude } = req.body;
 
     if (client_uuid) {
       const [dup] = await pool.query(
@@ -466,6 +482,10 @@ exports.createInvoice = async (req, res) => {
               [inserted.insertId, l.productId, l.priceId, l.quantity, l.systemPrice, l.soldPrice, l.lineTotal]
             );
           }
+          // Extra money from the shop for its older bills, taken with this one.
+          await collectDues(connection, {
+            shopId: shop.shop_id, staffId, payment: dues_payment, withInvoiceId: inserted.insertId, clientUuid: null,
+          });
           await connection.commit();
           invoiceId = inserted.insertId;
         } catch (error) {
@@ -494,6 +514,7 @@ exports.createInvoice = async (req, res) => {
     });
     res.status(201).json({ invoice });
   } catch (error) {
+    if (error.status === 400) return res.status(400).json({ message: error.message });
     console.error("App createInvoice error:", error);
     res.status(500).json({ message: "Could not create the invoice" });
   }
@@ -538,6 +559,101 @@ exports.getInvoice = async (req, res) => {
   } catch (error) {
     console.error("App getInvoice error:", error);
     res.status(500).json({ message: "Could not load the invoice" });
+  }
+};
+
+
+// ---------------------------------------------------------------- dues
+
+const shopOnMyRoutes = async (staffId, shopId) => {
+  const routeIds = await assignedRouteIds(staffId);
+  const [rows] = await pool.query(
+    `SELECT s.shop_id, s.shop_name, s.phone, r.route_name FROM app_shops s JOIN app_routes r ON r.route_id = s.route_id
+     WHERE s.shop_id = ? AND s.isActive = 1 AND s.route_id IN (?)`,
+    [shopId, routeIds.length ? routeIds : [0]]
+  );
+  return rows[0] || null;
+};
+
+// Every shop on my routes that still owes money, biggest first.
+exports.getDues = async (req, res) => {
+  try {
+    const routeIds = await assignedRouteIds(req.staff.user_id);
+    if (!routeIds.length) return res.json({ total: 0, shops: [] });
+    const [shops] = await pool.query(
+      `SELECT s.shop_id, s.shop_name, s.phone, r.route_name FROM app_shops s JOIN app_routes r ON r.route_id = s.route_id
+       WHERE s.isActive = 1 AND s.route_id IN (?)`,
+      [routeIds]
+    );
+    const dues = await duesByShop(pool, shops.map((s) => s.shop_id));
+    const list = shops
+      .filter((s) => dues[s.shop_id])
+      .map((s) => ({ ...s, dues: dues[s.shop_id].dues, invoices: dues[s.shop_id].invoices, oldest: dues[s.shop_id].oldest }))
+      .sort((a, b) => b.dues - a.dues);
+    res.json({ total: money(list.reduce((t, s) => t + s.dues, 0)), shops: list });
+  } catch (error) {
+    console.error("App getDues error:", error);
+    res.status(500).json({ message: "Could not load dues" });
+  }
+};
+
+// One shop's dues in detail: unpaid invoices, oldest first, and the payments received so far.
+exports.getShopDues = async (req, res) => {
+  try {
+    const shop = await shopOnMyRoutes(req.staff.user_id, Number(req.params.id));
+    if (!shop) return res.status(403).json({ message: "This shop is not on your routes" });
+    const invoices = await outstandingInvoices(pool, shop.shop_id);
+    const [payments] = await pool.query(
+      `SELECT p.payment_id, DATE_FORMAT(p.created_at, '%Y-%m-%d %H:%i:%s') AS created_at, p.total_amount,
+              p.cash_amount, p.upi_amount, p.card_amount, u.name AS staff_name, wi.invoice_no AS with_invoice_no
+       FROM app_payments p
+       LEFT JOIN users u ON u.user_id = p.staff_id
+       LEFT JOIN app_invoices wi ON wi.app_invoice_id = p.with_invoice_id
+       WHERE p.shop_id = ? ORDER BY p.payment_id DESC LIMIT 30`,
+      [shop.shop_id]
+    );
+    res.json({
+      shop, total: money(invoices.reduce((t, i) => t + i.outstanding, 0)), invoices, payments,
+    });
+  } catch (error) {
+    console.error("App getShopDues error:", error);
+    res.status(500).json({ message: "Could not load this shop's dues" });
+  }
+};
+
+// Take a payment from a shop without a new bill.
+exports.collectShopDues = async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const shop = await shopOnMyRoutes(req.staff.user_id, Number(req.params.id));
+    if (!shop) return res.status(403).json({ message: "This shop is not on your routes" });
+    const { client_uuid, payment = {} } = req.body;
+
+    if (client_uuid) {
+      const [dup] = await connection.query("SELECT payment_id FROM app_payments WHERE client_uuid = ?", [client_uuid]);
+      if (dup[0]) return res.json({ message: "Already recorded", duplicate: true });
+    }
+    await connection.beginTransaction();
+    const result = await collectDues(connection, {
+      shopId: shop.shop_id, staffId: req.staff.user_id, payment, withInvoiceId: null, clientUuid: client_uuid || null,
+    });
+    if (result.total <= 0) {
+      await connection.rollback();
+      return res.status(400).json({ message: "Enter the amount received" });
+    }
+    await connection.commit();
+    await appLog({
+      req, staffId: req.staff.user_id, action: "dues_collected",
+      details: `Collected Rs. ${result.total} from ${shop.shop_name} against old dues`,
+    });
+    res.json({ message: "Payment recorded", total: result.total, allocations: result.allocations });
+  } catch (error) {
+    await connection.rollback();
+    if (error.status === 400) return res.status(400).json({ message: error.message });
+    console.error("App collectShopDues error:", error);
+    res.status(500).json({ message: "Could not record the payment" });
+  } finally {
+    connection.release();
   }
 };
 
@@ -592,7 +708,13 @@ exports.getReport = async (req, res) => {
       [staffId, from, to]
     );
 
-    res.json({ period, from, to, totals, breakdown, products });
+    const [[dues]] = await pool.query(
+      `SELECT COALESCE(SUM(total_amount), 0) AS total, COALESCE(SUM(cash_amount), 0) AS cash,
+              COALESCE(SUM(upi_amount), 0) AS upi, COALESCE(SUM(card_amount), 0) AS card
+       FROM app_payments WHERE staff_id = ? AND DATE(created_at) BETWEEN ? AND ?`,
+      [staffId, from, to]
+    );
+    res.json({ period, from, to, totals: { ...totals, dues_collected: dues.total, dues_cash: dues.cash, dues_upi: dues.upi, dues_card: dues.card }, breakdown, products });
   } catch (error) {
     console.error("App getReport error:", error);
     res.status(500).json({ message: "Could not load the report" });

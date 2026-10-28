@@ -134,3 +134,37 @@ UPDATE menu_items c
 JOIN menu_items p ON p.name = 'Mobile App' AND p.parent_id IS NULL
 SET c.parent_id = p.id, c.menu_id = p.menu_id, c.access_roles = 'admin'
 WHERE c.href IN ('/app-routes', '/app-staff', '/app-shops', '/app-invoices', '/app-activity-log');
+
+-- Money a shop pays later (on the next visit or with the next bill) against its unpaid invoices.
+CREATE TABLE IF NOT EXISTS `app_payments` (
+  `payment_id` int(11) NOT NULL AUTO_INCREMENT,
+  `shop_id` int(11) NOT NULL,
+  `staff_id` int(11) NOT NULL,
+  `client_uuid` varchar(64) DEFAULT NULL,
+  `with_invoice_id` int(11) DEFAULT NULL,
+  `cash_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `upi_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `card_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `total_amount` decimal(12,2) NOT NULL,
+  `created_at` datetime NOT NULL,
+  PRIMARY KEY (`payment_id`),
+  UNIQUE KEY `uq_app_payment_uuid` (`client_uuid`),
+  KEY `idx_app_payments_shop` (`shop_id`),
+  KEY `idx_app_payments_staff_date` (`staff_id`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- How one payment was split across the unpaid invoices, oldest first.
+CREATE TABLE IF NOT EXISTS `app_payment_allocations` (
+  `allocation_id` int(11) NOT NULL AUTO_INCREMENT,
+  `payment_id` int(11) NOT NULL,
+  `invoice_id` int(11) NOT NULL,
+  `amount` decimal(12,2) NOT NULL,
+  `cash_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `upi_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `card_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `posted` tinyint(1) NOT NULL DEFAULT 0,
+  `created_at` datetime NOT NULL,
+  PRIMARY KEY (`allocation_id`),
+  KEY `idx_alloc_invoice` (`invoice_id`),
+  KEY `idx_alloc_payment` (`payment_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
