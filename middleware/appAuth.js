@@ -2,6 +2,9 @@ const jwt = require("jsonwebtoken");
 const pool = require("../config/db");
 
 const TOKEN_DAYS = 30;
+// A token older than this is swapped for a fresh one the next time the app opens, so a salesperson
+// who keeps using the app stays logged in and only an unused phone expires after 30 days.
+const RENEW_AFTER_DAYS = 3;
 
 const getSecret = () => {
   const secret = process.env.APP_JWT_SECRET || process.env.JWT_SECRET;
@@ -40,6 +43,7 @@ const requireStaff = async (req, res, next) => {
       return res.status(401).json({ message: "This login is blocked. Contact the office." });
     }
     req.staff = user;
+    req.tokenIssuedAt = payload.iat;
     next();
   } catch (error) {
     console.error("appAuth error:", error);
@@ -47,4 +51,4 @@ const requireStaff = async (req, res, next) => {
   }
 };
 
-module.exports = { signToken, requireStaff };
+module.exports = { signToken, requireStaff, RENEW_AFTER_DAYS };

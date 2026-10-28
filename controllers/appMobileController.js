@@ -1,6 +1,6 @@
 const bcrypt = require("bcrypt");
 const pool = require("../config/db");
-const { signToken } = require("../middleware/appAuth");
+const { signToken, RENEW_AFTER_DAYS } = require("../middleware/appAuth");
 const { appLog } = require("../utils/appLog");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
@@ -26,14 +26,18 @@ exports.login = async (req, res) => {
     }
 
     const [rows] = await pool.query(
-      `SELECT user_id, name, role, phone, email, password_hash
+      `SELECT user_id, name, role, phone, email, password_hash, isBlocked
        FROM users
-       WHERE (email = ? OR phone = ?) AND isActive = 1 AND isBlocked = 0 AND role IN (?)`,
+       WHERE (email = ? OR phone = ?) AND isActive = 1 AND role IN (?)`,
       [username, username, APP_ROLES]
     );
     const user = rows[0];
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       return res.status(401).json({ message: "Wrong username or password" });
+    }
+    // Checked after the password so a stranger cannot learn which logins exist or are blocked.
+    if (user.isBlocked === 1) {
+      return res.status(403).json({ message: "This login is blocked. Contact the office." });
     }
 
     await appLog({ req, staffId: user.user_id, action: "login", details: `${user.name} logged in` });
@@ -48,8 +52,11 @@ exports.login = async (req, res) => {
 };
 
 exports.me = async (req, res) => {
-  const { user_id, name, phone, email } = req.staff;
-  res.json({ user: { id: user_id, name, phone, email }, priceAlertPct: PRICE_ALERT_PCT });
+  const { user_id, name, phone, email, role } = req.staff;
+  const body = { user: { id: user_id, name, phone, email }, priceAlertPct: PRICE_ALERT_PCT };
+  const ageDays = (Date.now() / 1000 - (req.tokenIssuedAt || 0)) / 86400;
+  if (ageDays > RENEW_AFTER_DAYS) body.token = signToken({ user_id, role });
+  res.json(body);
 };
 
 exports.logout = async (req, res) => {
