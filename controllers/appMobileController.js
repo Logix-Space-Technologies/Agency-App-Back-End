@@ -2,6 +2,7 @@ const bcrypt = require("bcrypt");
 const pool = require("../config/db");
 const { signToken, RENEW_AFTER_DAYS } = require("../middleware/appAuth");
 const { appLog } = require("../utils/appLog");
+const { deletedByAdmin, statusExpr } = require("../utils/appInvoiceStatus");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 // A sold price this far from the current marketing price is flagged for the admin.
@@ -243,7 +244,7 @@ exports.getShopHistory = async (req, res) => {
               i.app_invoice_id AS seq, it.quantity, it.sold_price AS price
        FROM app_invoice_items it
        JOIN app_invoices i ON i.app_invoice_id = it.app_invoice_id
-       WHERE i.shop_id = ? AND i.status <> 'rejected'`,
+       WHERE i.shop_id = ? AND i.status <> 'rejected' AND NOT ${deletedByAdmin('i')}`,
       [shopId]
     );
 
@@ -263,7 +264,7 @@ exports.getShopHistory = async (req, res) => {
                 f.id AS seq, s.quantity_sold AS quantity,
                 s.amount_received / NULLIF(s.quantity_sold - s.damaged_count, 0) AS price
          FROM sales s
-         JOIN final_sale f ON f.sale_tracking_Id = s.sale_tracking_Id AND f.isActive = 1
+         JOIN final_sale f ON f.sale_tracking_Id = s.sale_tracking_Id COLLATE utf8mb4_general_ci AND f.isActive = 1
          WHERE f.UserId IN (?) AND s.isActive = 1 AND s.sale_type IN ('direct', 'wholesale')`,
         [customerIds]
       );
@@ -339,7 +340,7 @@ const loadInvoice = async (invoiceId, staffId) => {
     `SELECT i.app_invoice_id, i.invoice_no, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date,
             DATE_FORMAT(i.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
             i.total_amount, i.cash_amount, i.upi_amount, i.card_amount, i.credit_amount,
-            i.price_diff_amount, i.max_price_diff_pct, i.price_flag, i.status, i.notes, i.reject_reason,
+            i.price_diff_amount, i.max_price_diff_pct, i.price_flag, ${statusExpr('i')} AS status, i.notes, i.reject_reason,
             i.shop_id, s.shop_name, s.address, s.phone, s.owner_name, s.gst_number,
             i.route_id, r.route_name, i.staff_id, u.name AS staff_name
      FROM app_invoices i
@@ -504,16 +505,19 @@ exports.getInvoices = async (req, res) => {
     const params = [req.staff.user_id];
     if (isDate(req.query.from)) { conditions.push("i.invoice_date >= ?"); params.push(req.query.from); }
     if (isDate(req.query.to)) { conditions.push("i.invoice_date <= ?"); params.push(req.query.to); }
-    if (["pending", "settled", "rejected"].includes(req.query.status)) {
+    if (req.query.status === "deleted") {
+      conditions.push(deletedByAdmin("i"));
+    } else if (["pending", "settled", "rejected"].includes(req.query.status)) {
       conditions.push("i.status = ?");
       params.push(req.query.status);
+      if (req.query.status === "settled") conditions.push(`NOT ${deletedByAdmin("i")}`);
     }
     if (req.query.shop_id) { conditions.push("i.shop_id = ?"); params.push(Number(req.query.shop_id)); }
 
     const [rows] = await pool.query(
       `SELECT i.app_invoice_id, i.invoice_no, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date,
               DATE_FORMAT(i.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
-              i.total_amount, i.credit_amount, i.status, i.price_flag, s.shop_name
+              i.total_amount, i.credit_amount, ${statusExpr('i')} AS status, i.price_flag, s.shop_name
        FROM app_invoices i JOIN app_shops s ON s.shop_id = i.shop_id
        WHERE ${conditions.join(" AND ")}
        ORDER BY i.app_invoice_id DESC LIMIT 300`,
@@ -565,15 +569,15 @@ exports.getReport = async (req, res) => {
               COALESCE(SUM(cash_amount), 0) AS cash, COALESCE(SUM(upi_amount), 0) AS upi,
               COALESCE(SUM(card_amount), 0) AS card, COALESCE(SUM(credit_amount), 0) AS credit,
               COALESCE(SUM(status = 'pending'), 0) AS pending, COALESCE(SUM(status = 'settled'), 0) AS settled
-       FROM app_invoices
-       WHERE staff_id = ? AND status <> 'rejected' AND invoice_date BETWEEN ? AND ?`,
+       FROM app_invoices i
+       WHERE i.staff_id = ? AND i.status <> 'rejected' AND NOT ${deletedByAdmin('i')} AND i.invoice_date BETWEEN ? AND ?`,
       [staffId, from, to]
     );
 
     const [breakdown] = await pool.query(
       `SELECT DATE_FORMAT(invoice_date, ?) AS label, COUNT(*) AS invoices, SUM(total_amount) AS total
-       FROM app_invoices
-       WHERE staff_id = ? AND status <> 'rejected' AND invoice_date BETWEEN ? AND ?
+       FROM app_invoices i
+       WHERE i.staff_id = ? AND i.status <> 'rejected' AND NOT ${deletedByAdmin('i')} AND i.invoice_date BETWEEN ? AND ?
        GROUP BY label ORDER BY label`,
       [group, staffId, from, to]
     );
@@ -583,7 +587,7 @@ exports.getReport = async (req, res) => {
        FROM app_invoice_items it
        JOIN app_invoices i ON i.app_invoice_id = it.app_invoice_id
        JOIN products p ON p.product_id = it.product_id
-       WHERE i.staff_id = ? AND i.status <> 'rejected' AND i.invoice_date BETWEEN ? AND ?
+       WHERE i.staff_id = ? AND i.status <> 'rejected' AND NOT ${deletedByAdmin('i')} AND i.invoice_date BETWEEN ? AND ?
        GROUP BY p.product_id, p.product_name ORDER BY total DESC LIMIT 50`,
       [staffId, from, to]
     );
