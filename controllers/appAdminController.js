@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const pool = require("../config/db");
 const { purgeOldAppLogs, RETENTION_DAYS } = require("../utils/appLog");
 const { logUserActivity } = require("../utils/logUserActivity");
+const { deletedByAdmin, statusExpr } = require("../utils/appInvoiceStatus");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 const PRICE_ALERT_PCT = Number(process.env.APP_PRICE_ALERT_PCT) || 10;
@@ -319,7 +320,13 @@ exports.listInvoices = async (req, res) => {
     if (isDate(from)) { conditions.push("i.invoice_date >= ?"); params.push(from); }
     if (isDate(to)) { conditions.push("i.invoice_date <= ?"); params.push(to); }
     if (staff_id) { conditions.push("i.staff_id = ?"); params.push(Number(staff_id)); }
-    if (["pending", "settled", "rejected"].includes(status)) { conditions.push("i.status = ?"); params.push(status); }
+    if (status === "deleted") {
+      conditions.push(deletedByAdmin("i"));
+    } else if (["pending", "settled", "rejected"].includes(status)) {
+      conditions.push("i.status = ?");
+      params.push(status);
+      if (status === "settled") conditions.push(`NOT ${deletedByAdmin("i")}`);
+    }
     if (flaggedOnly) conditions.push("i.price_flag = 1");
     if (q) { conditions.push("(i.invoice_no LIKE ? OR s.shop_name LIKE ?)"); params.push(`%${q}%`, `%${q}%`); }
     const where = conditions.join(" AND ");
@@ -340,7 +347,7 @@ exports.listInvoices = async (req, res) => {
       `SELECT i.app_invoice_id, i.invoice_no, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date,
               DATE_FORMAT(i.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
               i.total_amount, i.cash_amount, i.upi_amount, i.card_amount, i.credit_amount,
-              i.price_diff_amount, i.max_price_diff_pct, i.price_flag, i.status, i.system_invoice_number,
+              i.price_diff_amount, i.max_price_diff_pct, i.price_flag, ${statusExpr('i')} AS status, i.system_invoice_number,
               i.staff_id, u.name AS staff_name, s.shop_name, r.route_name
        ${from_} WHERE ${where} ORDER BY i.app_invoice_id DESC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
@@ -356,7 +363,7 @@ exports.invoiceDetail = async (req, res) => {
   try {
     const id = Number(req.body.app_invoice_id);
     const [rows] = await pool.query(
-      `SELECT i.*, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date,
+      `SELECT i.*, ${statusExpr('i')} AS status, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date,
               DATE_FORMAT(i.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
               DATE_FORMAT(i.settled_at, '%Y-%m-%d %H:%i:%s') AS settled_at,
               u.name AS staff_name, s.shop_name, s.address, s.phone, s.owner_name, s.owner_phone, s.gst_number,
