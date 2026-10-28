@@ -12,6 +12,7 @@ router.get("/routes", c.getRoutes);
 router.get("/shops", c.getShops);
 router.post("/shops", c.addShop);
 router.put("/shops/:id", c.updateShop);
+router.get("/shops/:id/history", c.getShopHistory);
 router.get("/products", c.getProducts);
 router.post("/invoices", c.createInvoice);
 router.get("/invoices", c.getInvoices);
