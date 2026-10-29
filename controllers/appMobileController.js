@@ -410,6 +410,8 @@ exports.createInvoice = async (req, res) => {
     let total = 0;
     let diffAmount = 0;
     let maxPct = 0;
+    let maxAbovePct = 0;
+    let anyBelow = false;
     const lines = [];
     const seen = new Set();
     for (const raw of items) {
@@ -433,6 +435,10 @@ exports.createInvoice = async (req, res) => {
       diffAmount = money(diffAmount + (soldPrice - systemPrice) * quantity);
       if (systemPrice > 0) {
         maxPct = Math.max(maxPct, Math.abs(soldPrice - systemPrice) / systemPrice * 100);
+        if (soldPrice > systemPrice) maxAbovePct = Math.max(maxAbovePct, (soldPrice - systemPrice) / systemPrice * 100);
+      }
+      if (soldPrice < systemPrice - 0.004) {
+        anyBelow = true;
       }
       lines.push({ productId, quantity, systemPrice, soldPrice, lineTotal, priceId: product.price_id });
     }
@@ -444,7 +450,8 @@ exports.createInvoice = async (req, res) => {
     const paid = money(cash + upi + card);
     if (paid > total + 0.005) return res.status(400).json({ message: "Payment is more than the invoice total" });
     const credit = money(total - paid);
-    const flag = maxPct >= PRICE_ALERT_PCT ? 1 : 0;
+    // Below the latest price is always flagged; above it only when the gap reaches the alert percentage.
+    const flag = anyBelow || maxAbovePct >= PRICE_ALERT_PCT ? 1 : 0;
     maxPct = Math.round(maxPct * 100) / 100;
 
     const lat = num(latitude);
@@ -509,7 +516,7 @@ exports.createInvoice = async (req, res) => {
     const invoice = await loadInvoice(invoiceId, staffId);
     await appLog({
       req, staffId, action: "invoice_created",
-      details: `Invoice ${invoice.invoice_no} for ${shop.shop_name}, total ${total}${flag ? ", price differs from latest" : ""}`,
+      details: `Invoice ${invoice.invoice_no} for ${shop.shop_name}, total ${total}${anyBelow ? ", sold BELOW the latest price" : flag ? ", sold above the latest price" : ""}`,
       latitude: geo[0], longitude: geo[1],
     });
     res.status(201).json({ invoice });

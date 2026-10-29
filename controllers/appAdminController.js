@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const pool = require("../config/db");
 const { purgeOldAppLogs, RETENTION_DAYS } = require("../utils/appLog");
 const { logUserActivity } = require("../utils/logUserActivity");
-const { deletedByAdmin, statusExpr } = require("../utils/appInvoiceStatus");
+const { deletedByAdmin, statusExpr, belowPriceSql, abovePriceSql } = require("../utils/appInvoiceStatus");
 const { duesByShop, postAllocation } = require("../utils/appDues");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
@@ -315,7 +315,7 @@ exports.purgeLogs = async (req, res) => {
 
 exports.listInvoices = async (req, res) => {
   try {
-    const { from, to, staff_id, status, flaggedOnly } = req.body;
+    const { from, to, staff_id, status, flaggedOnly, priceFilter } = req.body;
     const q = text(req.body.q, 100);
     const conditions = ["1 = 1"];
     const params = [];
@@ -329,7 +329,12 @@ exports.listInvoices = async (req, res) => {
       params.push(status);
       if (status === "settled") conditions.push(`NOT ${deletedByAdmin("i")}`);
     }
-    if (flaggedOnly) conditions.push("i.price_flag = 1");
+    const baseWhere = conditions.join(" AND "); // everything except the price filter, for the price counts
+    const below = belowPriceSql("i");
+    const above = abovePriceSql("i", PRICE_ALERT_PCT);
+    if (priceFilter === "below") conditions.push(below);
+    else if (priceFilter === "above") conditions.push(above);
+    else if (flaggedOnly || priceFilter === "any") conditions.push(`(${below} OR ${above})`);
     if (q) { conditions.push("(i.invoice_no LIKE ? OR s.shop_name LIKE ?)"); params.push(`%${q}%`, `%${q}%`); }
     const where = conditions.join(" AND ");
     const from_ = `FROM app_invoices i
@@ -340,16 +345,25 @@ exports.listInvoices = async (req, res) => {
     const { limit, page, offset } = pageArgs(req.body);
     const [[summary]] = await pool.query(
       `SELECT COUNT(*) AS total, COALESCE(SUM(i.total_amount), 0) AS amount,
-              COALESCE(SUM(i.status = 'pending'), 0) AS pending, COALESCE(SUM(i.price_flag = 1), 0) AS flagged,
+              COALESCE(SUM(i.status = 'pending'), 0) AS pending, COALESCE(SUM(${below} OR ${above}), 0) AS flagged,
               COALESCE(SUM(i.credit_amount), 0) AS credit
        ${from_} WHERE ${where}`,
       params
     );
+    // The below/above counts follow the other filters but ignore the price filter itself.
+    const [[priceCounts]] = await pool.query(
+      `SELECT COALESCE(SUM(${below}), 0) AS below_price, COALESCE(SUM(${above}), 0) AS above_price
+       ${from_} WHERE ${baseWhere}`,
+      params
+    );
+    summary.below_price = priceCounts.below_price;
+    summary.above_price = priceCounts.above_price;
     const [rows] = await pool.query(
       `SELECT i.app_invoice_id, i.invoice_no, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date,
               DATE_FORMAT(i.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
               i.total_amount, i.cash_amount, i.upi_amount, i.card_amount, i.credit_amount,
-              i.price_diff_amount, i.max_price_diff_pct, i.price_flag, ${statusExpr('i')} AS status, i.system_invoice_number,
+              i.price_diff_amount, i.max_price_diff_pct, (${below} OR ${above}) AS price_flag, ${below} AS price_below, ${above} AS price_above,
+              ${statusExpr('i')} AS status, i.system_invoice_number,
               i.staff_id, u.name AS staff_name, s.shop_name, r.route_name
        ${from_} WHERE ${where} ORDER BY i.app_invoice_id DESC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
@@ -389,7 +403,8 @@ exports.invoiceDetail = async (req, res) => {
     const lines = items.map((it) => {
       const diff = Number((it.sold_price - it.system_price).toFixed(2));
       const pct = it.system_price > 0 ? Number(((diff / it.system_price) * 100).toFixed(2)) : 0;
-      return { ...it, diff, diff_pct: pct, high_diff: Math.abs(pct) >= PRICE_ALERT_PCT, stock_after: it.stock_now - it.quantity };
+      const isBelow = diff < -0.004;
+      return { ...it, diff, diff_pct: pct, below: isBelow, high_diff: isBelow || pct >= PRICE_ALERT_PCT, stock_after: it.stock_now - it.quantity };
     });
     const [later] = await pool.query(
       `SELECT a.amount, a.cash_amount, a.upi_amount, a.card_amount, a.posted,
@@ -454,7 +469,7 @@ exports.updateInvoice = async (req, res) => {
     const [latest] = await connection.query(LATEST_PRICE_SQL, [getISTDate()]);
     const latestByProduct = new Map(latest.map((p) => [p.product_id, p]));
 
-    let total = 0, diffAmount = 0, maxPct = 0;
+    let total = 0, diffAmount = 0, maxPct = 0, maxAbovePct = 0, anyBelow = false;
     const lines = [];
     const seen = new Set();
     for (const raw of items) {
@@ -476,7 +491,11 @@ exports.updateInvoice = async (req, res) => {
       const lineTotal = money(quantity * soldPrice);
       total = money(total + lineTotal);
       diffAmount = money(diffAmount + (soldPrice - systemPrice) * quantity);
-      if (systemPrice > 0) maxPct = Math.max(maxPct, Math.abs(soldPrice - systemPrice) / systemPrice * 100);
+      if (systemPrice > 0) {
+        maxPct = Math.max(maxPct, Math.abs(soldPrice - systemPrice) / systemPrice * 100);
+        if (soldPrice > systemPrice) maxAbovePct = Math.max(maxAbovePct, (soldPrice - systemPrice) / systemPrice * 100);
+      }
+      if (soldPrice < systemPrice - 0.004) anyBelow = true;
       lines.push({ productId, name, quantity, systemPrice, soldPrice, lineTotal, priceId });
     }
 
@@ -492,7 +511,7 @@ exports.updateInvoice = async (req, res) => {
     if (credit + 0.005 < collected) {
       throw Object.assign(new Error(`Rs. ${collected} was collected later against this invoice. The unpaid part cannot be less than that.`), { status: 400 });
     }
-    const flag = maxPct >= PRICE_ALERT_PCT ? 1 : 0;
+    const flag = anyBelow || maxAbovePct >= PRICE_ALERT_PCT ? 1 : 0;
     maxPct = Math.round(maxPct * 100) / 100;
 
     await connection.query("DELETE FROM app_invoice_items WHERE app_invoice_id = ?", [app_invoice_id]);
