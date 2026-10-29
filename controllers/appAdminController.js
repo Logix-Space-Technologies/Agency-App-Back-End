@@ -4,6 +4,7 @@ const { purgeOldAppLogs, RETENTION_DAYS } = require("../utils/appLog");
 const { logUserActivity } = require("../utils/logUserActivity");
 const { deletedByAdmin, statusExpr, belowPriceSql, abovePriceSql } = require("../utils/appInvoiceStatus");
 const { duesByShop, postAllocation } = require("../utils/appDues");
+const { editPendingInvoice } = require("../utils/appInvoiceEdit");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 const PRICE_ALERT_PCT = Number(process.env.APP_PRICE_ALERT_PCT) || 10;
@@ -419,9 +420,15 @@ exports.invoiceDetail = async (req, res) => {
        FROM app_payments p WHERE p.with_invoice_id = ?`,
       [id]
     );
+    // Edits the salesperson made from the app are in the app activity log (kept 15 days).
+    const [staffEdits] = await pool.query(
+      `SELECT DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at, details
+       FROM app_activity_log WHERE action = 'invoice_edited' AND details LIKE ? ORDER BY log_id DESC LIMIT 5`,
+      [`Invoice ${rows[0].invoice_no} edited%`]
+    );
     const dues = await duesByShop(pool, [rows[0].shop_id]);
     res.json({
-      invoice: rows[0], items: lines, priceAlertPct: PRICE_ALERT_PCT,
+      invoice: rows[0], items: lines, priceAlertPct: PRICE_ALERT_PCT, staffEdits,
       collections: later, duesReceivedWithBill: withBill, shopDues: (dues[rows[0].shop_id] || { dues: 0 }).dues,
     });
   } catch (error) {
@@ -447,100 +454,19 @@ exports.invoiceProducts = async (req, res) => {
 exports.updateInvoice = async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    const { app_invoice_id, items, payment = {}, notes, userId } = req.body;
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: "An invoice needs at least one item" });
-    }
-
+    const { app_invoice_id, items, payment, notes, userId } = req.body;
     await connection.beginTransaction();
-    const [invRows] = await connection.query("SELECT * FROM app_invoices WHERE app_invoice_id = ? FOR UPDATE", [app_invoice_id]);
-    const inv = invRows[0];
-    if (!inv) { await connection.rollback(); return res.status(404).json({ message: "Invoice not found" }); }
-    if (inv.status !== "pending") {
-      await connection.rollback();
-      return res.status(400).json({ message: `This invoice is already ${inv.status} and cannot be edited` });
-    }
-
-    const [oldItems] = await connection.query(
-      `SELECT it.*, p.product_name FROM app_invoice_items it JOIN products p ON p.product_id = it.product_id
-       WHERE it.app_invoice_id = ?`, [app_invoice_id]);
-    const oldByProduct = new Map(oldItems.map((o) => [o.product_id, o]));
-
-    const [latest] = await connection.query(LATEST_PRICE_SQL, [getISTDate()]);
-    const latestByProduct = new Map(latest.map((p) => [p.product_id, p]));
-
-    let total = 0, diffAmount = 0, maxPct = 0, maxAbovePct = 0, anyBelow = false;
-    const lines = [];
-    const seen = new Set();
-    for (const raw of items) {
-      const productId = Number(raw.product_id);
-      const quantity = Number(raw.quantity);
-      const soldPrice = money(raw.price);
-      const product = latestByProduct.get(productId);
-      const name = (oldByProduct.get(productId) || product || {}).product_name || `Product ${productId}`;
-      if (!product && !oldByProduct.has(productId)) throw Object.assign(new Error("A product is no longer available"), { status: 400 });
-      if (seen.has(productId)) throw Object.assign(new Error(`${name} is added twice`), { status: 400 });
-      seen.add(productId);
-      if (!Number.isInteger(quantity) || quantity <= 0) throw Object.assign(new Error(`Enter a whole quantity for ${name}`), { status: 400 });
-      if (!(soldPrice > 0)) throw Object.assign(new Error(`Enter a price for ${name}`), { status: 400 });
-
-      const old = oldByProduct.get(productId);
-      // A line that was already on the invoice keeps the price it was compared against.
-      const systemPrice = money(old ? old.system_price : product.price);
-      const priceId = old ? old.price_id : product.price_id;
-      const lineTotal = money(quantity * soldPrice);
-      total = money(total + lineTotal);
-      diffAmount = money(diffAmount + (soldPrice - systemPrice) * quantity);
-      if (systemPrice > 0) {
-        maxPct = Math.max(maxPct, Math.abs(soldPrice - systemPrice) / systemPrice * 100);
-        if (soldPrice > systemPrice) maxAbovePct = Math.max(maxAbovePct, (soldPrice - systemPrice) / systemPrice * 100);
-      }
-      if (soldPrice < systemPrice - 0.004) anyBelow = true;
-      lines.push({ productId, name, quantity, systemPrice, soldPrice, lineTotal, priceId });
-    }
-
-    const cash = money(payment.cash), upi = money(payment.upi), card = money(payment.card);
-    if (cash < 0 || upi < 0 || card < 0) throw Object.assign(new Error("Payment cannot be negative"), { status: 400 });
-    const paid = money(cash + upi + card);
-    if (paid > total + 0.005) throw Object.assign(new Error("Payment is more than the invoice total"), { status: 400 });
-    const credit = money(total - paid);
-    const [[{ collected }]] = await connection.query(
-      "SELECT COALESCE(SUM(amount), 0) AS collected FROM app_payment_allocations WHERE invoice_id = ?",
-      [app_invoice_id]
-    );
-    if (credit + 0.005 < collected) {
-      throw Object.assign(new Error(`Rs. ${collected} was collected later against this invoice. The unpaid part cannot be less than that.`), { status: 400 });
-    }
-    const flag = anyBelow || maxAbovePct >= PRICE_ALERT_PCT ? 1 : 0;
-    maxPct = Math.round(maxPct * 100) / 100;
-
-    await connection.query("DELETE FROM app_invoice_items WHERE app_invoice_id = ?", [app_invoice_id]);
-    for (const l of lines) {
-      await connection.query(
-        `INSERT INTO app_invoice_items (app_invoice_id, product_id, price_id, quantity, system_price, sold_price, line_total)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [app_invoice_id, l.productId, l.priceId, l.quantity, l.systemPrice, l.soldPrice, l.lineTotal]
-      );
-    }
-    await connection.query(
-      `UPDATE app_invoices SET total_amount = ?, cash_amount = ?, upi_amount = ?, card_amount = ?, credit_amount = ?,
-              price_diff_amount = ?, max_price_diff_pct = ?, price_flag = ?, notes = ? WHERE app_invoice_id = ?`,
-      [total, cash, upi, card, credit, diffAmount, maxPct, flag,
-       notes === undefined ? inv.notes : text(notes, 500), app_invoice_id]
-    );
+    const r = await editPendingInvoice(connection, { invoiceId: Number(app_invoice_id), items, payment, notes });
     await connection.commit();
-
-    const before = oldItems.map((o) => `${o.product_name} ${o.quantity}x${Number(o.sold_price)}`).join(", ");
-    const after = lines.map((l) => `${l.name} ${l.quantity}x${l.soldPrice}`).join(", ");
     await logUserActivity({
       req, user_id: userId,
-      action: `App invoice ${inv.invoice_no} edited by office. Total ${Number(inv.total_amount)} to ${total}. Before: ${before}. After: ${after}`.slice(0, 480),
+      action: `App invoice ${r.invoiceNo} edited by office. Total ${r.oldTotal} to ${r.total}. Before: ${r.before}. After: ${r.after}`.slice(0, 480),
       reference_type: "app_invoice", reference_id: app_invoice_id,
     });
-    res.json({ message: "Invoice updated", total, credit, price_flag: flag });
+    res.json({ message: "Invoice updated", total: r.total, credit: r.credit, price_flag: r.flag });
   } catch (error) {
     await connection.rollback();
-    if (error.status === 400) return res.status(400).json({ message: error.message });
+    if (error.status) return res.status(error.status).json({ message: error.message });
     console.error("updateInvoice error:", error);
     res.status(500).json({ message: "Could not update the invoice" });
   } finally {

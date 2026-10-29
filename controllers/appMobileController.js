@@ -4,6 +4,7 @@ const { signToken, RENEW_AFTER_DAYS } = require("../middleware/appAuth");
 const { appLog } = require("../utils/appLog");
 const { deletedByAdmin, statusExpr } = require("../utils/appInvoiceStatus");
 const { outstandingInvoices, duesByShop, collectDues } = require("../utils/appDues");
+const { editPendingInvoice } = require("../utils/appInvoiceEdit");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 // A sold price this far from the current marketing price is flagged for the admin.
@@ -524,6 +525,32 @@ exports.createInvoice = async (req, res) => {
     if (error.status === 400) return res.status(400).json({ message: error.message });
     console.error("App createInvoice error:", error);
     res.status(500).json({ message: "Could not create the invoice" });
+  }
+};
+
+// The salesperson changes their own invoice while the office has not settled it yet.
+// The office sees the change in the activity log and the price flags are worked out again.
+exports.updateInvoice = async (req, res) => {
+  const staffId = req.staff.user_id;
+  const connection = await pool.getConnection();
+  try {
+    const invoiceId = Number(req.params.id);
+    const { items, payment, notes } = req.body;
+    await connection.beginTransaction();
+    const r = await editPendingInvoice(connection, { invoiceId, items, payment, notes, onlyStaffId: staffId });
+    await connection.commit();
+    await appLog({
+      req, staffId, action: "invoice_edited",
+      details: `Invoice ${r.invoiceNo} edited. Total ${r.oldTotal} to ${r.total}${r.flag ? ", price differs from latest" : ""}. Before: ${r.before}. After: ${r.after}`,
+    });
+    res.json({ invoice: await loadInvoice(invoiceId, staffId) });
+  } catch (error) {
+    await connection.rollback();
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error("App updateInvoice error:", error);
+    res.status(500).json({ message: "Could not save the changes" });
+  } finally {
+    connection.release();
   }
 };
 
