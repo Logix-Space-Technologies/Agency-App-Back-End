@@ -20,6 +20,7 @@ router.get("/products", c.getProducts);
 router.post("/invoices", c.createInvoice);
 router.get("/invoices", c.getInvoices);
 router.get("/invoices/:id", c.getInvoice);
+router.put("/invoices/:id", c.updateInvoice);
 router.get("/reports", c.getReport);
 router.post("/log", c.postLog);
 
