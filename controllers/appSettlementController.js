@@ -78,6 +78,20 @@ const loadDay = async (db, staffId, date, lock = false) => {
   };
 };
 
+exports.loadDay = loadDay;
+
+// Damage the salesperson reported from the phone for this day: { product_id: qty }.
+const reportedDamage = async (db, staffId, date) => {
+  const [rows] = await db.query(
+    "SELECT product_id, damaged_qty FROM app_damage_reports WHERE staff_id = ? AND report_date = ?",
+    [staffId, date]
+  );
+  const map = {};
+  rows.forEach((r) => { map[r.product_id] = Number(r.damaged_qty); });
+  return map;
+};
+exports.reportedDamage = reportedDamage;
+
 exports.previewDay = async (req, res) => {
   try {
     const staffId = Number(req.body.staff_id);
@@ -86,6 +100,8 @@ exports.previewDay = async (req, res) => {
     const [staff] = await pool.query("SELECT user_id, name FROM users WHERE user_id = ?", [staffId]);
     if (!staff[0]) return res.status(404).json({ message: "Salesperson not found" });
     const day = await loadDay(pool, staffId, date);
+    const reported = await reportedDamage(pool, staffId, date);
+    day.products = day.products.map((p) => ({ ...p, reported_damage: reported[p.product_id] || 0 }));
     res.json({ staff: staff[0], date, ...day });
   } catch (error) {
     console.error("previewDay error:", error);
@@ -118,11 +134,12 @@ exports.settleDay = async (req, res) => {
     }
 
     // Balance and damage come from the office; loss is whatever is left of the allocation.
+    const reported = await reportedDamage(connection, staffId, date);
     const lines = day.products.map((p) => {
       const gap = p.allocated - p.sold; // what should be left with the salesperson
       const input = entered.get(p.product_id) || {};
-      let balance = input.balance === undefined || input.balance === "" ? Math.max(0, gap) : int(input.balance);
       let damaged = int(input.damaged);
+      let balance = input.balance === undefined || input.balance === "" ? Math.max(0, gap - damaged) : int(input.balance);
       let loss = 0;
       if (gap <= 0) {
         balance = 0; damaged = 0; // nothing left to return; any shortage is already in the sold column
@@ -206,10 +223,13 @@ exports.settleDay = async (req, res) => {
         product_id: l.product_id, product_name: l.product_name, allocated: l.allocated, sold: l.sold,
         balance: l.balance, damaged: l.damaged, loss: l.loss, amount: l.amount, price: l.avg_price,
         over_sold: l.over_sold, not_allocated: l.not_allocated,
+        reported_damage: reported[l.product_id] || 0,
       })),
       invoices: posted,
     };
     await connection.query("UPDATE app_day_settlements SET details = ? WHERE settlement_id = ?", [JSON.stringify(details), settlementId]);
+    // The phone's damage report has now been used.
+    await connection.query("DELETE FROM app_damage_reports WHERE staff_id = ? AND report_date = ?", [staffId, date]);
     await connection.commit();
 
     await logUserActivity({

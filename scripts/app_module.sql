@@ -194,3 +194,15 @@ SELECT 'App Day Settlement', '/app-settlement', p.menu_id, p.id, 'admin', 1, 0
 FROM menu_items p
 WHERE p.name = 'Mobile App' AND p.parent_id IS NULL
   AND NOT EXISTS (SELECT 1 FROM menu_items x WHERE x.href = '/app-settlement');
+
+-- Damage the salesperson reports from the phone against their allocation; the office sees it when settling.
+CREATE TABLE IF NOT EXISTS `app_damage_reports` (
+  `report_id` int(11) NOT NULL AUTO_INCREMENT,
+  `staff_id` int(11) NOT NULL,
+  `report_date` date NOT NULL,
+  `product_id` int(11) NOT NULL,
+  `damaged_qty` int(11) NOT NULL DEFAULT 0,
+  `updated_at` datetime NOT NULL,
+  PRIMARY KEY (`report_id`),
+  UNIQUE KEY `uq_damage_report` (`staff_id`,`report_date`,`product_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

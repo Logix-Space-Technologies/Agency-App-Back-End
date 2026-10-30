@@ -21,6 +21,8 @@ router.post("/invoices", c.createInvoice);
 router.get("/invoices", c.getInvoices);
 router.get("/invoices/:id", c.getInvoice);
 router.put("/invoices/:id", c.updateInvoice);
+router.get("/stock", c.getMyStock);
+router.put("/stock/damage", c.saveDamage);
 router.get("/reports", c.getReport);
 router.post("/log", c.postLog);
 
