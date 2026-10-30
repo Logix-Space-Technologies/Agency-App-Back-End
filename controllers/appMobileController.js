@@ -733,10 +733,53 @@ exports.getMyStock = async (req, res) => {
         };
       }
     }
-    res.json({ date, products, invoices: day.invoices.length, total: day.totals.total, settled });
+    const [docs] = await pool.query(
+      `SELECT settlement_id, DATE_FORMAT(settled_at, '%Y-%m-%d %H:%i:%s') AS settled_at, total_amount, invoice_count
+       FROM app_day_settlements WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0 ORDER BY settlement_id`,
+      [staffId, date]
+    );
+    res.json({ date, products, invoices: day.invoices.length, total: day.totals.total, settled, settlements: docs });
   } catch (error) {
     console.error("App getMyStock error:", error);
     res.status(500).json({ message: "Could not load your stock" });
+  }
+};
+
+// The statement the office printed when it settled a day, so the salesperson can open or share the PDF.
+exports.getSettlement = async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT details, invoice_count FROM app_day_settlements WHERE settlement_id = ? AND staff_id = ?",
+      [Number(req.params.id), req.staff.user_id]
+    );
+    if (!rows[0] || !rows[0].details || rows[0].invoice_count === 0) {
+      return res.status(404).json({ message: "Settlement not found" });
+    }
+    const d = JSON.parse(rows[0].details);
+    if (d.undone) return res.status(404).json({ message: "This settlement was cancelled by the office" });
+    delete d.undo; // office-only bookkeeping
+    res.json({ settlement: d });
+  } catch (error) {
+    console.error("App getSettlement error:", error);
+    res.status(500).json({ message: "Could not load the settlement" });
+  }
+};
+
+// Recent settled days, newest first.
+exports.getSettlements = async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT settlement_id, DATE_FORMAT(settle_date, '%Y-%m-%d') AS settle_date, DATE_FORMAT(settled_at, '%Y-%m-%d %H:%i:%s') AS settled_at,
+              invoice_count, total_amount
+       FROM app_day_settlements
+       WHERE staff_id = ? AND invoice_count > 0 AND settle_date >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)
+       ORDER BY settlement_id DESC LIMIT 60`,
+      [req.staff.user_id]
+    );
+    res.json({ settlements: rows });
+  } catch (error) {
+    console.error("App getSettlements error:", error);
+    res.status(500).json({ message: "Could not load settlements" });
   }
 };
 
