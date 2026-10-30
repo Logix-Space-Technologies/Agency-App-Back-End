@@ -5,6 +5,7 @@ const { appLog } = require("../utils/appLog");
 const { deletedByAdmin, statusExpr } = require("../utils/appInvoiceStatus");
 const { outstandingInvoices, duesByShop, collectDues } = require("../utils/appDues");
 const { editPendingInvoice } = require("../utils/appInvoiceEdit");
+const { loadDay, reportedDamage } = require("./appSettlementController");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 // A sold price this far from the current marketing price is flagged for the admin.
@@ -686,6 +687,99 @@ exports.collectShopDues = async (req, res) => {
     if (error.status === 400) return res.status(400).json({ message: error.message });
     console.error("App collectShopDues error:", error);
     res.status(500).json({ message: "Could not record the payment" });
+  } finally {
+    connection.release();
+  }
+};
+
+// ---------------------------------------------------------------- my stock (allocation, sold, damage, balance)
+
+const stockDate = (raw) => {
+  const today = getISTDate();
+  const date = isDate(raw) ? raw : today;
+  const oldest = getISTDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  return date > today ? today : date < oldest ? oldest : date;
+};
+
+// What was given to the salesperson, what they sold from it, the damage they report and the balance
+// they should be holding. Once the office has settled the day, the final figures are shown instead.
+exports.getMyStock = async (req, res) => {
+  try {
+    const staffId = req.staff.user_id;
+    const date = stockDate(req.query.date);
+    const day = await loadDay(pool, staffId, date);
+    const reported = await reportedDamage(pool, staffId, date);
+
+    const products = day.products.map((p) => {
+      const left = Math.max(0, p.allocated - p.sold);
+      const damaged = Math.min(reported[p.product_id] || 0, left);
+      return {
+        product_id: p.product_id, product_name: p.product_name, allocated: p.allocated, sold: p.sold,
+        left, damaged, balance: left - damaged, over_sold: p.sold > p.allocated, amount: p.amount,
+      };
+    });
+
+    let settled = null;
+    if (products.length === 0) {
+      const [rows] = await pool.query(
+        "SELECT details FROM app_day_settlements WHERE staff_id = ? AND settle_date = ? ORDER BY settlement_id DESC LIMIT 1",
+        [staffId, date]
+      );
+      if (rows[0] && rows[0].details) {
+        const d = JSON.parse(rows[0].details);
+        settled = {
+          settlement_id: d.settlement_id, settled_at: d.settled_at,
+          items: d.items.map((i) => ({ product_name: i.product_name, allocated: i.allocated, sold: i.sold, balance: i.balance, damaged: i.damaged, loss: i.loss })),
+        };
+      }
+    }
+    res.json({ date, products, invoices: day.invoices.length, total: day.totals.total, settled });
+  } catch (error) {
+    console.error("App getMyStock error:", error);
+    res.status(500).json({ message: "Could not load your stock" });
+  }
+};
+
+// The salesperson tells the office how many pieces were damaged. Can be changed until the day is settled.
+exports.saveDamage = async (req, res) => {
+  const staffId = req.staff.user_id;
+  const connection = await pool.getConnection();
+  try {
+    const date = stockDate(req.body.date);
+    const items = Array.isArray(req.body.items) ? req.body.items : [];
+    await connection.beginTransaction();
+    const day = await loadDay(connection, staffId, date, true);
+    const byId = new Map(day.products.map((p) => [p.product_id, p]));
+    const now = getISTTimestamp();
+    for (const it of items) {
+      const p = byId.get(Number(it.product_id));
+      if (!p) continue;
+      const damaged = Math.max(0, Math.floor(Number(it.damaged) || 0));
+      const left = Math.max(0, p.allocated - p.sold);
+      if (damaged > left) {
+        await connection.rollback();
+        return res.status(400).json({ message: `${p.product_name}: only ${left} left, so damage cannot be ${damaged}` });
+      }
+      if (damaged === 0) {
+        await connection.query("DELETE FROM app_damage_reports WHERE staff_id = ? AND report_date = ? AND product_id = ?", [staffId, date, p.product_id]);
+      } else {
+        await connection.query(
+          `INSERT INTO app_damage_reports (staff_id, report_date, product_id, damaged_qty, updated_at) VALUES (?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE damaged_qty = VALUES(damaged_qty), updated_at = VALUES(updated_at)`,
+          [staffId, date, p.product_id, damaged, now]
+        );
+      }
+    }
+    await connection.commit();
+    await appLog({
+      req, staffId, action: "damage_reported",
+      details: `Damage for ${date}: ${items.filter((i) => Number(i.damaged) > 0).map((i) => `${(byId.get(Number(i.product_id)) || {}).product_name || i.product_id} ${i.damaged}`).join(", ") || "none"}`,
+    });
+    res.json({ message: "Saved" });
+  } catch (error) {
+    await connection.rollback();
+    console.error("App saveDamage error:", error);
+    res.status(500).json({ message: "Could not save the damage" });
   } finally {
     connection.release();
   }
