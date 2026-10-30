@@ -145,7 +145,7 @@ exports.settleDay = async (req, res) => {
         400,
         `Allocate the missing stock first, then settle: ${short
           .map((p) => `${p.product_name} (allocated ${p.allocated}, sold ${p.sold}, ${p.sold - p.allocated} more needed)`)
-          .join("; ")}. If this salesperson does not use allocations, settle the invoices one by one instead.`
+          .join("; ")}. Add the allocation for this salesperson and date, then load the day again.`
       );
     }
 
@@ -203,7 +203,7 @@ exports.settleDay = async (req, res) => {
     const posted = [];
     for (const inv of day.invoices) {
       const r = await postInvoiceTx(connection, inv.app_invoice_id, adminId, { checkAllocation: false });
-      posted.push({ invoice_no: inv.invoice_no, books_no: r.invoiceNumber, shop_name: inv.shop_name,
+      posted.push({ invoice_id: inv.app_invoice_id, tracking_id: r.tracking, invoice_no: inv.invoice_no, books_no: r.invoiceNumber, shop_name: inv.shop_name,
         total: Number(inv.total_amount), cash: Number(inv.cash_amount), upi: Number(inv.upi_amount),
         card: Number(inv.card_amount), credit: Number(inv.credit_amount) });
     }
@@ -218,14 +218,16 @@ exports.settleDay = async (req, res) => {
       const [created] = await connection.query("INSERT INTO expense_categories (expense_category_name) VALUES (?)", [label]);
       return created.insertId;
     };
+    const voucherIds = [];
     for (const [key, kind, label] of [["fuel", "fuel", "Fuel"], ["vehicle_service", "vehicle", "Vehicle Service"], ["other", "other", "Other Expenses"]]) {
       if (expenses[key] > 0) {
         const categoryId = await categoryFor(kind, label);
-        await connection.query(
+        const [voucher] = await connection.query(
           `INSERT INTO misc_expense_vouchers (expense_category_id, description, amount, gst_amount, expense_date, payment_method, addedBy, created, isActive)
            VALUES (?, ?, ?, 0, ?, 'cash', ?, ?, 1)`,
           [categoryId, `${label} - day settlement ${settlementId} (${staffId})`, expenses[key], date, adminId, now]
         );
+        voucherIds.push(voucher.insertId);
       }
     }
 
@@ -237,9 +239,11 @@ exports.settleDay = async (req, res) => {
         [l.damaged, l.loss, l.product_id]
       );
     }
+    let dsTracking = null;
     if (withShortage.length) {
       // A zero-value record keeps the stock audit in step: the damage and loss rows sit under it.
       const tracking = trackingId();
+      dsTracking = tracking;
       await connection.query(
         `INSERT INTO final_sale (sale_tracking_Id, invoiceNumber, TotalAmount, UserId, DateofTransaction, addedDate,
                                  isSettled, AmountPaid, isGstBilling, created, addedBy, isActive)
@@ -287,6 +291,12 @@ exports.settleDay = async (req, res) => {
         reported_damage: reported[l.product_id] || 0,
       })),
       invoices: posted,
+      // Everything Undo needs to put the day back exactly as it was.
+      undo: {
+        ds_tracking: dsTracking,
+        voucher_ids: voucherIds,
+        alloc_before: lines.flatMap((l) => l.alloc_rows.map((a) => ({ daily_stock_id: a.daily_stock_id, allocated_quantity: a.allocated_quantity }))),
+      },
     };
     await connection.query("UPDATE app_day_settlements SET details = ? WHERE settlement_id = ?", [JSON.stringify(details), settlementId]);
     // The phone's damage report has now been used.
@@ -340,7 +350,7 @@ exports.overview = async (req, res) => {
     );
     const [done] = await pool.query(
       `SELECT staff_id, MAX(settlement_id) AS settlement_id, COUNT(*) AS times, SUM(total_amount) AS total
-       FROM app_day_settlements WHERE settle_date = ? GROUP BY staff_id`,
+       FROM app_day_settlements WHERE settle_date = ? AND invoice_count > 0 GROUP BY staff_id`,
       [date]
     );
 
@@ -378,6 +388,119 @@ exports.overview = async (req, res) => {
   }
 };
 
+
+// Puts a settled day back exactly as it was: stock, damage and loss, allocation, expenses and the books.
+// The invoices go back to "pending" so they can be corrected and the day settled again.
+exports.undoDay = async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const settlementId = Number(req.body.settlement_id);
+    const adminId = req.body.userId || null;
+    await connection.beginTransaction();
+    const [rows] = await connection.query("SELECT * FROM app_day_settlements WHERE settlement_id = ? FOR UPDATE", [settlementId]);
+    const row = rows[0];
+    if (!row || !row.details) throw fail(404, "Settlement not found");
+    const d = JSON.parse(row.details);
+    if (d.undone) throw fail(400, "This settlement was already undone");
+    if (!d.undo) throw fail(400, "This settlement was made before Undo existed. Ask for it to be corrected by hand.");
+
+    const [[{ later }]] = await connection.query(
+      "SELECT COUNT(*) AS later FROM app_day_settlements WHERE staff_id = ? AND settlement_id > ? AND invoice_count > 0",
+      [row.staff_id, settlementId]
+    );
+    if (later > 0) throw fail(400, "A later day for this salesperson is settled. Undo that one first.");
+
+    // Sales returns made against these sales cannot be reversed from here.
+    for (const inv of d.invoices) {
+      try {
+        const [ret] = await connection.query("SELECT 1 FROM direct_sale_return WHERE sale_tracking_Id = ? LIMIT 1", [inv.tracking_id]);
+        if (ret.length) throw fail(400, `Invoice ${inv.books_no} has a sales return. Remove the return first.`);
+      } catch (e) {
+        if (e.status) throw e; // a database without the returns table has nothing to block on
+      }
+    }
+
+    // 1. The invoices: stock comes back, the sale and its payments leave the books, the invoice is pending again.
+    for (const inv of d.invoices) {
+      const [lines] = await connection.query(
+        "SELECT product_id, quantity_sold FROM sales WHERE sale_tracking_Id = ? AND isActive = 1",
+        [inv.tracking_id]
+      );
+      for (const l of lines) {
+        await connection.query("UPDATE stock SET quantity = quantity + ? WHERE product_id = ? AND isActive = 1", [l.quantity_sold, l.product_id]);
+      }
+      await connection.query("UPDATE sales SET isActive = 0 WHERE sale_tracking_Id = ?", [inv.tracking_id]);
+      await connection.query("DELETE FROM stock_History WHERE ReferenceInvoiceOrSale = ?", [inv.tracking_id]);
+      await connection.query("UPDATE sales_credit_history SET isActive = 0 WHERE sale_tracking_Id = ?", [inv.tracking_id]);
+      await connection.query("UPDATE final_sale SET isActive = 0 WHERE sale_tracking_Id = ?", [inv.tracking_id]);
+      await connection.query(
+        `UPDATE app_invoices SET status = 'pending', settled_by = NULL, settled_at = NULL, final_sale_tracking_id = NULL,
+                system_invoice_number = NULL WHERE app_invoice_id = ?`,
+        [inv.invoice_id]
+      );
+      // Money collected later against this invoice is posted again when the day is settled again.
+      await connection.query("UPDATE app_payment_allocations SET posted = 0 WHERE invoice_id = ?", [inv.invoice_id]);
+    }
+
+    // 2. Damage and loss go back into usable stock, and the record that carried them is removed.
+    for (const i of d.items) {
+      if (i.damaged > 0 || i.loss > 0) {
+        await connection.query(
+          "UPDATE stock SET Damage_Qty = GREATEST(0, Damage_Qty - ?), Loss_Qty = GREATEST(0, Loss_Qty - ?) WHERE product_id = ? AND isActive = 1",
+          [i.damaged, i.loss, i.product_id]
+        );
+      }
+    }
+    if (d.undo.ds_tracking) {
+      await connection.query("UPDATE sales SET isActive = 0 WHERE sale_tracking_Id = ?", [d.undo.ds_tracking]);
+      await connection.query("UPDATE final_sale SET isActive = 0 WHERE sale_tracking_Id = ?", [d.undo.ds_tracking]);
+    }
+
+    // 3. The allocation is open again with its original quantities.
+    for (const a of d.undo.alloc_before) {
+      await connection.query(
+        "UPDATE daily_stock_allocation SET allocated_quantity = ?, converted_to_sales = 0 WHERE daily_stock_id = ?",
+        [a.allocated_quantity, a.daily_stock_id]
+      );
+    }
+
+    // 4. Expenses entered with the settlement.
+    if (d.undo.voucher_ids.length) {
+      await connection.query("UPDATE misc_expense_vouchers SET isActive = 0 WHERE voucher_id IN (?)", [d.undo.voucher_ids]);
+    }
+
+    // 5. The damage the salesperson reported on the phone is there again for the next settlement.
+    const now = getISTTimestamp();
+    for (const i of d.items) {
+      if (i.reported_damage > 0) {
+        await connection.query(
+          `INSERT INTO app_damage_reports (staff_id, report_date, product_id, damaged_qty, updated_at) VALUES (?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE damaged_qty = VALUES(damaged_qty), updated_at = VALUES(updated_at)`,
+          [row.staff_id, d.date, i.product_id, i.reported_damage, now]
+        );
+      }
+    }
+
+    d.undone = { at: now, by: adminId };
+    await connection.query("UPDATE app_day_settlements SET details = ?, invoice_count = 0 WHERE settlement_id = ?", [JSON.stringify(d), settlementId]);
+    await connection.commit();
+
+    await logUserActivity({
+      req, user_id: adminId,
+      action: `Day settlement ${settlementId} for ${d.staff_name} on ${d.date} undone: ${d.invoices.length} invoice(s) back to pending`,
+      reference_type: "app_day_settlement", reference_id: settlementId,
+    });
+    res.json({ message: `Settlement ${settlementId} undone. ${d.invoices.length} invoice(s) are pending again.` });
+  } catch (error) {
+    await connection.rollback();
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error("undoDay error:", error);
+    res.status(500).json({ message: `Could not undo the settlement: ${error.message}` });
+  } finally {
+    connection.release();
+  }
+};
+
 exports.listSettlements = async (req, res) => {
   try {
     const { from, to, staff_id } = req.body;
@@ -398,7 +521,9 @@ exports.listSettlements = async (req, res) => {
       settlements: rows.map(({ details, ...r }) => {
         let h = null;
         try { h = details ? JSON.parse(details).handover : null; } catch (e) { h = null; }
-        return { ...r, received_total: h ? h.received.total : null, difference: h ? h.difference : null };
+        let undone = false;
+        try { undone = !!(details && JSON.parse(details).undone); } catch (e) { undone = false; }
+        return { ...r, received_total: h ? h.received.total : null, difference: h ? h.difference : null, undone };
       }),
     });
   } catch (error) {
