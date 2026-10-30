@@ -248,6 +248,75 @@ exports.settleDay = async (req, res) => {
   }
 };
 
+
+// One line per salesperson for a date: stock given, sold on the phone, damage reported, balance and whether
+// the day is settled. Lets the office see everybody at a glance before opening one person to settle.
+exports.overview = async (req, res) => {
+  try {
+    const date = req.body.date;
+    if (!isDate(date)) return res.status(400).json({ message: "Choose a date" });
+    const [alloc] = await pool.query(
+      `SELECT marketing_staff_id AS staff_id, SUM(allocated_quantity) AS allocated
+       FROM daily_stock_allocation
+       WHERE converted_to_sales = 0 AND isActive = 1 AND allocated_quantity > 0 AND date <= ?
+       GROUP BY marketing_staff_id`,
+      [date]
+    );
+    const [inv] = await pool.query(
+      `SELECT staff_id, COUNT(*) AS invoices, SUM(total_amount) AS total
+       FROM app_invoices WHERE invoice_date = ? AND status = 'pending' GROUP BY staff_id`,
+      [date]
+    );
+    const [sold] = await pool.query(
+      `SELECT i.staff_id, SUM(it.quantity) AS sold
+       FROM app_invoice_items it JOIN app_invoices i ON i.app_invoice_id = it.app_invoice_id
+       WHERE i.invoice_date = ? AND i.status = 'pending' GROUP BY i.staff_id`,
+      [date]
+    );
+    const [dmg] = await pool.query(
+      "SELECT staff_id, SUM(damaged_qty) AS damaged FROM app_damage_reports WHERE report_date = ? GROUP BY staff_id",
+      [date]
+    );
+    const [done] = await pool.query(
+      `SELECT staff_id, MAX(settlement_id) AS settlement_id, COUNT(*) AS times, SUM(total_amount) AS total
+       FROM app_day_settlements WHERE settle_date = ? GROUP BY staff_id`,
+      [date]
+    );
+
+    const byStaff = new Map();
+    const row = (id) => {
+      if (!byStaff.has(id)) byStaff.set(id, { staff_id: id, allocated: 0, sold: 0, damaged: 0, invoices: 0, pending_total: 0, settled: false, settlement_id: null, settled_total: 0 });
+      return byStaff.get(id);
+    };
+    alloc.forEach((a) => { row(a.staff_id).allocated = Number(a.allocated); });
+    inv.forEach((a) => { const r = row(a.staff_id); r.invoices = a.invoices; r.pending_total = money(a.total); });
+    sold.forEach((a) => { row(a.staff_id).sold = Number(a.sold); });
+    dmg.forEach((a) => { row(a.staff_id).damaged = Number(a.damaged); });
+    done.forEach((a) => { const r = row(a.staff_id); r.settled = true; r.settlement_id = a.settlement_id; r.settled_total = money(a.total); });
+
+    const ids = [...byStaff.keys()];
+    const names = new Map();
+    if (ids.length) {
+      const [u] = await pool.query("SELECT user_id, name FROM users WHERE user_id IN (?)", [ids]);
+      u.forEach((x) => names.set(x.user_id, x.name));
+    }
+    const staff = [...byStaff.values()]
+      .map((r) => ({
+        ...r,
+        staff_name: names.get(r.staff_id) || `#${r.staff_id}`,
+        left: Math.max(0, r.allocated - r.sold),
+        balance: Math.max(0, r.allocated - r.sold) - r.damaged,
+        over_sold: r.sold > r.allocated,
+        status: r.invoices > 0 ? "pending" : r.settled ? "settled" : r.allocated > 0 ? "allocated" : "none",
+      }))
+      .sort((a, b) => a.staff_name.localeCompare(b.staff_name));
+    res.json({ date, staff });
+  } catch (error) {
+    console.error("overview error:", error);
+    res.status(500).json({ message: "Could not load the overview" });
+  }
+};
+
 exports.listSettlements = async (req, res) => {
   try {
     const { from, to, staff_id } = req.body;
