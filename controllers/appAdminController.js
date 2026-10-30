@@ -5,7 +5,6 @@ const { logUserActivity } = require("../utils/logUserActivity");
 const { deletedByAdmin, statusExpr, belowPriceSql, abovePriceSql } = require("../utils/appInvoiceStatus");
 const { duesByShop, postAllocation } = require("../utils/appDues");
 const { editPendingInvoice } = require("../utils/appInvoiceEdit");
-const { postInvoiceTx } = require("../utils/appSettle");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 const PRICE_ALERT_PCT = Number(process.env.APP_PRICE_ALERT_PCT) || 10;
@@ -475,43 +474,10 @@ exports.updateInvoice = async (req, res) => {
   }
 };
 
-// Settles one pending invoice on its own. Salespeople who still hold a stock allocation must be
-// settled through Day Settlement (see postInvoiceTx).
-const settleOne = async (req, invoiceId, adminId) => {
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-    const { inv, invoiceNumber, tracking } = await postInvoiceTx(connection, invoiceId, adminId);
-    await connection.commit();
-    await logUserActivity({
-      req, user_id: adminId, action: `App invoice ${inv.invoice_no} settled as ${invoiceNumber}`,
-      reference_type: "sale", reference_id: tracking,
-    });
-    return { app_invoice_id: invoiceId, ok: true, invoiceNumber };
-  } catch (error) {
-    await connection.rollback();
-    return { app_invoice_id: invoiceId, ok: false, message: error.message };
-  } finally {
-    connection.release();
-  }
-};
-
+// Invoices are no longer settled one at a time. Each salesperson's day is settled together in
+// App Day Settlement, where the allocation, balance, damage and payment are checked.
 exports.settleInvoices = async (req, res) => {
-  try {
-    const { ids, userId } = req.body;
-    if (!Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({ message: "Select at least one invoice" });
-    }
-    const results = [];
-    for (const id of ids.slice(0, 200)) {
-      results.push(await settleOne(req, Number(id), userId));
-    }
-    const done = results.filter((r) => r.ok).length;
-    res.json({ message: `${done} of ${results.length} invoice(s) settled`, results });
-  } catch (error) {
-    console.error("settleInvoices error:", error);
-    res.status(500).json({ message: "Could not settle the invoices" });
-  }
+  res.status(400).json({ message: "Invoices are settled day by day for each salesperson. Open App Day Settlement." });
 };
 
 exports.rejectInvoice = async (req, res) => {

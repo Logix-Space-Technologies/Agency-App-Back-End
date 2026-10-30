@@ -29,5 +29,6 @@ router.post("/settlement/preview", d.previewDay);
 router.post("/settlement/settle", d.settleDay);
 router.post("/settlement/list", d.listSettlements);
 router.post("/settlement/detail", d.settlementDetail);
+router.post("/settlement/undo", d.undoDay);
 
 module.exports = router;

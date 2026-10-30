@@ -2404,6 +2404,21 @@ exports.submitAllProductReturns = async (req, res) => {
   };
 
 
+
+// Sales posted by the mobile app's Day Settlement (and the damage record that goes with them) must be
+// removed with "Undo day" so stock, damage, loss, allocation and expenses all go back together.
+const appSettlementOwns = async (trackingId) => {
+  try {
+    const [inv] = await pool.query("SELECT 1 FROM app_invoices WHERE final_sale_tracking_id = ? LIMIT 1", [trackingId]);
+    if (inv.length) return true;
+    const [ds] = await pool.query("SELECT 1 FROM final_sale WHERE sale_tracking_Id = ? AND invoiceNumber LIKE 'DS-%' LIMIT 1", [trackingId]);
+    return ds.length > 0;
+  } catch (e) {
+    return false; // a database without the app tables has nothing to protect
+  }
+};
+const APP_SALE_MESSAGE = "This sale came from the mobile app's Day Settlement. Open App Day Settlement and use Undo on that day, so stock, damage and allocation go back together.";
+
 exports.deleteDirectSaleProduct = async (req, res) => {
   let connection;
   try {
@@ -2412,6 +2427,7 @@ exports.deleteDirectSaleProduct = async (req, res) => {
     if (!product_id)  return res.status(400).json({ error: "Product ID is required." });  
     if (!sale_id) return res.status(400).json({ error: "Sale ID is required." });
     if (!sale_tracking_id) return res.status(400).json({ error: "Sale Tracking ID  ID is required." });
+    if (await appSettlementOwns(sale_tracking_id)) return res.status(409).json({ error: APP_SALE_MESSAGE });
 
     connection = await pool.getConnection();
     
@@ -2502,6 +2518,7 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
     if (!sale_tracking_id) {
       return res.status(400).json({ error: "Sale Tracking ID is required." });
     }
+    if (await appSettlementOwns(sale_tracking_id)) return res.status(409).json({ error: APP_SALE_MESSAGE });
 
     connection = await pool.getConnection();
     await connection.beginTransaction();
