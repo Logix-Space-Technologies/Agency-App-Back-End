@@ -80,6 +80,21 @@ const loadDay = async (db, staffId, date, lock = false) => {
 
 exports.loadDay = loadDay;
 
+// What the salesperson should hand over for the day: payments taken on their invoices plus any old dues
+// they collected that day (with a bill or on their own), by method.
+const expectedHandover = async (db, staffId, date, totals) => {
+  const [[d]] = await db.query(
+    `SELECT COALESCE(SUM(cash_amount), 0) AS cash, COALESCE(SUM(upi_amount), 0) AS upi, COALESCE(SUM(card_amount), 0) AS card
+     FROM app_payments WHERE staff_id = ? AND DATE(created_at) = ?`,
+    [staffId, date]
+  );
+  const cash = money(totals.cash + Number(d.cash));
+  const upi = money(totals.upi + Number(d.upi));
+  const card = money(totals.card + Number(d.card));
+  return { cash, upi, card, total: money(cash + upi + card), dues_cash: Number(d.cash), dues_upi: Number(d.upi), dues_card: Number(d.card) };
+};
+exports.expectedHandover = expectedHandover;
+
 // Damage the salesperson reported from the phone for this day: { product_id: qty }.
 const reportedDamage = async (db, staffId, date) => {
   const [rows] = await db.query(
@@ -102,7 +117,8 @@ exports.previewDay = async (req, res) => {
     const day = await loadDay(pool, staffId, date);
     const reported = await reportedDamage(pool, staffId, date);
     day.products = day.products.map((p) => ({ ...p, reported_damage: reported[p.product_id] || 0 }));
-    res.json({ staff: staff[0], date, ...day });
+    const handover = await expectedHandover(pool, staffId, date, day.totals);
+    res.json({ staff: staff[0], date, ...day, handover });
   } catch (error) {
     console.error("previewDay error:", error);
     res.status(500).json({ message: "Could not load the day" });
@@ -134,6 +150,30 @@ exports.settleDay = async (req, res) => {
     }
 
     // Balance and damage come from the office; loss is whatever is left of the allocation.
+    // What the salesperson collected, less the expenses they paid, is what they should hand over.
+    const expected = await expectedHandover(connection, staffId, date, day.totals);
+    const exp = req.body.expenses || {};
+    const expenses = { fuel: money(exp.fuel), vehicle_service: money(exp.vehicle_service), other: money(exp.other) };
+    for (const k of Object.keys(expenses)) {
+      if (!Number.isFinite(expenses[k]) || expenses[k] < 0) throw fail(400, "Expenses must be zero or more");
+    }
+    expenses.total = money(expenses.fuel + expenses.vehicle_service + expenses.other);
+    const netPayable = money(expected.total - expenses.total);
+
+    // Payment breakdown: starts as the same cash, UPI and card they collected (cash is reduced by the expenses).
+    const got = req.body.received || {};
+    const pick = (v, fallback) => (v === undefined || v === null || v === "" ? fallback : Number(v));
+    const received = {
+      cash: pick(got.cash, Math.max(0, money(expected.cash - expenses.total))),
+      upi: pick(got.upi, expected.upi),
+      card: pick(got.card, expected.card),
+    };
+    for (const k of ["cash", "upi", "card"]) {
+      if (!Number.isFinite(received[k]) || received[k] < 0) throw fail(400, "The received amounts must be zero or more");
+      received[k] = money(received[k]);
+    }
+    received.total = money(received.cash + received.upi + received.card);
+    const handover = { expected, expenses, net_payable: netPayable, received, difference: money(received.total - netPayable) };
     const reported = await reportedDamage(connection, staffId, date);
     const lines = day.products.map((p) => {
       const gap = p.allocated - p.sold; // what should be left with the salesperson
@@ -166,6 +206,27 @@ exports.settleDay = async (req, res) => {
       posted.push({ invoice_no: inv.invoice_no, books_no: r.invoiceNumber, shop_name: inv.shop_name,
         total: Number(inv.total_amount), cash: Number(inv.cash_amount), upi: Number(inv.upi_amount),
         card: Number(inv.card_amount), credit: Number(inv.credit_amount) });
+    }
+
+    // Expenses the salesperson paid go in as ordinary expense vouchers, so Cash Flow and the Cash Report see them.
+    const categoryFor = async (kind, label) => {
+      const [found] = await connection.query(
+        "SELECT expense_category_id FROM expense_categories WHERE expense_category_name LIKE ? ORDER BY expense_category_id LIMIT 1",
+        [`%${kind}%`]
+      );
+      if (found[0]) return found[0].expense_category_id;
+      const [created] = await connection.query("INSERT INTO expense_categories (expense_category_name) VALUES (?)", [label]);
+      return created.insertId;
+    };
+    for (const [key, kind, label] of [["fuel", "fuel", "Fuel"], ["vehicle_service", "vehicle", "Vehicle Service"], ["other", "other", "Other Expenses"]]) {
+      if (expenses[key] > 0) {
+        const categoryId = await categoryFor(kind, label);
+        await connection.query(
+          `INSERT INTO misc_expense_vouchers (expense_category_id, description, amount, gst_amount, expense_date, payment_method, addedBy, created, isActive)
+           VALUES (?, ?, ?, 0, ?, 'cash', ?, ?, 1)`,
+          [categoryId, `${label} - day settlement ${settlementId} (${staffId})`, expenses[key], date, adminId, now]
+        );
+      }
     }
 
     // 2. Damaged and lost stock, the same way the marketing settlement records it.
@@ -218,7 +279,7 @@ exports.settleDay = async (req, res) => {
     const details = {
       settlement_id: settlementId, staff_id: staffId, staff_name: staff ? staff.name : "", date,
       settled_at: now, settled_by: admin ? admin.name : "Admin", notes: req.body.notes || "",
-      totals: day.totals,
+      totals: day.totals, handover,
       items: lines.map((l) => ({
         product_id: l.product_id, product_name: l.product_name, allocated: l.allocated, sold: l.sold,
         balance: l.balance, damaged: l.damaged, loss: l.loss, amount: l.amount, price: l.avg_price,
@@ -234,7 +295,7 @@ exports.settleDay = async (req, res) => {
 
     await logUserActivity({
       req, user_id: adminId,
-      action: `Day settlement ${settlementId} for ${details.staff_name} on ${date}: ${posted.length} invoice(s), Rs. ${day.totals.total}`,
+      action: `Day settlement ${settlementId} for ${details.staff_name} on ${date}: ${posted.length} invoice(s), Rs. ${day.totals.total}, expenses Rs. ${expenses.total}, received Rs. ${received.total} of net Rs. ${netPayable}`,
       reference_type: "app_day_settlement", reference_id: settlementId,
     });
     res.json({ message: `Settled ${posted.length} invoice(s)`, settlement: details });
@@ -326,14 +387,20 @@ exports.listSettlements = async (req, res) => {
     if (isDate(to)) { conditions.push("d.settle_date <= ?"); params.push(to); }
     if (staff_id) { conditions.push("d.staff_id = ?"); params.push(Number(staff_id)); }
     const [rows] = await pool.query(
-      `SELECT d.settlement_id, d.staff_id, u.name AS staff_name, DATE_FORMAT(d.settle_date, '%Y-%m-%d') AS settle_date,
+      `SELECT d.details, d.settlement_id, d.staff_id, u.name AS staff_name, DATE_FORMAT(d.settle_date, '%Y-%m-%d') AS settle_date,
               DATE_FORMAT(d.settled_at, '%Y-%m-%d %H:%i:%s') AS settled_at, d.invoice_count, d.total_amount,
               d.cash_amount, d.upi_amount, d.card_amount, d.credit_amount
        FROM app_day_settlements d LEFT JOIN users u ON u.user_id = d.staff_id
        WHERE ${conditions.join(" AND ")} ORDER BY d.settlement_id DESC LIMIT 100`,
       params
     );
-    res.json({ settlements: rows });
+    res.json({
+      settlements: rows.map(({ details, ...r }) => {
+        let h = null;
+        try { h = details ? JSON.parse(details).handover : null; } catch (e) { h = null; }
+        return { ...r, received_total: h ? h.received.total : null, difference: h ? h.difference : null };
+      }),
+    });
   } catch (error) {
     console.error("listSettlements error:", error);
     res.status(500).json({ message: "Could not load settlements" });
