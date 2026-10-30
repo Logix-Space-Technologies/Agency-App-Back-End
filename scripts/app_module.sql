@@ -168,3 +168,29 @@ CREATE TABLE IF NOT EXISTS `app_payment_allocations` (
   KEY `idx_alloc_invoice` (`invoice_id`),
   KEY `idx_alloc_payment` (`payment_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- One row per salesperson day settled in the portal (allocation check, balance, damage, loss).
+-- `details` keeps the printed statement so it can be reprinted later.
+CREATE TABLE IF NOT EXISTS `app_day_settlements` (
+  `settlement_id` int(11) NOT NULL AUTO_INCREMENT,
+  `staff_id` int(11) NOT NULL,
+  `settle_date` date NOT NULL,
+  `settled_by` int(11) DEFAULT NULL,
+  `settled_at` datetime NOT NULL,
+  `invoice_count` int(11) NOT NULL DEFAULT 0,
+  `total_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `cash_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `upi_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `card_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `credit_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `details` longtext DEFAULT NULL,
+  PRIMARY KEY (`settlement_id`),
+  KEY `idx_day_settle_staff` (`staff_id`,`settle_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Sidebar link for the day settlement page, in the same "Mobile App" group.
+INSERT INTO menu_items (name, href, menu_id, parent_id, access_roles, isActive, sort_order)
+SELECT 'App Day Settlement', '/app-settlement', p.menu_id, p.id, 'admin', 1, 0
+FROM menu_items p
+WHERE p.name = 'Mobile App' AND p.parent_id IS NULL
+  AND NOT EXISTS (SELECT 1 FROM menu_items x WHERE x.href = '/app-settlement');
