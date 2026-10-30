@@ -106,6 +106,17 @@ exports.settleDay = async (req, res) => {
     const day = await loadDay(connection, staffId, date, true);
     if (day.invoices.length === 0) throw fail(400, "There are no pending invoices for this day");
 
+    // Stock must be allocated before it is sold: the office adds the missing allocation first.
+    const short = day.products.filter((p) => p.sold > p.allocated);
+    if (short.length) {
+      throw fail(
+        400,
+        `Allocate the missing stock first, then settle: ${short
+          .map((p) => `${p.product_name} (allocated ${p.allocated}, sold ${p.sold}, ${p.sold - p.allocated} more needed)`)
+          .join("; ")}. If this salesperson does not use allocations, settle the invoices one by one instead.`
+      );
+    }
+
     // Balance and damage come from the office; loss is whatever is left of the allocation.
     const lines = day.products.map((p) => {
       const gap = p.allocated - p.sold; // what should be left with the salesperson
