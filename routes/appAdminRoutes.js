@@ -24,6 +24,7 @@ router.post("/invoices/update", c.updateInvoice);
 router.post("/invoices/settle", c.settleInvoices);
 router.post("/invoices/reject", c.rejectInvoice);
 
+router.post("/settlement/overview", d.overview);
 router.post("/settlement/preview", d.previewDay);
 router.post("/settlement/settle", d.settleDay);
 router.post("/settlement/list", d.listSettlements);
