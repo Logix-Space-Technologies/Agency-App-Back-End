@@ -22,6 +22,8 @@ router.get("/invoices", c.getInvoices);
 router.get("/invoices/:id", c.getInvoice);
 router.put("/invoices/:id", c.updateInvoice);
 router.get("/stock", c.getMyStock);
+router.get("/settlements", c.getSettlements);
+router.get("/settlements/:id", c.getSettlement);
 router.put("/stock/damage", c.saveDamage);
 router.get("/reports", c.getReport);
 router.post("/log", c.postLog);
