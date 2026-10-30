@@ -83,10 +83,16 @@ exports.loadDay = loadDay;
 // What the salesperson should hand over for the day: payments taken on their invoices plus any old dues
 // they collected that day (with a bill or on their own), by method.
 const expectedHandover = async (db, staffId, date, totals) => {
+  // A second settlement on the same day only counts what came in after the first one, so nothing is counted twice.
+  const [[last]] = await db.query(
+    `SELECT DATE_FORMAT(MAX(settled_at), '%Y-%m-%d %H:%i:%s') AS at
+     FROM app_day_settlements WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0`,
+    [staffId, date]
+  );
   const [[d]] = await db.query(
     `SELECT COALESCE(SUM(cash_amount), 0) AS cash, COALESCE(SUM(upi_amount), 0) AS upi, COALESCE(SUM(card_amount), 0) AS card
-     FROM app_payments WHERE staff_id = ? AND DATE(created_at) = ?`,
-    [staffId, date]
+     FROM app_payments WHERE staff_id = ? AND DATE(created_at) = ? ${last && last.at ? "AND created_at > ?" : ""}`,
+    last && last.at ? [staffId, date, last.at] : [staffId, date]
   );
   const cash = money(totals.cash + Number(d.cash));
   const upi = money(totals.upi + Number(d.upi));
