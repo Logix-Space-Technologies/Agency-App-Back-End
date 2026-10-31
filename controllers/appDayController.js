@@ -480,7 +480,19 @@ exports.listSelfAllocations = async (req, res) => {
     if (/^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) { conditions.push("r.alloc_date = ?"); params.push(date); }
     const requests = await loadRequests(pool, conditions.join(" AND "), params, true);
     const [[{ pending }]] = await pool.query("SELECT COUNT(*) AS pending FROM app_self_allocations WHERE status = 'pending'");
-    res.json({ requests, pending_count: pending });
+    // With a salesperson and a day chosen, also show what is already allocated to them on that day.
+    let dayAllocation = null;
+    if (staffId && /^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) {
+      const [rows] = await pool.query(
+        `SELECT p.product_name, SUM(d.allocated_quantity) AS quantity
+         FROM daily_stock_allocation d JOIN products p ON p.product_id = d.product_id
+         WHERE d.marketing_staff_id = ? AND d.date = ? AND d.isActive = 1 AND d.allocated_quantity > 0
+         GROUP BY d.product_id, p.product_name ORDER BY p.product_name`,
+        [Number(staffId), date]
+      );
+      dayAllocation = rows.map((r) => ({ product_name: r.product_name, quantity: Number(r.quantity) }));
+    }
+    res.json({ requests, pending_count: pending, day_allocation: dayAllocation });
   } catch (error) {
     console.error("listSelfAllocations error:", error);
     res.status(500).json({ message: "Could not load the self allocations" });
