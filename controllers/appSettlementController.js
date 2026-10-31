@@ -401,7 +401,7 @@ exports.overview = async (req, res) => {
     inv.forEach((a) => { const r = row(a.staff_id); r.invoices = a.invoices; r.pending_total = money(a.total); });
     sold.forEach((a) => { row(a.staff_id).sold = Number(a.sold); });
     dmg.forEach((a) => { row(a.staff_id).damaged = Number(a.damaged); });
-    reqd.forEach((a) => { const r = row(a.staff_id); r.requested = true; r.requested_at = a.at; r.end_km = a.end_km === null ? null : Number(a.end_km); r.vehicle = a.vehicle_name ? `${a.vehicle_name} ${a.vehicle_reg}` : null; });
+    reqd.forEach((a) => { const r = row(a.staff_id); r.requested = true; r.requested_at = a.at; r.end_km = a.end_km === null ? null : Number(a.end_km); r.km_run = a.end_km !== null && a.start_km !== null && Number(a.end_km) >= Number(a.start_km) ? Math.round((Number(a.end_km) - Number(a.start_km)) * 10) / 10 : null; r.vehicle = a.vehicle_name ? `${a.vehicle_name} ${a.vehicle_reg}` : null; });
     done.forEach((a) => { const r = row(a.staff_id); r.settled = true; r.settlement_id = a.settlement_id; r.settled_total = money(a.total); });
 
     const ids = [...byStaff.keys()];

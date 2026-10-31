@@ -7,6 +7,7 @@ const { outstandingInvoices, duesByShop, collectDues } = require("../utils/appDu
 const { editPendingInvoice } = require("../utils/appInvoiceEdit");
 const { loadDay, reportedDamage } = require("./appSettlementController");
 const { dayInfo } = require("./appDayController");
+const { assertSellable, sellableByProduct } = require("../utils/appSellable");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 // A sold price this far from the current marketing price is flagged for the admin.
@@ -329,8 +330,11 @@ const PRODUCT_SQL = `
 
 exports.getProducts = async (req, res) => {
   try {
-    const [rows] = await pool.query(`${PRODUCT_SQL} ORDER BY p.product_name`, [getISTDate()]);
-    res.json({ products: rows });
+    const today = getISTDate();
+    const [rows] = await pool.query(`${PRODUCT_SQL} ORDER BY p.product_name`, [today]);
+    // How many of each the salesperson can still sell, from the stock they took.
+    const stock = await sellableByProduct(pool, req.staff.user_id, today);
+    res.json({ products: rows.map((p) => ({ ...p, available: Math.max(0, (stock.get(p.product_id) || { available: 0 }).available) })) });
   } catch (error) {
     console.error("App getProducts error:", error);
     res.status(500).json({ message: "Could not load products" });
@@ -445,6 +449,9 @@ exports.createInvoice = async (req, res) => {
       }
       lines.push({ productId, quantity, systemPrice, soldPrice, lineTotal, priceId: product.price_id });
     }
+
+    // Only the stock they took (and have not yet sold) can go on an invoice.
+    await assertSellable(pool, staffId, today, lines);
 
     const cash = money(payment.cash);
     const upi = money(payment.upi);

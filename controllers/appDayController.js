@@ -2,6 +2,7 @@ const pool = require("../config/db");
 const { logUserActivity } = require("../utils/logUserActivity");
 const { appLog } = require("../utils/appLog");
 const { CURRENT_STOCK_SQL } = require("../utils/appStock");
+const { sellableByProduct } = require("../utils/appSellable");
 const { getISTTimestamp, getISTDate, isTooOld, MAX_BACKDATE_DAYS } = require("../utils/dateUtils");
 
 const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -74,7 +75,8 @@ const loadRequests = async (db, where, params, withStock = false) => {
 };
 
 // Merges repeated products and checks every line; returns [{ product_id, quantity }].
-const cleanItems = async (db, raw) => {
+const cleanItems = async (db, raw, { allowEmpty = false } = {}) => {
+  if (allowEmpty && Array.isArray(raw) && raw.length === 0) return [];
   if (!Array.isArray(raw) || raw.length === 0) throw fail(400, "Add at least one product");
   if (raw.length > MAX_ITEMS) throw fail(400, `At most ${MAX_ITEMS} products in one request`);
   const merged = new Map();
@@ -108,7 +110,22 @@ exports.getDay = async (req, res) => {
       [staffId, date]
     ).then(([rows]) => [[rows[0] || {}]]);
     const requests = await loadRequests(pool, "r.staff_id = ? AND (r.alloc_date = ? OR r.status = 'pending')", [staffId, date]);
-    res.json({ date, ...info, last_km: last && last.km !== null && last.km !== undefined ? Number(last.km) : null, requests });
+    // Stock they took, what is already on their invoices and what is left to sell: sales come off it as they happen.
+    const sellable = await sellableByProduct(pool, staffId, date);
+    const ids = [...sellable.keys()];
+    const names = new Map();
+    if (ids.length) {
+      const [p] = await pool.query("SELECT product_id, product_name FROM products WHERE product_id IN (?)", [ids]);
+      p.forEach((x) => names.set(x.product_id, x.product_name));
+    }
+    const stock = ids
+      .map((id) => {
+        const r = sellable.get(id);
+        return { product_id: id, product_name: names.get(id) || `Product ${id}`, taken: r.allocated + r.asked, waiting: r.asked, sold: r.sold, left: Math.max(0, r.available) };
+      })
+      .filter((x) => x.taken > 0 || x.sold > 0)
+      .sort((x, y) => x.product_name.localeCompare(y.product_name));
+    res.json({ date, ...info, last_km: last && last.km !== null && last.km !== undefined ? Number(last.km) : null, requests, stock });
   } catch (error) {
     console.error("App getDay error:", error);
     res.status(500).json({ message: "Could not load your day" });
@@ -331,14 +348,31 @@ exports.createSelfAllocation = async (req, res) => {
   }
 };
 
-// Only while the office has not checked it yet.
-const ownPending = async (db, requestId, staffId) => {
-  const [rows] = await db.query("SELECT request_id, status FROM app_self_allocations WHERE request_id = ? AND staff_id = ? FOR UPDATE", [
-    requestId, staffId,
-  ]);
-  if (!rows[0]) throw fail(404, "Request not found");
-  if (rows[0].status !== "pending") throw fail(400, `This request is already ${rows[0].status}. It can no longer be changed.`);
-  return rows[0];
+// A request can be changed until the day is settled. Once the office has verified it, a change goes back to the
+// office as a "revision": the stock already allocated stays in place until they verify the new quantities.
+const loadOwn = async (db, requestId, staffId) => {
+  const [rows] = await db.query(
+    "SELECT request_id, status, staff_id, DATE_FORMAT(alloc_date, '%Y-%m-%d') AS alloc_date, verified_at FROM app_self_allocations WHERE request_id = ? AND staff_id = ? FOR UPDATE",
+    [requestId, staffId]
+  );
+  const r = rows[0];
+  if (!r) throw fail(404, "Request not found");
+  if (r.status !== "pending" && r.status !== "verified") throw fail(400, `This request is ${r.status}. It can no longer be changed.`);
+  // Once the day's settlement is requested the stock is frozen; they can withdraw the request to change it again.
+  const [[asked]] = await db.query(
+    "SELECT COUNT(*) AS n FROM app_day_info WHERE staff_id = ? AND info_date = ? AND settle_requested_at IS NOT NULL",
+    [staffId, today()]
+  );
+  if (asked.n > 0) throw fail(400, "You have requested settlement. Withdraw the settlement request first if you need to change your stock.");
+  if (r.verified_at) {
+    // A settlement made after the office verified the stock has used it up.
+    const [[used]] = await db.query(
+      "SELECT COUNT(*) AS n FROM app_day_settlements WHERE staff_id = ? AND invoice_count > 0 AND settle_date >= ? AND settled_at >= ?",
+      [staffId, r.alloc_date, r.verified_at]
+    );
+    if (used.n > 0) throw fail(400, "The office has already settled this stock. It can no longer be changed.");
+  }
+  return r;
 };
 
 exports.updateSelfAllocation = async (req, res) => {
@@ -346,17 +380,50 @@ exports.updateSelfAllocation = async (req, res) => {
   try {
     const staffId = req.staff.user_id;
     const id = Number(req.params.id);
-    const items = await cleanItems(connection, req.body.items);
     await connection.beginTransaction();
-    await ownPending(connection, id, staffId);
-    await connection.query("DELETE FROM app_self_allocation_items WHERE request_id = ?", [id]);
-    await insertItems(connection, id, items);
-    await connection.query("UPDATE app_self_allocations SET note = ?, updated_at = ? WHERE request_id = ?", [
+    const request = await loadOwn(connection, id, staffId);
+    const [existing] = await connection.query("SELECT item_id, product_id, requested_qty, approved_qty FROM app_self_allocation_items WHERE request_id = ?", [id]);
+    const isRevision = request.status === "verified" || existing.some((e) => e.approved_qty !== null);
+    const items = await cleanItems(connection, req.body.items, { allowEmpty: isRevision });
+
+    // What they hold after the change must still cover what they have already put on invoices.
+    const stock = await sellableByProduct(connection, staffId, request.alloc_date);
+    const now = new Map(existing.map((e) => [e.product_id, e]));
+    const after = new Map(items.map((i) => [i.product_id, i.quantity]));
+    const problems = [];
+    for (const productId of new Set([...now.keys(), ...after.keys()])) {
+      const cur = now.get(productId);
+      const r = stock.get(productId) || { allocated: 0, asked: 0, sold: 0 };
+      // This request's own part of what they hold today: stock already allocated plus the not-yet-allocated ask.
+      const mine = cur ? (cur.approved_qty || 0) + Math.max(0, cur.requested_qty - (cur.approved_qty || 0)) : 0;
+      const holdAfter = r.allocated + r.asked - mine + (after.get(productId) || 0);
+      if (holdAfter < r.sold) {
+        const name = (items.find((i) => i.product_id === productId) || {}).product_name;
+        const [[p]] = name ? [[{ product_name: name }]] : await connection.query("SELECT product_name FROM products WHERE product_id = ?", [productId]);
+        problems.push(`${p ? p.product_name : `Product ${productId}`}: you have already sold ${r.sold}, so you must keep at least ${Math.max(0, r.sold - (r.allocated + r.asked - mine))}`);
+      }
+    }
+    if (problems.length) throw fail(400, `Cannot lower the stock: ${problems.join("; ")}.`);
+
+    for (const e of existing) {
+      if (after.has(e.product_id)) {
+        await connection.query("UPDATE app_self_allocation_items SET requested_qty = ? WHERE item_id = ?", [after.get(e.product_id), e.item_id]);
+        after.delete(e.product_id);
+      } else if (e.approved_qty === null) {
+        await connection.query("DELETE FROM app_self_allocation_items WHERE item_id = ?", [e.item_id]);
+      } else {
+        await connection.query("UPDATE app_self_allocation_items SET requested_qty = 0 WHERE item_id = ?", [e.item_id]); // taking it all back
+      }
+    }
+    for (const [productId, quantity] of after) {
+      await connection.query("INSERT INTO app_self_allocation_items (request_id, product_id, requested_qty) VALUES (?, ?, ?)", [id, productId, quantity]);
+    }
+    await connection.query("UPDATE app_self_allocations SET status = 'pending', note = ?, updated_at = ? WHERE request_id = ?", [
       String(req.body.note || "").trim().slice(0, 255) || null, getISTTimestamp(), id,
     ]);
     await connection.commit();
-    await appLog({ req, staffId, action: "self_allocation_edit", details: `Stock request ${id} changed` });
-    res.json({ message: "Request updated" });
+    await appLog({ req, staffId, action: "self_allocation_edit", details: `Stock request ${id} ${isRevision ? "revised (waiting for the office)" : "changed"}` });
+    res.json({ message: isRevision ? "Change sent to the office" : "Request updated" });
   } catch (error) {
     await connection.rollback();
     if (error.status) return res.status(error.status).json({ message: error.message });
@@ -367,17 +434,28 @@ exports.updateSelfAllocation = async (req, res) => {
   }
 };
 
+// Puts a revision back to what the office verified: the asked quantities return to the allocated ones.
+const revertRevision = async (db, requestId, now, note = null) => {
+  await db.query("DELETE FROM app_self_allocation_items WHERE request_id = ? AND approved_qty IS NULL", [requestId]);
+  await db.query("UPDATE app_self_allocation_items SET requested_qty = approved_qty WHERE request_id = ?", [requestId]);
+  await db.query("UPDATE app_self_allocations SET status = 'verified', updated_at = ?, admin_note = COALESCE(?, admin_note) WHERE request_id = ?", [now, note, requestId]);
+};
+
 exports.cancelSelfAllocation = async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const staffId = req.staff.user_id;
     const id = Number(req.params.id);
     await connection.beginTransaction();
-    await ownPending(connection, id, staffId);
-    await connection.query("UPDATE app_self_allocations SET status = 'cancelled', updated_at = ? WHERE request_id = ?", [getISTTimestamp(), id]);
+    const request = await loadOwn(connection, id, staffId);
+    if (request.status !== "pending") throw fail(400, "Only a request waiting for the office can be cancelled");
+    const [[rev]] = await connection.query("SELECT COUNT(*) AS n FROM app_self_allocation_items WHERE request_id = ? AND approved_qty IS NOT NULL", [id]);
+    const now = getISTTimestamp();
+    if (rev.n > 0) await revertRevision(connection, id, now);
+    else await connection.query("UPDATE app_self_allocations SET status = 'cancelled', updated_at = ? WHERE request_id = ?", [now, id]);
     await connection.commit();
-    await appLog({ req, staffId, action: "self_allocation_cancel", details: `Stock request ${id} cancelled` });
-    res.json({ message: "Request cancelled" });
+    await appLog({ req, staffId, action: "self_allocation_cancel", details: `Stock request ${id} ${rev.n > 0 ? "change withdrawn" : "cancelled"}` });
+    res.json({ message: rev.n > 0 ? "Change withdrawn" : "Request cancelled" });
   } catch (error) {
     await connection.rollback();
     if (error.status) return res.status(error.status).json({ message: error.message });
@@ -410,13 +488,14 @@ exports.listSelfAllocations = async (req, res) => {
 };
 
 // The office checks (and may change) the quantities, then the real allocation is created and stock moves.
+// For a revision (the salesperson changed a verified request) only the difference is applied: more stock is
+// allocated on top, less is taken back from the open allocation.
 exports.verifySelfAllocation = async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const id = Number(req.body.request_id);
     const adminId = req.body.userId || null;
     if (!id) throw fail(400, "Choose a request");
-    const items = await cleanItems(connection, req.body.items);
 
     await connection.beginTransaction();
     const [rows] = await connection.query("SELECT *, DATE_FORMAT(alloc_date, '%Y-%m-%d') AS d FROM app_self_allocations WHERE request_id = ? FOR UPDATE", [id]);
@@ -426,33 +505,74 @@ exports.verifySelfAllocation = async (req, res) => {
     if (isTooOld(request.d)) {
       throw fail(400, `This request is for ${request.d}, more than ${MAX_BACKDATE_DAYS} days back. Reject it and allocate by hand.`);
     }
+    const [existing] = await connection.query("SELECT item_id, product_id, approved_qty FROM app_self_allocation_items WHERE request_id = ?", [id]);
+    const isRevision = existing.some((e) => e.approved_qty !== null);
+    const items = await cleanItems(connection, req.body.items, { allowEmpty: isRevision });
+    const prev = new Map(existing.map((e) => [e.product_id, e.approved_qty || 0]));
+    const next = new Map(items.map((i) => [i.product_id, i.quantity]));
+    const names = new Map(items.map((i) => [i.product_id, i.product_name]));
 
-    // Stock is checked now, against what the store holds at this moment.
+    const stock = await sellableByProduct(connection, request.staff_id, request.d);
     const short = [];
-    for (const i of items) {
-      // product_id was checked to be an integer in cleanItems, so it is safe to put in the query text.
-      const [[s]] = await connection.query(`SELECT ${CURRENT_STOCK_SQL(String(i.product_id))} AS available`);
-      if (Number(s.available) < i.quantity) short.push(`${i.product_name} (asked ${i.quantity}, available ${Math.max(0, Number(s.available))})`);
+    const tooLow = [];
+    const deltas = [];
+    for (const productId of new Set([...prev.keys(), ...next.keys()])) {
+      const delta = (next.get(productId) || 0) - (prev.get(productId) || 0);
+      if (delta === 0) continue;
+      if (!names.has(productId)) {
+        const [[p]] = await connection.query("SELECT product_name FROM products WHERE product_id = ?", [productId]);
+        names.set(productId, p ? p.product_name : `Product ${productId}`);
+      }
+      if (delta > 0) {
+        // product_id is a number from the database or was checked in cleanItems, so it is safe in the query text.
+        const [[s]] = await connection.query(`SELECT ${CURRENT_STOCK_SQL(String(Number(productId)))} AS available`);
+        if (Number(s.available) < delta) short.push(`${names.get(productId)} (needs ${delta} more, available ${Math.max(0, Number(s.available))})`);
+      } else {
+        const r = stock.get(productId) || { allocated: 0, sold: 0 };
+        if (r.allocated + delta < r.sold) tooLow.push(`${names.get(productId)} (already sold ${r.sold}, so at least ${r.sold} must stay)`);
+      }
+      deltas.push([productId, delta]);
     }
     if (short.length) throw fail(400, `Not enough stock in the store: ${short.join("; ")}. Lower the quantity or remove the product.`);
+    if (tooLow.length) throw fail(400, `The salesperson has already sold more than this: ${tooLow.join("; ")}. Raise the quantity.`);
 
     const now = getISTTimestamp();
-    for (const i of items) {
-      await connection.query(
-        `INSERT INTO daily_stock_allocation (marketing_staff_id, product_id, allocated_quantity, date, addedDate, isActive, converted_to_sales, addedBy, created)
-         VALUES (?, ?, ?, ?, now(), 1, 0, ?, ?)`,
-        [request.staff_id, i.product_id, i.quantity, request.d, adminId, now]
-      );
+    for (const [productId, delta] of deltas) {
+      if (delta > 0) {
+        await connection.query(
+          `INSERT INTO daily_stock_allocation (marketing_staff_id, product_id, allocated_quantity, date, addedDate, isActive, converted_to_sales, addedBy, created)
+           VALUES (?, ?, ?, ?, now(), 1, 0, ?, ?)`,
+          [request.staff_id, productId, delta, request.d, adminId, now]
+        );
+      } else {
+        let remaining = -delta;
+        const [open] = await connection.query(
+          `SELECT daily_stock_id, allocated_quantity FROM daily_stock_allocation
+           WHERE marketing_staff_id = ? AND product_id = ? AND converted_to_sales = 0 AND isActive = 1 AND allocated_quantity > 0
+           ORDER BY date DESC, daily_stock_id DESC FOR UPDATE`,
+          [request.staff_id, productId]
+        );
+        for (const row of open) {
+          if (remaining <= 0) break;
+          const take = Math.min(row.allocated_quantity, remaining);
+          remaining -= take;
+          await connection.query("UPDATE daily_stock_allocation SET allocated_quantity = ? WHERE daily_stock_id = ?", [row.allocated_quantity - take, row.daily_stock_id]);
+        }
+      }
     }
 
     // Keep what the phone asked for next to what the office approved; products the office added show requested 0.
-    const [existing] = await connection.query("SELECT item_id, product_id FROM app_self_allocation_items WHERE request_id = ?", [id]);
-    const approved = new Map(items.map((i) => [i.product_id, i.quantity]));
+    // After a revision the asked quantity becomes the approved one again.
     for (const e of existing) {
-      await connection.query("UPDATE app_self_allocation_items SET approved_qty = ? WHERE item_id = ?", [approved.get(e.product_id) || 0, e.item_id]);
-      approved.delete(e.product_id);
+      const approved = next.get(e.product_id) || 0;
+      if (isRevision) {
+        await connection.query("UPDATE app_self_allocation_items SET approved_qty = ?, requested_qty = ? WHERE item_id = ?", [approved, approved, e.item_id]);
+      } else {
+        await connection.query("UPDATE app_self_allocation_items SET approved_qty = ? WHERE item_id = ?", [approved, e.item_id]);
+      }
+      next.delete(e.product_id);
     }
-    for (const [productId, quantity] of approved) {
+    for (const [productId, quantity] of next) {
       await connection.query("INSERT INTO app_self_allocation_items (request_id, product_id, requested_qty, approved_qty) VALUES (?, ?, 0, ?)", [id, productId, quantity]);
     }
     await connection.query(
@@ -463,10 +583,10 @@ exports.verifySelfAllocation = async (req, res) => {
 
     await logUserActivity({
       req, user_id: adminId,
-      action: `Self allocation ${id} verified for staff ${request.staff_id} on ${request.d}: ${items.map((i) => `${i.product_name} x ${i.quantity}`).join(", ")}`.slice(0, 250),
+      action: `Self allocation ${id} ${isRevision ? "revision " : ""}verified for staff ${request.staff_id} on ${request.d}: ${deltas.map(([p, d]) => `${names.get(p)} ${d > 0 ? "+" : ""}${d}`).join(", ")}`.slice(0, 250),
       reference_type: "app_self_allocation", reference_id: id,
     });
-    res.json({ message: `Allocated ${items.length} product(s)` });
+    res.json({ message: isRevision ? "Change applied" : `Allocated ${items.length} product(s)` });
   } catch (error) {
     await connection.rollback();
     if (error.status) return res.status(error.status).json({ message: error.message });
@@ -478,22 +598,37 @@ exports.verifySelfAllocation = async (req, res) => {
 };
 
 exports.rejectSelfAllocation = async (req, res) => {
+  const connection = await pool.getConnection();
   try {
     const id = Number(req.body.request_id);
     const adminId = req.body.userId || null;
-    const [result] = await pool.query(
-      "UPDATE app_self_allocations SET status = 'rejected', verified_by = ?, verified_at = ?, updated_at = ?, admin_note = ? WHERE request_id = ? AND status = 'pending'",
-      [adminId, getISTTimestamp(), getISTTimestamp(), String(req.body.note || "").trim().slice(0, 255) || null, id]
-    );
-    if (!result.affectedRows) throw fail(400, "This request is not waiting any more");
+    const note = String(req.body.note || "").trim().slice(0, 255) || null;
+    await connection.beginTransaction();
+    const [rows] = await connection.query("SELECT status FROM app_self_allocations WHERE request_id = ? FOR UPDATE", [id]);
+    if (!rows[0] || rows[0].status !== "pending") throw fail(400, "This request is not waiting any more");
+    const [[rev]] = await connection.query("SELECT COUNT(*) AS n FROM app_self_allocation_items WHERE request_id = ? AND approved_qty IS NOT NULL", [id]);
+    const now = getISTTimestamp();
+    if (rev.n > 0) {
+      // A change to stock already allocated: the change is refused and the allocation stays as it was.
+      await revertRevision(connection, id, now, note);
+    } else {
+      await connection.query(
+        "UPDATE app_self_allocations SET status = 'rejected', verified_by = ?, verified_at = ?, updated_at = ?, admin_note = ? WHERE request_id = ?",
+        [adminId, now, now, note, id]
+      );
+    }
+    await connection.commit();
     await logUserActivity({
-      req, user_id: adminId, action: `Self allocation ${id} rejected`, reference_type: "app_self_allocation", reference_id: id,
+      req, user_id: adminId, action: `Self allocation ${id} ${rev.n > 0 ? "change refused" : "rejected"}`, reference_type: "app_self_allocation", reference_id: id,
     });
-    res.json({ message: "Request rejected" });
+    res.json({ message: rev.n > 0 ? "Change refused. The earlier allocation stays." : "Request rejected" });
   } catch (error) {
+    await connection.rollback();
     if (error.status) return res.status(error.status).json({ message: error.message });
     console.error("rejectSelfAllocation error:", error);
     res.status(500).json({ message: "Could not reject the request" });
+  } finally {
+    connection.release();
   }
 };
 

@@ -1,4 +1,5 @@
 const { getISTDate } = require("./dateUtils");
+const { assertSellable } = require("./appSellable");
 
 const PRICE_ALERT_PCT = Number(process.env.APP_PRICE_ALERT_PCT) || 10;
 const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -65,6 +66,12 @@ const editPendingInvoice = async (conn, { invoiceId, items, payment = {}, notes,
     }
     if (soldPrice < systemPrice - 0.004) anyBelow = true;
     lines.push({ productId, name, quantity, systemPrice, soldPrice, lineTotal, priceId });
+  }
+
+  // The salesperson can only sell what they took; the office may correct any invoice and settlement checks the rest.
+  if (onlyStaffId !== null) {
+    const [[d]] = await conn.query("SELECT DATE_FORMAT(invoice_date, '%Y-%m-%d') AS d FROM app_invoices WHERE app_invoice_id = ?", [invoiceId]);
+    await assertSellable(conn, onlyStaffId, d.d, lines.map((l) => ({ productId: l.productId, quantity: l.quantity, name: l.name })), invoiceId);
   }
 
   const cash = money(payment.cash), upi = money(payment.upi), card = money(payment.card);
