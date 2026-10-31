@@ -14,7 +14,10 @@ const MAX_QTY = 100000;
 // Vehicle KM and the fuel bills of one salesperson day. The settlement page and the printed statement use this too.
 const dayInfo = async (db, staffId, date) => {
   const [[info]] = await db.query(
-    "SELECT start_km, end_km, DATE_FORMAT(settle_requested_at, '%Y-%m-%d %H:%i:%s') AS settle_requested_at FROM app_day_info WHERE staff_id = ? AND info_date = ?",
+    `SELECT i.vehicle_id, v.name AS vehicle_name, v.reg_no AS vehicle_reg, i.start_km, i.end_km,
+            DATE_FORMAT(i.settle_requested_at, '%Y-%m-%d %H:%i:%s') AS settle_requested_at
+     FROM app_day_info i LEFT JOIN app_vehicles v ON v.vehicle_id = i.vehicle_id
+     WHERE i.staff_id = ? AND i.info_date = ?`,
     [staffId, date]
   ).then(([rows]) => [[rows[0] || {}]]);
   const [fuel] = await db.query(
@@ -25,6 +28,9 @@ const dayInfo = async (db, staffId, date) => {
   const start = info.start_km === undefined || info.start_km === null ? null : Number(info.start_km);
   const end = info.end_km === undefined || info.end_km === null ? null : Number(info.end_km);
   return {
+    vehicle_id: info.vehicle_id || null,
+    vehicle_name: info.vehicle_name || null,
+    vehicle_reg: info.vehicle_reg || null,
     start_km: start,
     end_km: end,
     settle_requested_at: info.settle_requested_at || null,
@@ -116,7 +122,34 @@ const readKm = (v, label) => {
   return Math.round(n * 10) / 10;
 };
 
-// Start KM in the morning, end KM in the evening. Either can be sent on its own and changed until the day is settled.
+// The vehicle chosen for a day must be one the office added and still uses.
+const pickVehicle = async (db, id) => {
+  const vehicleId = Number(id);
+  if (!Number.isInteger(vehicleId) || vehicleId <= 0) throw fail(400, "Choose your vehicle");
+  const [rows] = await db.query("SELECT vehicle_id FROM app_vehicles WHERE vehicle_id = ? AND isActive = 1", [vehicleId]);
+  if (!rows[0]) throw fail(400, "That vehicle is not available. Choose another one.");
+  return vehicleId;
+};
+
+// Active vehicles for the phone, each with the last KM seen on it so a wrong reading stands out.
+exports.getVehicles = async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT v.vehicle_id, v.name, v.reg_no,
+              (SELECT COALESCE(i.end_km, i.start_km) FROM app_day_info i
+               WHERE i.vehicle_id = v.vehicle_id AND COALESCE(i.end_km, i.start_km) IS NOT NULL
+               ORDER BY i.info_date DESC, i.info_id DESC LIMIT 1) AS last_km
+       FROM app_vehicles v WHERE v.isActive = 1 ORDER BY v.name`
+    );
+    res.json({ vehicles: rows.map((r) => ({ ...r, last_km: r.last_km === null ? null : Number(r.last_km) })) });
+  } catch (error) {
+    console.error("App getVehicles error:", error);
+    res.status(500).json({ message: "Could not load the vehicles" });
+  }
+};
+
+// Choose the vehicle and save its start KM in the morning. The closing KM comes with the settlement request,
+// but either can also be sent on its own and changed until the day is settled.
 exports.saveKm = async (req, res) => {
   try {
     const staffId = req.staff.user_id;
@@ -131,22 +164,25 @@ exports.saveKm = async (req, res) => {
     );
     if (settled.n > 0) throw fail(400, "Today is already settled by the office. Ask them if the KM needs a change.");
 
-    const [rows] = await pool.query("SELECT start_km, end_km FROM app_day_info WHERE staff_id = ? AND info_date = ?", [staffId, date]);
+    const [rows] = await pool.query("SELECT vehicle_id, start_km, end_km FROM app_day_info WHERE staff_id = ? AND info_date = ?", [staffId, date]);
     const cur = rows[0] || {};
+    const vehicleId = start !== null || req.body.vehicle_id ? await pickVehicle(pool, req.body.vehicle_id || cur.vehicle_id) : cur.vehicle_id || null;
+    if (!vehicleId) throw fail(400, "Choose your vehicle first");
     const nextStart = start !== null ? start : cur.start_km === undefined || cur.start_km === null ? null : Number(cur.start_km);
     const nextEnd = end !== null ? end : cur.end_km === undefined || cur.end_km === null ? null : Number(cur.end_km);
     if (nextStart !== null && nextEnd !== null && nextEnd < nextStart) throw fail(400, "End KM cannot be less than the start KM");
 
     await pool.query(
-      `INSERT INTO app_day_info (staff_id, info_date, start_km, end_km, updated_at) VALUES (?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE start_km = VALUES(start_km), end_km = VALUES(end_km), updated_at = VALUES(updated_at)`,
-      [staffId, date, nextStart, nextEnd, getISTTimestamp()]
+      `INSERT INTO app_day_info (staff_id, info_date, vehicle_id, start_km, end_km, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE vehicle_id = VALUES(vehicle_id), start_km = VALUES(start_km), end_km = VALUES(end_km), updated_at = VALUES(updated_at)`,
+      [staffId, date, vehicleId, nextStart, nextEnd, getISTTimestamp()]
     );
+    const info = await dayInfo(pool, staffId, date);
     await appLog({
       req, staffId, action: start !== null ? "km_start" : "km_end",
-      details: start !== null ? `Start KM ${nextStart}` : `End KM ${nextEnd}`,
+      details: `${info.vehicle_name || "Vehicle"} ${info.vehicle_reg || ""}: ${start !== null ? `start KM ${nextStart}` : `end KM ${nextEnd}`}`.trim(),
     });
-    res.json({ message: "KM saved", ...(await dayInfo(pool, staffId, date)) });
+    res.json({ message: "KM saved", ...info });
   } catch (error) {
     if (error.status) return res.status(error.status).json({ message: error.message });
     console.error("App saveKm error:", error);
@@ -216,15 +252,17 @@ exports.requestSettle = async (req, res) => {
     );
     if (!pending.n) throw fail(400, "There are no unsettled sales for this day");
 
-    const [rows] = await pool.query("SELECT start_km FROM app_day_info WHERE staff_id = ? AND info_date = ?", [staffId, date]);
+    const [rows] = await pool.query("SELECT vehicle_id, start_km FROM app_day_info WHERE staff_id = ? AND info_date = ?", [staffId, date]);
     const start = rows[0] && rows[0].start_km !== null ? Number(rows[0].start_km) : null;
     if (start !== null && end < start) throw fail(400, `Closing KM cannot be less than the start KM (${start})`);
+    // A day that never got a vehicle (for example an older one) takes it with the request.
+    const vehicleId = rows[0] && rows[0].vehicle_id ? rows[0].vehicle_id : await pickVehicle(pool, req.body.vehicle_id);
 
     const now = getISTTimestamp();
     await pool.query(
-      `INSERT INTO app_day_info (staff_id, info_date, end_km, settle_requested_at, updated_at) VALUES (?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE end_km = VALUES(end_km), settle_requested_at = VALUES(settle_requested_at), updated_at = VALUES(updated_at)`,
-      [staffId, date, end, now, now]
+      `INSERT INTO app_day_info (staff_id, info_date, vehicle_id, end_km, settle_requested_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE vehicle_id = VALUES(vehicle_id), end_km = VALUES(end_km), settle_requested_at = VALUES(settle_requested_at), updated_at = VALUES(updated_at)`,
+      [staffId, date, vehicleId, end, now, now]
     );
     await appLog({ req, staffId, action: "settle_request", details: `Settlement requested for ${date}, closing KM ${end}` });
     res.json({ message: "Settlement requested. The office will settle your day.", ...(await dayInfo(pool, staffId, date)) });
@@ -456,5 +494,66 @@ exports.rejectSelfAllocation = async (req, res) => {
     if (error.status) return res.status(error.status).json({ message: error.message });
     console.error("rejectSelfAllocation error:", error);
     res.status(500).json({ message: "Could not reject the request" });
+  }
+};
+
+// ---------------------------------------------------------------- office: vehicles
+
+exports.listVehicles = async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT v.vehicle_id, v.name, v.reg_no, v.isActive,
+              (SELECT COUNT(*) FROM app_day_info i WHERE i.vehicle_id = v.vehicle_id) AS days_used,
+              (SELECT COALESCE(i.end_km, i.start_km) FROM app_day_info i
+               WHERE i.vehicle_id = v.vehicle_id AND COALESCE(i.end_km, i.start_km) IS NOT NULL
+               ORDER BY i.info_date DESC, i.info_id DESC LIMIT 1) AS last_km
+       FROM app_vehicles v ORDER BY v.isActive DESC, v.name`
+    );
+    res.json({ vehicles: rows.map((r) => ({ ...r, last_km: r.last_km === null ? null : Number(r.last_km) })) });
+  } catch (error) {
+    console.error("listVehicles error:", error);
+    res.status(500).json({ message: "Could not load the vehicles" });
+  }
+};
+
+exports.saveVehicle = async (req, res) => {
+  try {
+    const name = String(req.body.name || "").trim().slice(0, 100);
+    const reg = String(req.body.reg_no || "").trim().toUpperCase().replace(/\s+/g, " ").slice(0, 30);
+    const active = req.body.isActive === 0 || req.body.isActive === false ? 0 : 1;
+    if (!name) throw fail(400, "Enter the vehicle name");
+    if (!reg) throw fail(400, "Enter the registration number");
+    const id = Number(req.body.vehicle_id) || null;
+    const [dup] = await pool.query("SELECT vehicle_id FROM app_vehicles WHERE reg_no = ? AND vehicle_id <> ?", [reg, id || 0]);
+    if (dup.length) throw fail(400, `A vehicle with registration ${reg} already exists`);
+    if (id) {
+      const [r] = await pool.query("UPDATE app_vehicles SET name = ?, reg_no = ?, isActive = ? WHERE vehicle_id = ?", [name, reg, active, id]);
+      if (!r.affectedRows) throw fail(404, "Vehicle not found");
+    } else {
+      await pool.query("INSERT INTO app_vehicles (name, reg_no, isActive, created_at) VALUES (?, ?, ?, ?)", [name, reg, active, getISTTimestamp()]);
+    }
+    await logUserActivity({ req, user_id: req.body.userId, action: `App vehicle ${id ? "updated" : "added"}: ${name} ${reg}`, reference_type: "app_vehicle", reference_id: id });
+    res.json({ message: id ? "Vehicle updated" : "Vehicle added" });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error("saveVehicle error:", error);
+    res.status(500).json({ message: "Could not save the vehicle" });
+  }
+};
+
+// A vehicle that was never used is deleted; one with history is only switched off so old days keep their name.
+exports.deleteVehicle = async (req, res) => {
+  try {
+    const id = Number(req.body.vehicle_id);
+    const [[{ used }]] = await pool.query("SELECT COUNT(*) AS used FROM app_day_info WHERE vehicle_id = ?", [id]);
+    if (used > 0) {
+      await pool.query("UPDATE app_vehicles SET isActive = 0 WHERE vehicle_id = ?", [id]);
+      return res.json({ message: "This vehicle has been used, so it is switched off instead of deleted" });
+    }
+    await pool.query("DELETE FROM app_vehicles WHERE vehicle_id = ?", [id]);
+    res.json({ message: "Vehicle deleted" });
+  } catch (error) {
+    console.error("deleteVehicle error:", error);
+    res.status(500).json({ message: "Could not delete the vehicle" });
   }
 };

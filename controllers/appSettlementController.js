@@ -314,7 +314,7 @@ exports.settleDay = async (req, res) => {
       settlement_id: settlementId, staff_id: staffId, staff_name: staff ? staff.name : "", date,
       settled_at: now, settled_by: admin ? admin.name : "Admin", notes: req.body.notes || "",
       totals: day.totals, handover,
-      vehicle: { start_km: vehicle.start_km, end_km: vehicle.end_km, km_run: vehicle.km_run },
+      vehicle: { name: vehicle.vehicle_name, reg_no: vehicle.vehicle_reg, start_km: vehicle.start_km, end_km: vehicle.end_km, km_run: vehicle.km_run },
       fuel_bills: openFuel.map((f) => ({ bill_no: f.bill_no, amount: f.amount })),
       items: lines.map((l) => ({
         product_id: l.product_id, product_name: l.product_name, allocated: l.allocated, sold: l.sold,
@@ -388,7 +388,7 @@ exports.overview = async (req, res) => {
     );
 
     const [reqd] = await pool.query(
-      "SELECT staff_id, end_km, start_km, DATE_FORMAT(settle_requested_at, '%H:%i') AS at FROM app_day_info WHERE info_date = ? AND settle_requested_at IS NOT NULL",
+      "SELECT i.staff_id, i.end_km, i.start_km, v.name AS vehicle_name, v.reg_no AS vehicle_reg, DATE_FORMAT(i.settle_requested_at, '%H:%i') AS at FROM app_day_info i LEFT JOIN app_vehicles v ON v.vehicle_id = i.vehicle_id WHERE i.info_date = ? AND i.settle_requested_at IS NOT NULL",
       [date]
     );
 
@@ -401,7 +401,7 @@ exports.overview = async (req, res) => {
     inv.forEach((a) => { const r = row(a.staff_id); r.invoices = a.invoices; r.pending_total = money(a.total); });
     sold.forEach((a) => { row(a.staff_id).sold = Number(a.sold); });
     dmg.forEach((a) => { row(a.staff_id).damaged = Number(a.damaged); });
-    reqd.forEach((a) => { const r = row(a.staff_id); r.requested = true; r.requested_at = a.at; r.end_km = a.end_km === null ? null : Number(a.end_km); });
+    reqd.forEach((a) => { const r = row(a.staff_id); r.requested = true; r.requested_at = a.at; r.end_km = a.end_km === null ? null : Number(a.end_km); r.vehicle = a.vehicle_name ? `${a.vehicle_name} ${a.vehicle_reg}` : null; });
     done.forEach((a) => { const r = row(a.staff_id); r.settled = true; r.settlement_id = a.settlement_id; r.settled_total = money(a.total); });
 
     const ids = [...byStaff.keys()];

@@ -25,6 +25,10 @@ router.post("/invoices/update", c.updateInvoice);
 router.post("/invoices/settle", c.settleInvoices);
 router.post("/invoices/reject", c.rejectInvoice);
 
+router.post("/vehicles", e.listVehicles);
+router.post("/vehicles/save", e.saveVehicle);
+router.post("/vehicles/delete", e.deleteVehicle);
+
 router.post("/self-allocations", e.listSelfAllocations);
 router.post("/self-allocations/verify", e.verifySelfAllocation);
 router.post("/self-allocations/reject", e.rejectSelfAllocation);
