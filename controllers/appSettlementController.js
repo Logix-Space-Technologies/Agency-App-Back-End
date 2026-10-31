@@ -2,6 +2,7 @@ const pool = require("../config/db");
 const { logUserActivity } = require("../utils/logUserActivity");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 const { postInvoiceTx, trackingId } = require("../utils/appSettle");
+const { dayInfo } = require("./appDayController");
 
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
 const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -124,7 +125,11 @@ exports.previewDay = async (req, res) => {
     const reported = await reportedDamage(pool, staffId, date);
     day.products = day.products.map((p) => ({ ...p, reported_damage: reported[p.product_id] || 0 }));
     const handover = await expectedHandover(pool, staffId, date, day.totals);
-    res.json({ staff: staff[0], date, ...day, handover });
+    const info = await dayInfo(pool, staffId, date);
+    // Fuel already counted in an earlier settlement of the same day is not offered again.
+    info.fuel = info.fuel.filter((f) => !f.settlement_id);
+    info.fuel_total = money(info.fuel.reduce((t, f) => t + f.amount, 0));
+    res.json({ staff: staff[0], date, ...day, handover, vehicle: info });
   } catch (error) {
     console.error("previewDay error:", error);
     res.status(500).json({ message: "Could not load the day" });
@@ -143,6 +148,15 @@ exports.settleDay = async (req, res) => {
     await connection.beginTransaction();
     const day = await loadDay(connection, staffId, date, true);
     if (day.invoices.length === 0) throw fail(400, "There are no pending invoices for this day");
+
+    // The office can look at the day any time, but settles it only after the salesperson asks from the app.
+    const [[req0]] = await connection.query(
+      "SELECT DATE_FORMAT(settle_requested_at, '%Y-%m-%d %H:%i:%s') AS settle_requested_at FROM app_day_info WHERE staff_id = ? AND info_date = ? FOR UPDATE",
+      [staffId, date]
+    ).then(([rows]) => [[rows[0] || {}]]);
+    if (!req0.settle_requested_at) {
+      throw fail(400, "This day cannot be settled yet. The salesperson has to tap Request settlement in the app and enter the closing KM first.");
+    }
 
     // Stock must be allocated before it is sold: the office adds the missing allocation first.
     const short = day.products.filter((p) => p.sold > p.allocated);
@@ -196,6 +210,9 @@ exports.settleDay = async (req, res) => {
       return { ...p, balance, damaged, loss };
     });
 
+    const vehicle = await dayInfo(connection, staffId, date);
+    const openFuel = vehicle.fuel.filter((f) => !f.settlement_id);
+
     const now = getISTTimestamp();
     const [settle] = await connection.query(
       `INSERT INTO app_day_settlements (staff_id, settle_date, settled_by, settled_at, invoice_count, total_amount,
@@ -204,6 +221,13 @@ exports.settleDay = async (req, res) => {
       [staffId, date, adminId, now, day.invoices.length, day.totals.total, day.totals.cash, day.totals.upi, day.totals.card, day.totals.credit]
     );
     const settlementId = settle.insertId;
+    // The request is used up; a later sale on the same day needs a new one.
+    await connection.query("UPDATE app_day_info SET settle_requested_at = NULL WHERE staff_id = ? AND info_date = ?", [staffId, date]);
+    // The fuel bills from the phone belong to this settlement now (Undo frees them again).
+    await connection.query(
+      "UPDATE app_fuel_entries SET settlement_id = ? WHERE staff_id = ? AND fuel_date = ? AND settlement_id IS NULL",
+      [settlementId, staffId, date]
+    );
 
     // 1. Post every invoice of the day to the books (sale, payments, stock for what was sold).
     const posted = [];
@@ -290,6 +314,8 @@ exports.settleDay = async (req, res) => {
       settlement_id: settlementId, staff_id: staffId, staff_name: staff ? staff.name : "", date,
       settled_at: now, settled_by: admin ? admin.name : "Admin", notes: req.body.notes || "",
       totals: day.totals, handover,
+      vehicle: { start_km: vehicle.start_km, end_km: vehicle.end_km, km_run: vehicle.km_run },
+      fuel_bills: openFuel.map((f) => ({ bill_no: f.bill_no, amount: f.amount })),
       items: lines.map((l) => ({
         product_id: l.product_id, product_name: l.product_name, allocated: l.allocated, sold: l.sold,
         balance: l.balance, damaged: l.damaged, loss: l.loss, amount: l.amount, price: l.avg_price,
@@ -300,6 +326,7 @@ exports.settleDay = async (req, res) => {
       // Everything Undo needs to put the day back exactly as it was.
       undo: {
         ds_tracking: dsTracking,
+        settle_requested_at: req0.settle_requested_at,
         voucher_ids: voucherIds,
         alloc_before: lines.flatMap((l) => l.alloc_rows.map((a) => ({ daily_stock_id: a.daily_stock_id, allocated_quantity: a.allocated_quantity }))),
       },
@@ -360,15 +387,21 @@ exports.overview = async (req, res) => {
       [date]
     );
 
+    const [reqd] = await pool.query(
+      "SELECT staff_id, end_km, start_km, DATE_FORMAT(settle_requested_at, '%H:%i') AS at FROM app_day_info WHERE info_date = ? AND settle_requested_at IS NOT NULL",
+      [date]
+    );
+
     const byStaff = new Map();
     const row = (id) => {
-      if (!byStaff.has(id)) byStaff.set(id, { staff_id: id, allocated: 0, sold: 0, damaged: 0, invoices: 0, pending_total: 0, settled: false, settlement_id: null, settled_total: 0 });
+      if (!byStaff.has(id)) byStaff.set(id, { staff_id: id, requested: false, requested_at: null, end_km: null, allocated: 0, sold: 0, damaged: 0, invoices: 0, pending_total: 0, settled: false, settlement_id: null, settled_total: 0 });
       return byStaff.get(id);
     };
     alloc.forEach((a) => { row(a.staff_id).allocated = Number(a.allocated); });
     inv.forEach((a) => { const r = row(a.staff_id); r.invoices = a.invoices; r.pending_total = money(a.total); });
     sold.forEach((a) => { row(a.staff_id).sold = Number(a.sold); });
     dmg.forEach((a) => { row(a.staff_id).damaged = Number(a.damaged); });
+    reqd.forEach((a) => { const r = row(a.staff_id); r.requested = true; r.requested_at = a.at; r.end_km = a.end_km === null ? null : Number(a.end_km); });
     done.forEach((a) => { const r = row(a.staff_id); r.settled = true; r.settlement_id = a.settlement_id; r.settled_total = money(a.total); });
 
     const ids = [...byStaff.keys()];
@@ -468,6 +501,14 @@ exports.undoDay = async (req, res) => {
         "UPDATE daily_stock_allocation SET allocated_quantity = ?, converted_to_sales = 0 WHERE daily_stock_id = ?",
         [a.allocated_quantity, a.daily_stock_id]
       );
+    }
+
+    await connection.query("UPDATE app_fuel_entries SET settlement_id = NULL WHERE settlement_id = ?", [settlementId]);
+    // The salesperson's settlement request is open again, so the day can be settled again after corrections.
+    if (d.undo.settle_requested_at) {
+      await connection.query("UPDATE app_day_info SET settle_requested_at = ? WHERE staff_id = ? AND info_date = ?", [
+        d.undo.settle_requested_at, row.staff_id, d.date,
+      ]);
     }
 
     // 4. Expenses entered with the settlement.

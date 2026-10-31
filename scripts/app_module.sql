@@ -206,3 +206,63 @@ CREATE TABLE IF NOT EXISTS `app_damage_reports` (
   PRIMARY KEY (`report_id`),
   UNIQUE KEY `uq_damage_report` (`staff_id`,`report_date`,`product_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ---------------------------------------------------------------------------------------------
+-- Day start (vehicle KM), fuel bills and self allocation from the phone.
+
+-- Vehicle KM the salesperson enters in the morning (start) and at the end of the day, and when they asked the
+-- office to settle the day (the office cannot settle a day without that request).
+CREATE TABLE IF NOT EXISTS `app_day_info` (
+  `info_id` int(11) NOT NULL AUTO_INCREMENT,
+  `staff_id` int(11) NOT NULL,
+  `info_date` date NOT NULL,
+  `start_km` decimal(10,1) DEFAULT NULL,
+  `end_km` decimal(10,1) DEFAULT NULL,
+  `settle_requested_at` datetime DEFAULT NULL,
+  `updated_at` datetime NOT NULL,
+  PRIMARY KEY (`info_id`),
+  UNIQUE KEY `uq_day_info` (`staff_id`,`info_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Fuel bought on the day, with the bill number. `settlement_id` is set when the office settles that day
+-- (and cleared again if the settlement is undone).
+CREATE TABLE IF NOT EXISTS `app_fuel_entries` (
+  `fuel_id` int(11) NOT NULL AUTO_INCREMENT,
+  `staff_id` int(11) NOT NULL,
+  `fuel_date` date NOT NULL,
+  `amount` decimal(10,2) NOT NULL,
+  `bill_no` varchar(60) NOT NULL,
+  `note` varchar(255) DEFAULT NULL,
+  `created_at` datetime NOT NULL,
+  `settlement_id` int(11) DEFAULT NULL,
+  PRIMARY KEY (`fuel_id`),
+  KEY `idx_fuel_staff_date` (`staff_id`,`fuel_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Stock the salesperson takes for the day from the phone. It changes no stock: the office checks it on the
+-- Daily Stock Allocation page, can edit the quantities, and only then is a real allocation created.
+CREATE TABLE IF NOT EXISTS `app_self_allocations` (
+  `request_id` int(11) NOT NULL AUTO_INCREMENT,
+  `staff_id` int(11) NOT NULL,
+  `alloc_date` date NOT NULL,
+  `status` varchar(12) NOT NULL DEFAULT 'pending',
+  `note` varchar(255) DEFAULT NULL,
+  `created_at` datetime NOT NULL,
+  `updated_at` datetime NOT NULL,
+  `verified_by` int(11) DEFAULT NULL,
+  `verified_at` datetime DEFAULT NULL,
+  `admin_note` varchar(255) DEFAULT NULL,
+  PRIMARY KEY (`request_id`),
+  KEY `idx_self_alloc_status` (`status`,`alloc_date`),
+  KEY `idx_self_alloc_staff` (`staff_id`,`alloc_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `app_self_allocation_items` (
+  `item_id` int(11) NOT NULL AUTO_INCREMENT,
+  `request_id` int(11) NOT NULL,
+  `product_id` int(11) NOT NULL,
+  `requested_qty` int(11) NOT NULL,
+  `approved_qty` int(11) DEFAULT NULL,
+  PRIMARY KEY (`item_id`),
+  KEY `idx_self_alloc_items` (`request_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
