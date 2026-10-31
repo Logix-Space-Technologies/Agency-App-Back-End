@@ -109,7 +109,7 @@ exports.getDay = async (req, res) => {
       `SELECT COALESCE(MAX(end_km), MAX(start_km)) AS km FROM app_day_info WHERE staff_id = ? AND info_date < ?`,
       [staffId, date]
     ).then(([rows]) => [[rows[0] || {}]]);
-    const requests = await loadRequests(pool, "r.staff_id = ? AND (r.alloc_date = ? OR r.status = 'pending')", [staffId, date]);
+    const requests = await loadRequests(pool, "r.staff_id = ? AND r.alloc_date = ?", [staffId, date]);
     // Stock they took, what is already on their invoices and what is left to sell: sales come off it as they happen.
     const sellable = await sellableByProduct(pool, staffId, date);
     const ids = [...sellable.keys()];

@@ -10,10 +10,11 @@ const sellableByProduct = async (db, staffId, date, excludeInvoiceId = 0) => {
     [staffId, date]
   );
   // Only the part not yet allocated counts: a change request that raises 10 to 15 adds 5, one that lowers it adds nothing.
+  // A request is for its own day: one the office never verified does not carry into the next day.
   const [asked] = await db.query(
     `SELECT it.product_id, SUM(GREATEST(0, it.requested_qty - COALESCE(it.approved_qty, 0))) AS q
      FROM app_self_allocation_items it JOIN app_self_allocations r ON r.request_id = it.request_id
-     WHERE r.staff_id = ? AND r.status = 'pending' AND r.alloc_date <= ?
+     WHERE r.staff_id = ? AND r.status = 'pending' AND r.alloc_date = ?
      GROUP BY it.product_id`,
     [staffId, date]
   );
