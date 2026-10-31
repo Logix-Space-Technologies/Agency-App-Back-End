@@ -2407,17 +2407,33 @@ exports.submitAllProductReturns = async (req, res) => {
 
 // Sales posted by the mobile app's Day Settlement (and the damage record that goes with them) must be
 // removed with "Undo day" so stock, damage, loss, allocation and expenses all go back together.
+// Returns the message to show when this sale belongs to an app Day Settlement, naming the settlement to undo; null otherwise.
 const appSettlementOwns = async (trackingId) => {
   try {
     const [inv] = await pool.query("SELECT 1 FROM app_invoices WHERE final_sale_tracking_id = ? LIMIT 1", [trackingId]);
-    if (inv.length) return true;
-    const [ds] = await pool.query("SELECT 1 FROM final_sale WHERE sale_tracking_Id = ? AND invoiceNumber LIKE 'DS-%' LIMIT 1", [trackingId]);
-    return ds.length > 0;
+    let owned = inv.length > 0;
+    if (!owned) {
+      const [ds] = await pool.query("SELECT 1 FROM final_sale WHERE sale_tracking_Id = ? AND invoiceNumber LIKE 'DS-%' LIMIT 1", [trackingId]);
+      owned = ds.length > 0;
+    }
+    if (!owned) return null;
+    let which = "";
+    try {
+      const [st] = await pool.query(
+        `SELECT d.settlement_id, u.name, DATE_FORMAT(d.settle_date, '%d-%m-%Y') AS day
+         FROM app_day_settlements d LEFT JOIN users u ON u.user_id = d.staff_id
+         WHERE d.invoice_count > 0 AND d.details LIKE ? ORDER BY d.settlement_id DESC LIMIT 1`,
+        [`%${String(trackingId).replace(/[%_]/g, "")}%`]
+      );
+      if (st[0]) which = ` Undo settlement no. ${st[0].settlement_id} (${st[0].name || "salesperson"}, ${st[0].day}).`;
+    } catch (e) {
+      /* the message still explains where to go */
+    }
+    return `This sale was made by the mobile app's Day Settlement, so it cannot be deleted here. Open App Day Settlement and use Undo on that day, so stock, damage and allocation go back together.${which}`;
   } catch (e) {
-    return false; // a database without the app tables has nothing to protect
+    return null; // a database without the app tables has nothing to protect
   }
 };
-const APP_SALE_MESSAGE = "This sale came from the mobile app's Day Settlement. Open App Day Settlement and use Undo on that day, so stock, damage and allocation go back together.";
 
 exports.deleteDirectSaleProduct = async (req, res) => {
   let connection;
@@ -2427,7 +2443,8 @@ exports.deleteDirectSaleProduct = async (req, res) => {
     if (!product_id)  return res.status(400).json({ error: "Product ID is required." });  
     if (!sale_id) return res.status(400).json({ error: "Sale ID is required." });
     if (!sale_tracking_id) return res.status(400).json({ error: "Sale Tracking ID  ID is required." });
-    if (await appSettlementOwns(sale_tracking_id)) return res.status(409).json({ error: APP_SALE_MESSAGE });
+    const appSale = await appSettlementOwns(sale_tracking_id);
+    if (appSale) return res.status(409).json({ error: appSale });
 
     connection = await pool.getConnection();
     
@@ -2518,7 +2535,8 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
     if (!sale_tracking_id) {
       return res.status(400).json({ error: "Sale Tracking ID is required." });
     }
-    if (await appSettlementOwns(sale_tracking_id)) return res.status(409).json({ error: APP_SALE_MESSAGE });
+    const appSale = await appSettlementOwns(sale_tracking_id);
+    if (appSale) return res.status(409).json({ error: appSale });
 
     connection = await pool.getConnection();
     await connection.beginTransaction();
