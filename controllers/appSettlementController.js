@@ -460,7 +460,11 @@ exports.undoDay = async (req, res) => {
     }
 
     // 1. The invoices: stock comes back, the sale and its payments leave the books, the invoice is pending again.
+    let skippedDeleted = 0;
     for (const inv of d.invoices) {
+      // An invoice the office deleted from Search Sales already put its stock back and stays deleted.
+      const [[gone]] = await connection.query("SELECT COUNT(*) AS n FROM final_sale WHERE sale_tracking_Id = ? AND isActive = 0", [inv.tracking_id]);
+      if (gone.n > 0) { skippedDeleted += 1; continue; }
       const [lines] = await connection.query(
         "SELECT product_id, quantity_sold FROM sales WHERE sale_tracking_Id = ? AND isActive = 1",
         [inv.tracking_id]
@@ -481,13 +485,20 @@ exports.undoDay = async (req, res) => {
       await connection.query("UPDATE app_payment_allocations SET posted = 0 WHERE invoice_id = ?", [inv.invoice_id]);
     }
 
-    // 2. Damage and loss go back into usable stock, and the record that carried them is removed.
-    for (const i of d.items) {
-      if (i.damaged > 0 || i.loss > 0) {
-        await connection.query(
-          "UPDATE stock SET Damage_Qty = GREATEST(0, Damage_Qty - ?), Loss_Qty = GREATEST(0, Loss_Qty - ?) WHERE product_id = ? AND isActive = 1",
-          [i.damaged, i.loss, i.product_id]
-        );
+    // 2. Damage and loss go back into usable stock (only what is still recorded: the office may have deleted
+    //    that record already, which put it back), and the record that carried them is removed.
+    if (d.undo.ds_tracking) {
+      const [shortage] = await connection.query(
+        "SELECT product_id, damaged_count, loss_count FROM sales WHERE sale_tracking_Id = ? AND isActive = 1",
+        [d.undo.ds_tracking]
+      );
+      for (const i of shortage) {
+        if (i.damaged_count > 0 || i.loss_count > 0) {
+          await connection.query(
+            "UPDATE stock SET Damage_Qty = GREATEST(0, Damage_Qty - ?), Loss_Qty = GREATEST(0, Loss_Qty - ?) WHERE product_id = ? AND isActive = 1",
+            [i.damaged_count, i.loss_count, i.product_id]
+          );
+        }
       }
     }
     if (d.undo.ds_tracking) {
@@ -537,7 +548,8 @@ exports.undoDay = async (req, res) => {
       action: `Day settlement ${settlementId} for ${d.staff_name} on ${d.date} undone: ${d.invoices.length} invoice(s) back to pending`,
       reference_type: "app_day_settlement", reference_id: settlementId,
     });
-    res.json({ message: `Settlement ${settlementId} undone. ${d.invoices.length} invoice(s) are pending again.` });
+    const back = d.invoices.length - skippedDeleted;
+    res.json({ message: `Settlement ${settlementId} undone. ${back} invoice(s) are pending again${skippedDeleted ? ` (${skippedDeleted} deleted earlier stay deleted)` : ""}.` });
   } catch (error) {
     await connection.rollback();
     if (error.status) return res.status(error.status).json({ message: error.message });

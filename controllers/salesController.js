@@ -2407,32 +2407,25 @@ exports.submitAllProductReturns = async (req, res) => {
 
 // Sales posted by the mobile app's Day Settlement (and the damage record that goes with them) must be
 // removed with "Undo day" so stock, damage, loss, allocation and expenses all go back together.
-// Returns the message to show when this sale belongs to an app Day Settlement, naming the settlement to undo; null otherwise.
-const appSettlementOwns = async (trackingId) => {
+// The office may delete any sale, including the ones made by the mobile app's Day Settlement. Stock comes back the
+// same way as for any other sale. The zero-value "DS-n" record that carries a day's damage and loss also puts
+// that damage and loss back into usable stock when it is deleted. Returns true for that record.
+const isDayShortageRecord = async (conn, trackingId) => {
   try {
-    const [inv] = await pool.query("SELECT 1 FROM app_invoices WHERE final_sale_tracking_id = ? LIMIT 1", [trackingId]);
-    let owned = inv.length > 0;
-    if (!owned) {
-      const [ds] = await pool.query("SELECT 1 FROM final_sale WHERE sale_tracking_Id = ? AND invoiceNumber LIKE 'DS-%' LIMIT 1", [trackingId]);
-      owned = ds.length > 0;
-    }
-    if (!owned) return null;
-    let which = "";
-    try {
-      const [st] = await pool.query(
-        `SELECT d.settlement_id, u.name, DATE_FORMAT(d.settle_date, '%d-%m-%Y') AS day
-         FROM app_day_settlements d LEFT JOIN users u ON u.user_id = d.staff_id
-         WHERE d.invoice_count > 0 AND d.details LIKE ? ORDER BY d.settlement_id DESC LIMIT 1`,
-        [`%${String(trackingId).replace(/[%_]/g, "")}%`]
-      );
-      if (st[0]) which = ` Undo settlement no. ${st[0].settlement_id} (${st[0].name || "salesperson"}, ${st[0].day}).`;
-    } catch (e) {
-      /* the message still explains where to go */
-    }
-    return `This sale was made by the mobile app's Day Settlement, so it cannot be deleted here. Open App Day Settlement and use Undo on that day, so stock, damage and allocation go back together.${which}`;
+    const [ds] = await conn.query("SELECT 1 FROM final_sale WHERE sale_tracking_Id = ? AND invoiceNumber LIKE 'DS-%' LIMIT 1", [trackingId]);
+    return ds.length > 0;
   } catch (e) {
-    return null; // a database without the app tables has nothing to protect
+    return false;
   }
+};
+
+// Damage and loss that one deleted line had recorded go back into stock.
+const putBackDamageAndLoss = async (conn, productId, damaged, loss) => {
+  if (!(damaged > 0) && !(loss > 0)) return;
+  await conn.execute(
+    "UPDATE `stock` SET Damage_Qty = GREATEST(0, Damage_Qty - ?), Loss_Qty = GREATEST(0, Loss_Qty - ?) WHERE `product_id` = ? AND isActive = 1",
+    [damaged || 0, loss || 0, productId]
+  );
 };
 
 exports.deleteDirectSaleProduct = async (req, res) => {
@@ -2443,12 +2436,10 @@ exports.deleteDirectSaleProduct = async (req, res) => {
     if (!product_id)  return res.status(400).json({ error: "Product ID is required." });  
     if (!sale_id) return res.status(400).json({ error: "Sale ID is required." });
     if (!sale_tracking_id) return res.status(400).json({ error: "Sale Tracking ID  ID is required." });
-    const appSale = await appSettlementOwns(sale_tracking_id);
-    if (appSale) return res.status(409).json({ error: appSale });
-
     connection = await pool.getConnection();
     
     await connection.beginTransaction();
+    const dayRecord = await isDayShortageRecord(connection, sale_tracking_id);
 
     const [result] =  await connection.execute(
           "UPDATE `sales` SET `isActive` = 0 WHERE `product_id`= ? AND `sale_tracking_Id`=?",
@@ -2459,10 +2450,11 @@ exports.deleteDirectSaleProduct = async (req, res) => {
         return res.status(400).json({ error: "Sales data not updated" });
     }else{
       const [product] =  await connection.execute(
-          "SELECT quantity_sold, amount_received from `sales` WHERE `product_id`= ? AND `sale_tracking_Id`=? AND `isActive` = 0",
+          "SELECT quantity_sold, amount_received, damaged_count, loss_count from `sales` WHERE `product_id`= ? AND `sale_tracking_Id`=? AND `isActive` = 0",
           [product_id, sale_tracking_id]
         );
-        const { quantity_sold, amount_received } = product[0] ?? {};
+        const { quantity_sold, amount_received, damaged_count, loss_count } = product[0] ?? {};
+        if (dayRecord) await putBackDamageAndLoss(connection, product_id, damaged_count, loss_count);
         const [stockUpdate] =  await connection.execute(
             "UPDATE `stock` SET quantity = quantity +  ? WHERE `product_id` = ?",
             [quantity_sold, product_id]
@@ -2535,11 +2527,9 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
     if (!sale_tracking_id) {
       return res.status(400).json({ error: "Sale Tracking ID is required." });
     }
-    const appSale = await appSettlementOwns(sale_tracking_id);
-    if (appSale) return res.status(409).json({ error: appSale });
-
     connection = await pool.getConnection();
     await connection.beginTransaction();
+    const dayRecord = await isDayShortageRecord(connection, sale_tracking_id);
 
     //Update final_sale
     const [result] = await connection.execute(
@@ -2552,7 +2542,7 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
       return res.status(400).json({ error: "Sales data not updated" });
     }else{
     const [products] = await connection.execute(
-      "SELECT `product_id`, `quantity_sold` FROM `sales` WHERE `sale_tracking_Id` = ? AND isActive = 1",
+      "SELECT `product_id`, `quantity_sold`, `damaged_count`, `loss_count` FROM `sales` WHERE `sale_tracking_Id` = ? AND isActive = 1",
       [sale_tracking_id]
     );
 
@@ -2572,8 +2562,9 @@ exports.deleteAllDirectSaleProducts = async (req, res) => {
     );
     //Update all products
     await Promise.all(
-      products.map(({ product_id, quantity_sold }) =>
+      products.map(({ product_id, quantity_sold, damaged_count, loss_count }) =>
         (async () => {
+          if (dayRecord) await putBackDamageAndLoss(connection, product_id, damaged_count, loss_count);
           // Update sales
           await connection.execute(
             "UPDATE `sales` SET `isActive` = 0 WHERE `sale_tracking_Id` = ? AND `product_id` = ?",
