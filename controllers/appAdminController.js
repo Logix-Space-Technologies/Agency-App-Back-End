@@ -6,6 +6,7 @@ const { deletedByAdmin, statusExpr, belowPriceSql, abovePriceSql } = require("..
 const { duesByShop, postAllocation } = require("../utils/appDues");
 const { editPendingInvoice } = require("../utils/appInvoiceEdit");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
+const { CURRENT_STOCK_SQL } = require("../utils/appStock");
 
 const PRICE_ALERT_PCT = Number(process.env.APP_PRICE_ALERT_PCT) || 10;
 const APP_ROLES = ["marketing_staff", "staff"];
@@ -17,15 +18,6 @@ const pageArgs = (body, defaultLimit = 25) => {
   const page = Math.max(Number(body.page) || 1, 1);
   return { limit, page, offset: (page - 1) * limit };
 };
-
-// Stock the office can actually sell: total in the store, less stock allocated to marketing
-// staff and not yet sold, less damaged. Same definition as the Stock page.
-const CURRENT_STOCK_SQL = (productCol) => `(
-  COALESCE((SELECT SUM(st.quantity - COALESCE(st.Damage_Qty, 0)) FROM stock st
-            WHERE st.product_id = ${productCol} AND st.isActive = 1), 0)
-  - COALESCE((SELECT SUM(d.allocated_quantity) FROM daily_stock_allocation d
-              WHERE d.product_id = ${productCol} AND d.converted_to_sales = 0 AND d.isActive = 1), 0)
-)`;
 
 // Latest marketing selling price per product, the same rule the mobile app uses.
 const LATEST_PRICE_SQL = `

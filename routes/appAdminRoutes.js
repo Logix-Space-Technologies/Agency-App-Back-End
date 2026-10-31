@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const c = require("../controllers/appAdminController");
 const d = require("../controllers/appSettlementController");
+const e = require("../controllers/appDayController");
 
 router.post("/routes", c.listRoutes);
 router.post("/routes/save", c.saveRoute);
@@ -23,6 +24,10 @@ router.post("/invoices/products", c.invoiceProducts);
 router.post("/invoices/update", c.updateInvoice);
 router.post("/invoices/settle", c.settleInvoices);
 router.post("/invoices/reject", c.rejectInvoice);
+
+router.post("/self-allocations", e.listSelfAllocations);
+router.post("/self-allocations/verify", e.verifySelfAllocation);
+router.post("/self-allocations/reject", e.rejectSelfAllocation);
 
 router.post("/settlement/overview", d.overview);
 router.post("/settlement/preview", d.previewDay);

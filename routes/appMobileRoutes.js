@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const { requireStaff } = require("../middleware/appAuth");
 const c = require("../controllers/appMobileController");
+const day = require("../controllers/appDayController");
 
 router.post("/login", c.login);
 
@@ -26,6 +27,15 @@ router.get("/settlements", c.getSettlements);
 router.get("/settlements/:id", c.getSettlement);
 router.put("/stock/damage", c.saveDamage);
 router.get("/reports", c.getReport);
+router.get("/day", day.getDay);
+router.put("/day/km", day.saveKm);
+router.post("/day/settle-request", day.requestSettle);
+router.delete("/day/settle-request", day.cancelSettleRequest);
+router.post("/fuel", day.addFuel);
+router.delete("/fuel/:id", day.deleteFuel);
+router.post("/self-allocations", day.createSelfAllocation);
+router.put("/self-allocations/:id", day.updateSelfAllocation);
+router.delete("/self-allocations/:id", day.cancelSelfAllocation);
 router.post("/log", c.postLog);
 
 module.exports = router;

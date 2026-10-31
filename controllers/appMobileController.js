@@ -6,6 +6,7 @@ const { deletedByAdmin, statusExpr } = require("../utils/appInvoiceStatus");
 const { outstandingInvoices, duesByShop, collectDues } = require("../utils/appDues");
 const { editPendingInvoice } = require("../utils/appInvoiceEdit");
 const { loadDay, reportedDamage } = require("./appSettlementController");
+const { dayInfo } = require("./appDayController");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 // A sold price this far from the current marketing price is flagged for the admin.
@@ -738,7 +739,7 @@ exports.getMyStock = async (req, res) => {
        FROM app_day_settlements WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0 ORDER BY settlement_id`,
       [staffId, date]
     );
-    res.json({ date, products, invoices: day.invoices.length, total: day.totals.total, settled, settlements: docs });
+    res.json({ date, products, invoices: day.invoices.length, total: day.totals.total, settled, settlements: docs, vehicle: await dayInfo(pool, staffId, date) });
   } catch (error) {
     console.error("App getMyStock error:", error);
     res.status(500).json({ message: "Could not load your stock" });
