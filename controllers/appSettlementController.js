@@ -31,7 +31,7 @@ const loadDay = async (db, staffId, date, lock = false) => {
   const [allocs] = await db.query(
     `SELECT daily_stock_id, product_id, allocated_quantity, DATE_FORMAT(date, '%Y-%m-%d') AS alloc_date
      FROM daily_stock_allocation
-     WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1 AND allocated_quantity > 0 AND date <= ?
+     WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1 AND allocated_quantity > 0 AND date = ?
      ORDER BY date, daily_stock_id${suffix}`,
     [staffId, date]
   );
@@ -362,7 +362,7 @@ exports.overview = async (req, res) => {
     const [alloc] = await pool.query(
       `SELECT marketing_staff_id AS staff_id, SUM(allocated_quantity) AS allocated
        FROM daily_stock_allocation
-       WHERE converted_to_sales = 0 AND isActive = 1 AND allocated_quantity > 0 AND date <= ?
+       WHERE converted_to_sales = 0 AND isActive = 1 AND allocated_quantity > 0 AND date = ?
        GROUP BY marketing_staff_id`,
       [date]
     );

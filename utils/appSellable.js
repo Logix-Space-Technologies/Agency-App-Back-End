@@ -1,11 +1,11 @@
-// What a salesperson may still sell: the stock they took (the office's allocation plus anything they asked for
+// What a salesperson may still sell on a day: the stock they took that day (the office's allocation plus anything they asked for
 // from the phone that is still waiting to be verified), less what is already on their unsettled invoices.
 const fail = (status, message) => Object.assign(new Error(message), { status });
 
 const sellableByProduct = async (db, staffId, date, excludeInvoiceId = 0) => {
   const [alloc] = await db.query(
     `SELECT product_id, SUM(allocated_quantity) AS q FROM daily_stock_allocation
-     WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1 AND allocated_quantity > 0 AND date <= ?
+     WHERE marketing_staff_id = ? AND converted_to_sales = 0 AND isActive = 1 AND allocated_quantity > 0 AND date = ?
      GROUP BY product_id`,
     [staffId, date]
   );
@@ -21,7 +21,7 @@ const sellableByProduct = async (db, staffId, date, excludeInvoiceId = 0) => {
   const [sold] = await db.query(
     `SELECT it.product_id, SUM(it.quantity) AS q
      FROM app_invoice_items it JOIN app_invoices i ON i.app_invoice_id = it.app_invoice_id
-     WHERE i.staff_id = ? AND i.status = 'pending' AND i.invoice_date <= ? AND i.app_invoice_id <> ?
+     WHERE i.staff_id = ? AND i.status = 'pending' AND i.invoice_date = ? AND i.app_invoice_id <> ?
      GROUP BY it.product_id`,
     [staffId, date, excludeInvoiceId]
   );
