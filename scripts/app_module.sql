@@ -210,12 +210,24 @@ CREATE TABLE IF NOT EXISTS `app_damage_reports` (
 -- ---------------------------------------------------------------------------------------------
 -- Day start (vehicle KM), fuel bills and self allocation from the phone.
 
+-- Vehicles belong to the office; the office adds them and the salesperson picks one each day.
+CREATE TABLE IF NOT EXISTS `app_vehicles` (
+  `vehicle_id` int(11) NOT NULL AUTO_INCREMENT,
+  `name` varchar(100) NOT NULL,
+  `reg_no` varchar(30) NOT NULL,
+  `isActive` tinyint(1) NOT NULL DEFAULT 1,
+  `created_at` datetime NOT NULL,
+  PRIMARY KEY (`vehicle_id`),
+  UNIQUE KEY `uq_vehicle_reg` (`reg_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 -- Vehicle KM the salesperson enters in the morning (start) and at the end of the day, and when they asked the
 -- office to settle the day (the office cannot settle a day without that request).
 CREATE TABLE IF NOT EXISTS `app_day_info` (
   `info_id` int(11) NOT NULL AUTO_INCREMENT,
   `staff_id` int(11) NOT NULL,
   `info_date` date NOT NULL,
+  `vehicle_id` int(11) DEFAULT NULL,
   `start_km` decimal(10,1) DEFAULT NULL,
   `end_km` decimal(10,1) DEFAULT NULL,
   `settle_requested_at` datetime DEFAULT NULL,
@@ -266,3 +278,10 @@ CREATE TABLE IF NOT EXISTS `app_self_allocation_items` (
   PRIMARY KEY (`item_id`),
   KEY `idx_self_alloc_items` (`request_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Sidebar link for the vehicles page, in the same "Mobile App" group.
+INSERT INTO menu_items (name, href, menu_id, parent_id, access_roles, isActive, sort_order)
+SELECT 'App Vehicles', '/app-vehicles', p.menu_id, p.id, 'admin', 1, 0
+FROM menu_items p
+WHERE p.name = 'Mobile App' AND p.parent_id IS NULL
+  AND NOT EXISTS (SELECT 1 FROM menu_items x WHERE x.href = '/app-vehicles');
