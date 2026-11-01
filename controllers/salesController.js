@@ -1746,7 +1746,10 @@ exports.addSales = async (req, res) => {
 // search
 exports.searchSales = async (req, res) => {
   try {
-    const { sale_date, from_date, to_date, user_type, user_id } = req.body;
+    const { sale_date, from_date, to_date, user_type, user_id, include_shops } = req.body;
+    // Mobile-app days show as one combined row per salesperson (like a marketing settlement). The shop-wise sales stay in the
+    // books for GST and shop dues; they are listed only when asked for, or when searching by a shop.
+    const combine = user_type !== "customer" && !include_shops;
 
      let subquery =  "";
      let nameField = "";
@@ -1792,6 +1795,11 @@ exports.searchSales = async (req, res) => {
       LEFT JOIN users au ON au.user_id = ai.staff_id
       WHERE f.isActive = 1
     `;
+    if (combine) {
+      query += ` AND ai.app_invoice_id IS NULL
+                 AND NOT (f.TotalAmount = 0 AND f.invoiceNumber LIKE 'DS-%'
+                          AND EXISTS (SELECT 1 FROM app_day_settlements ds WHERE ds.settlement_id = SUBSTRING(f.invoiceNumber, 4)))`;
+    }
 
     const queryParams = [];
 
@@ -1820,6 +1828,44 @@ exports.searchSales = async (req, res) => {
     query += ` ORDER BY f.created DESC`;
 
     const [result] = await pool.query(query, queryParams);
+
+    if (combine) {
+      const conds = ["d.invoice_count > 0"];
+      const params = [];
+      if (sale_date) { conds.push("d.settle_date = ?"); params.push(sale_date); }
+      else { conds.push("d.settle_date BETWEEN ? AND ?"); params.push(from_date, to_date); }
+      if (user_type === "marketing" && user_id && user_id !== "all") { conds.push("d.staff_id = ?"); params.push(user_id); }
+      const [days] = await pool.query(
+        `SELECT d.settlement_id, d.staff_id, u.name AS staff_name, DATE_FORMAT(d.settle_date, '%Y-%m-%d') AS settle_date, d.details
+         FROM app_day_settlements d LEFT JOIN users u ON u.user_id = d.staff_id
+         WHERE ${conds.join(" AND ")} ORDER BY d.settlement_id DESC`,
+        params
+      );
+      const combined = [];
+      for (const d of days) {
+        let det = null;
+        try { det = typeof d.details === "string" ? JSON.parse(d.details) : d.details; } catch (e) { det = null; }
+        if (!det || det.undone) continue;
+        const tracking = (det.invoices || []).map((i) => i.tracking_id).filter(Boolean);
+        let paid = 0, settled = 1;
+        if (tracking.length) {
+          const [[f]] = await pool.query(
+            "SELECT COALESCE(SUM(AmountPaid), 0) AS paid, MIN(isSettled) AS settled FROM final_sale WHERE sale_tracking_Id IN (?) AND isActive = 1",
+            [tracking]
+          );
+          paid = Number(f.paid); settled = Number(f.settled) || 0;
+        }
+        const ex = (det.handover && det.handover.expenses) || {};
+        combined.push({
+          id: d.settlement_id, settlement_id: d.settlement_id, sale_tracking_Id: null,
+          invoiceNumber: `Day Settlement ${d.settlement_id}`, TotalAmount: Number(det.totals.total), name: d.staff_name,
+          DateofTransaction: d.settle_date, isSettled: settled, AmountPaid: paid,
+          FuelExpenses: Number(ex.fuel || 0), VehcileServiceExpenses: Number(ex.vehicle_service || 0), OtherExpenses: Number(ex.other || 0),
+          isGstBilling: 0, sale_type: "app_day", invoice_count: (det.invoices || []).length, sold_by: null,
+        });
+      }
+      return res.json([...combined, ...result]);
+    }
     res.json(result);
   } catch (error) {
     console.error("Error searching sales:", error);
