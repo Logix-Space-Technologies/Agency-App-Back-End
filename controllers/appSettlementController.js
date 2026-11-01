@@ -1,7 +1,7 @@
 const pool = require("../config/db");
 const { logUserActivity } = require("../utils/logUserActivity");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
-const { postInvoiceTx, trackingId } = require("../utils/appSettle");
+const { postInvoiceTx, trackingId, nextNgstNumber } = require("../utils/appSettle");
 const { dayInfo } = require("./appDayController");
 
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
@@ -341,8 +341,10 @@ exports.settleDay = async (req, res) => {
 
     const [[staff]] = await connection.query("SELECT name FROM users WHERE user_id = ?", [staffId]);
     const [[admin]] = adminId ? await connection.query("SELECT name FROM users WHERE user_id = ?", [adminId]) : [[{ name: "Admin" }]];
+    // The day as one combined sale gets its own invoice number, like a marketing settlement.
+    const dayInvoiceNo = await nextNgstNumber(connection);
     const details = {
-      settlement_id: settlementId, staff_id: staffId, staff_name: staff ? staff.name : "", date,
+      settlement_id: settlementId, invoice_no: dayInvoiceNo, staff_id: staffId, staff_name: staff ? staff.name : "", date,
       settled_at: now, settled_by: admin ? admin.name : "Admin", notes: req.body.notes || "",
       totals: day.totals, handover,
       vehicle: { name: vehicle.vehicle_name, reg_no: vehicle.vehicle_reg, start_km: vehicle.start_km, end_km: vehicle.end_km, km_run: vehicle.km_run },

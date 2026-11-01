@@ -122,4 +122,14 @@ const postInvoiceTx = async (connection, invoiceId, adminId, { checkAllocation =
   return { inv, invoiceNumber, tracking };
 };
 
-module.exports = { postInvoiceTx, trackingId, ALLOCATION_MESSAGE };
+// The next non-GST invoice number, the same series a marketing settlement uses. Runs inside the caller's transaction.
+const nextNgstNumber = async (connection) => {
+  const [counterRows] = await connection.query("SELECT * FROM invoive_number_counter WHERE isActive = 1 FOR UPDATE");
+  const counter = counterRows[0];
+  if (!counter) throw new Error("Invoice counter row missing");
+  const next = (counter.NGST_counter || 0) + 1;
+  await connection.query("UPDATE invoive_number_counter SET NGST_counter = ?, modified = ? WHERE isActive = 1", [next, getISTTimestamp()]);
+  return `${counter.NGST_prefix}${String(next).padStart(5, "0")}${counter.NGST_suffix}`;
+};
+
+module.exports = { postInvoiceTx, trackingId, nextNgstNumber, ALLOCATION_MESSAGE };
