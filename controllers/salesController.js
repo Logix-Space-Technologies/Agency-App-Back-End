@@ -606,6 +606,70 @@ GROUP BY
   }
 };
 
+// One credit line per settled mobile-app day: the salesman's shortage (what he should have handed over less what he
+// handed over), reduced by anything he paid afterwards from View Credit. Payments are kept in the settlement record.
+const appDayCreditRows = async (staffId, startDate, endDate) => {
+  const conds = ["d.staff_id = ?", "d.invoice_count > 0"];
+  const params = [staffId];
+  if (startDate && endDate) { conds.push("d.settle_date BETWEEN ? AND ?"); params.push(startDate, endDate); }
+  const [days] = await pool.query(
+    `SELECT d.settlement_id, d.staff_id, u.name AS staff_name, DATE_FORMAT(d.settle_date, '%Y-%m-%d') AS settle_date, d.details
+     FROM app_day_settlements d LEFT JOIN users u ON u.user_id = d.staff_id WHERE ${conds.join(" AND ")} ORDER BY d.settlement_id DESC`,
+    params
+  );
+  const out = [];
+  for (const d of days) {
+    let det = null;
+    try { det = typeof d.details === "string" ? JSON.parse(d.details) : d.details; } catch (e) { det = null; }
+    if (!det || det.undone || !det.handover) continue;
+    const h = det.handover;
+    const later = (det.credit_payments || []).reduce((t, p) => t + Number(p.total || 0), 0);
+    const credit = Math.round((Number(h.net_payable) - Number(h.received.total) - later) * 100) / 100;
+    if (Math.abs(credit) < 0.01) continue;
+    const ex = h.expenses || {};
+    out.push({
+      id: d.settlement_id, sale_type: "app_day", name: d.staff_name, sale_tracking_Id: null,
+      invoiceNumber: det.invoice_no || null,
+      TotalAmount: Number(h.expected.total), UserId: d.staff_id, DateofTransaction: d.settle_date, isSettled: 0,
+      AmountPaid: Math.round((Number(h.received.total) + later) * 100) / 100,
+      FuelExpenses: Number(ex.fuel || 0), VehcileServiceExpenses: Number(ex.vehicle_service || 0), OtherExpenses: Number(ex.other || 0),
+      finalAmount: Number(h.net_payable), credit,
+    });
+  }
+  return out;
+};
+
+// Takes a payment from a salesman against the shortage of one mobile-app day (View Credit). Not a sale: the books
+// already counted what the phone collected, so this only reduces what he owes.
+exports.payAppDayCredit = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { settlement_id, marketing_staff_id, payment = {} } = req.body;
+    const cash = Number(payment.cash) || 0, upi = Number(payment.gpay) || Number(payment.upi) || 0, card = Number(payment.card) || 0;
+    if (cash < 0 || upi < 0 || card < 0 || cash + upi + card <= 0) return res.status(400).json({ message: "Enter the amount received" });
+    await conn.beginTransaction();
+    const [[row]] = await conn.query("SELECT staff_id, details FROM app_day_settlements WHERE settlement_id = ? FOR UPDATE", [Number(settlement_id)]);
+    if (!row) { await conn.rollback(); return res.status(404).json({ message: "Settlement not found" }); }
+    if (marketing_staff_id && Number(marketing_staff_id) !== Number(row.staff_id)) { await conn.rollback(); return res.status(400).json({ message: "This settlement belongs to another salesperson" }); }
+    const det = typeof row.details === "string" ? JSON.parse(row.details) : row.details;
+    if (det.undone) { await conn.rollback(); return res.status(400).json({ message: "This settlement was undone" }); }
+    det.credit_payments = det.credit_payments || [];
+    det.credit_payments.push({
+      cash, upi, card, total: Math.round((cash + upi + card) * 100) / 100,
+      at: new Date().toISOString(), by: req.body.userId || null,
+    });
+    await conn.query("UPDATE app_day_settlements SET details = ? WHERE settlement_id = ?", [JSON.stringify(det), Number(settlement_id)]);
+    await conn.commit();
+    res.json({ message: "Payment recorded" });
+  } catch (error) {
+    await conn.rollback();
+    console.error("payAppDayCredit error:", error);
+    res.status(500).json({ message: "Could not record the payment" });
+  } finally {
+    conn.release();
+  }
+};
+
 exports.fecthAllCreditReportUser = async (req, res) => {
   const { marketing_staff_id, startDate, endDate, page = 1, limit = 15 } = req.body;
 
@@ -641,7 +705,6 @@ ${dateFilter}
     );
 
     const totalRecords = countResult[0].total;
-    const totalPages = Math.ceil(totalRecords / limit);
     
     //resultSet
     const [rows] = await pool.query(
@@ -684,9 +747,8 @@ WHERE
     )
         ${dateFilter}
         ORDER BY fs.DateofTransaction DESC
-        LIMIT ? OFFSET ?
         `,
-      [...params, Number(limit), Number(offset)]
+      params
     );
     //crditINfo
     const creditParams = [marketing_staff_id];
@@ -723,15 +785,28 @@ GROUP BY
       creditParams
     );
 
-   // res.json({ success: true, data: rows, creditInfo: creditInfo });
-  
+ // Mobile-app days: what the salesman still has to hand over after each settlement (short), less what he paid later.
+    const appRows = await appDayCreditRows(marketing_staff_id, startDate, endDate);
+    const all = [...rows, ...appRows].sort((x, y) => new Date(y.DateofTransaction) - new Date(x.DateofTransaction));
+    const pageRows = all.slice(offset, offset + Number(limit));
+    const info = creditInfo[0]
+      ? { ...creditInfo[0] }
+      : { UserId: marketing_staff_id, TotalAmount: 0, TotalPaid: 0, Credit: 0 };
+    for (const r of appRows) {
+      info.TotalAmount = Number(info.TotalAmount || 0) + r.TotalAmount;
+      info.TotalPaid = Number(info.TotalPaid || 0) + r.AmountPaid;
+      info.Credit = Number(info.Credit || 0) + r.credit;
+    }
+    const creditInfoAll = creditInfo[0] || appRows.length ? [info] : [];
+    const totalRecordsAll = totalRecords + appRows.length;
+
     res.json({
       success: true,
-      data: rows,
-      creditInfo: creditInfo,
+      data: pageRows,
+      creditInfo: creditInfoAll,
       pagination: {
-        totalRecords,
-        totalPages,
+        totalRecords: totalRecordsAll,
+        totalPages: Math.ceil(totalRecordsAll / limit),
         currentPage: page,
         limit
       }

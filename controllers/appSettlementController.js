@@ -492,6 +492,7 @@ exports.undoDay = async (req, res) => {
     if (!row || !row.details) throw fail(404, "Settlement not found");
     const d = JSON.parse(row.details);
     if (d.undone) throw fail(400, "This settlement was already undone");
+    if ((d.credit_payments || []).length) throw fail(400, "Money was already collected from the salesperson against this settlement in View Credit. Cancel that first, or ask the developer.");
     if (!d.undo) throw fail(400, "This settlement was made before Undo existed. Ask for it to be corrected by hand.");
 
     const [[{ later }]] = await connection.query(
