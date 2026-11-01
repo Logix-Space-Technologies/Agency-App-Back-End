@@ -19,7 +19,7 @@ const sellableByProduct = async (db, staffId, date, excludeInvoiceId = 0) => {
     [staffId, date]
   );
   const [sold] = await db.query(
-    `SELECT it.product_id, SUM(it.quantity) AS q
+    `SELECT it.product_id, SUM(it.quantity) AS q, SUM(CASE WHEN it.sold_price = 0 THEN it.quantity ELSE 0 END) AS free
      FROM app_invoice_items it JOIN app_invoices i ON i.app_invoice_id = it.app_invoice_id
      WHERE i.staff_id = ? AND i.status = 'pending' AND i.invoice_date = ? AND i.app_invoice_id <> ?
      GROUP BY it.product_id`,
@@ -29,12 +29,12 @@ const sellableByProduct = async (db, staffId, date, excludeInvoiceId = 0) => {
   const [broken] = await db.query("SELECT product_id, damaged_qty FROM app_damage_reports WHERE staff_id = ? AND report_date = ?", [staffId, date]);
   const map = new Map();
   const row = (id) => {
-    if (!map.has(id)) map.set(id, { allocated: 0, asked: 0, sold: 0, damaged: 0 });
+    if (!map.has(id)) map.set(id, { allocated: 0, asked: 0, sold: 0, free: 0, damaged: 0 });
     return map.get(id);
   };
   alloc.forEach((a) => { row(a.product_id).allocated = Number(a.q); });
   asked.forEach((a) => { row(a.product_id).asked = Number(a.q); });
-  sold.forEach((a) => { row(a.product_id).sold = Number(a.q); });
+  sold.forEach((a) => { row(a.product_id).sold = Number(a.q); row(a.product_id).free = Number(a.free); }); // sold = every piece off the stock, free replacements included
   broken.forEach((a) => { row(a.product_id).damaged = Number(a.damaged_qty); });
   for (const r of map.values()) {
     r.damaged = Math.min(r.damaged, Math.max(0, r.allocated + r.asked - r.sold));
