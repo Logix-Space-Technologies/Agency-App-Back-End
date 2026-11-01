@@ -15,7 +15,8 @@ const loadDay = async (db, staffId, date, lock = false) => {
   const suffix = lock ? " FOR UPDATE" : "";
   const [invoices] = await db.query(
     `SELECT i.app_invoice_id, i.invoice_no, s.shop_name, i.total_amount, i.cash_amount, i.upi_amount, i.card_amount,
-            i.credit_amount, i.price_flag, DATE_FORMAT(i.created_at, '%H:%i') AS created_time
+            i.credit_amount, i.price_flag, DATE_FORMAT(i.created_at, '%H:%i') AS created_time,
+            COALESCE((SELECT SUM(a.amount) FROM app_payment_allocations a WHERE a.invoice_id = i.app_invoice_id), 0) AS collected_later
      FROM app_invoices i JOIN app_shops s ON s.shop_id = i.shop_id
      WHERE i.staff_id = ? AND i.invoice_date = ? AND i.status = 'pending'
      ORDER BY i.app_invoice_id${suffix}`,
@@ -99,7 +100,11 @@ const loadDay = async (db, staffId, date, lock = false) => {
   const sum = (key) => money(invoices.reduce((t, i) => t + Number(i[key]), 0));
   return {
     invoices, products, olderPending: older,
-    totals: { total: sum("total_amount"), cash: sum("cash_amount"), upi: sum("upi_amount"), card: sum("card_amount"), credit: sum("credit_amount") },
+    totals: {
+      total: sum("total_amount"), cash: sum("cash_amount"), upi: sum("upi_amount"), card: sum("card_amount"), credit: sum("credit_amount"),
+      // Paid by the shops after the bill was made (phone "collect dues"): shown beside the credit, which is stored as billed.
+      collected_later: money(invoices.reduce((t, i) => t + Math.min(Number(i.credit_amount), Number(i.collected_later)), 0)),
+    },
   };
 };
 
