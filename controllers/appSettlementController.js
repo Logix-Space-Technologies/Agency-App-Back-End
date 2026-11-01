@@ -36,6 +36,20 @@ const loadDay = async (db, staffId, date, lock = false) => {
      ORDER BY date, daily_stock_id${suffix}`,
     [staffId, date]
   );
+  // What the salesperson took themselves with Take stock that day, and the part of it the office has not verified yet.
+  // After an earlier settlement of the same day the leftover went back to the store, so their own count is not compared again.
+  const [[{ n: settledBefore }]] = await db.query(
+    "SELECT COUNT(*) AS n FROM app_day_settlements WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0",
+    [staffId, date]
+  );
+  const [mine] = settledBefore > 0 ? [[]] : await db.query(
+    `SELECT it.product_id, SUM(it.requested_qty) AS self_taken,
+            SUM(CASE WHEN r.status = 'pending' THEN GREATEST(0, it.requested_qty - COALESCE(it.approved_qty, 0)) ELSE 0 END) AS waiting
+     FROM app_self_allocation_items it JOIN app_self_allocations r ON r.request_id = it.request_id
+     WHERE r.staff_id = ? AND r.alloc_date = ? AND r.status IN ('verified', 'pending')
+     GROUP BY it.product_id`,
+    [staffId, date]
+  );
   const [[{ older }]] = await db.query(
     "SELECT COUNT(*) AS older FROM app_invoices WHERE staff_id = ? AND invoice_date < ? AND status = 'pending'",
     [staffId, date]
@@ -43,7 +57,7 @@ const loadDay = async (db, staffId, date, lock = false) => {
 
   const byProduct = new Map();
   const row = (id) => {
-    if (!byProduct.has(id)) byProduct.set(id, { product_id: id, allocated: 0, sold: 0, free: 0, amount: 0, alloc_rows: [] });
+    if (!byProduct.has(id)) byProduct.set(id, { product_id: id, allocated: 0, sold: 0, free: 0, amount: 0, self_taken: 0, waiting: 0, alloc_rows: [] });
     return byProduct.get(id);
   };
   for (const a of allocs) {
@@ -57,6 +71,11 @@ const loadDay = async (db, staffId, date, lock = false) => {
     r.free = Number(s.free);
     r.amount = money(s.amount);
   }
+  for (const m of mine) {
+    const r = row(m.product_id);
+    r.self_taken = Number(m.self_taken);
+    r.waiting = Number(m.waiting);
+  }
   const ids = [...byProduct.keys()];
   const names = new Map();
   if (ids.length) {
@@ -69,7 +88,10 @@ const loadDay = async (db, staffId, date, lock = false) => {
       product_name: names.get(r.product_id) || `Product ${r.product_id}`,
       avg_price: r.sold - r.free > 0 ? money(r.amount / (r.sold - r.free)) : 0,
       expected_balance: Math.max(0, r.allocated - r.sold),
+      // The office only has to add allocation when the sale is higher than its own allocation. It then brings the allocation up to
+      // the higher of what the salesperson took (they may have arranged some stock from outside) and what they sold.
       over_sold: r.sold > r.allocated,
+      to_add: r.sold > r.allocated ? Math.max(r.sold, r.self_taken) - r.allocated : 0,
       not_allocated: r.allocated === 0 && r.sold > 0,
     }))
     .sort((a, b) => a.product_name.localeCompare(b.product_name));
@@ -161,13 +183,13 @@ exports.settleDay = async (req, res) => {
     }
 
     // Stock must be allocated before it is sold: the office adds the missing allocation first.
-    const short = day.products.filter((p) => p.sold > p.allocated);
+    const short = day.products.filter((p) => p.over_sold);
     if (short.length) {
       throw fail(
         400,
         `Allocate the missing stock first, then settle: ${short
-          .map((p) => `${p.product_name} (allocated ${p.allocated}, sold ${p.sold}, ${p.sold - p.allocated} more needed)`)
-          .join("; ")}. Add the allocation for this salesperson and date, then load the day again.`
+          .map((p) => `${p.product_name} (office allocated ${p.allocated}, salesperson took ${p.self_taken} and sold ${p.sold}, ${p.to_add} more needed${p.waiting > 0 ? ", stock request still waiting" : ""})`)
+          .join("; ")}. Verify the stock request or add the allocation for this salesperson and date, then load the day again.`
       );
     }
 
@@ -391,6 +413,24 @@ exports.overview = async (req, res) => {
       [date]
     );
 
+    // Per product: the office has to add allocation when the sale is higher than its own allocation.
+    const [allocP] = await pool.query(
+      `SELECT marketing_staff_id AS staff_id, product_id, SUM(allocated_quantity) AS q FROM daily_stock_allocation
+       WHERE converted_to_sales = 0 AND isActive = 1 AND allocated_quantity > 0 AND date = ? GROUP BY marketing_staff_id, product_id`,
+      [date]
+    );
+    const [soldP] = await pool.query(
+      `SELECT i.staff_id, it.product_id, SUM(it.quantity) AS q
+       FROM app_invoice_items it JOIN app_invoices i ON i.app_invoice_id = it.app_invoice_id
+       WHERE i.invoice_date = ? AND i.status = 'pending' GROUP BY i.staff_id, it.product_id`,
+      [date]
+    );
+    const perProduct = new Map();
+    const cell = (s, p) => { const k = `${s}:${p}`; if (!perProduct.has(k)) perProduct.set(k, { staff_id: s, alloc: 0, sold: 0 }); return perProduct.get(k); };
+    allocP.forEach((a) => { cell(a.staff_id, a.product_id).alloc = Number(a.q); });
+    soldP.forEach((a) => { cell(a.staff_id, a.product_id).sold = Number(a.q); });
+    const overStaff = new Set([...perProduct.values()].filter((c) => c.sold > c.alloc).map((c) => c.staff_id));
+
     const [reqd] = await pool.query(
       "SELECT i.staff_id, i.end_km, i.start_km, v.name AS vehicle_name, v.reg_no AS vehicle_reg, DATE_FORMAT(i.settle_requested_at, '%H:%i') AS at FROM app_day_info i LEFT JOIN app_vehicles v ON v.vehicle_id = i.vehicle_id WHERE i.info_date = ? AND i.settle_requested_at IS NOT NULL",
       [date]
@@ -420,7 +460,7 @@ exports.overview = async (req, res) => {
         staff_name: names.get(r.staff_id) || `#${r.staff_id}`,
         left: Math.max(0, r.allocated - r.sold),
         balance: Math.max(0, r.allocated - r.sold) - r.damaged,
-        over_sold: r.sold > r.allocated,
+        over_sold: overStaff.has(r.staff_id),
         status: r.invoices > 0 ? "pending" : r.settled ? "settled" : r.allocated > 0 ? "allocated" : "none",
       }))
       .sort((a, b) => a.staff_name.localeCompare(b.staff_name));
