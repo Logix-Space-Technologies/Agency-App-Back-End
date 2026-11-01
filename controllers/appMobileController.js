@@ -725,16 +725,27 @@ exports.getMyStock = async (req, res) => {
     const date = stockDate(req.query.date);
     const day = await loadDay(pool, staffId, date);
     const reported = await reportedDamage(pool, staffId, date);
+    // Stock they asked for from the phone that the office has not verified yet is theirs to sell too, so it counts as taken.
+    const asked = await sellableByProduct(pool, staffId, date);
+    const lines = new Map(day.products.map((p) => [p.product_id, p]));
+    const missing = [...asked].filter(([id, r]) => r.asked > 0 && !lines.has(id)).map(([id]) => id);
+    if (missing.length) {
+      const [names] = await pool.query("SELECT product_id, product_name FROM products WHERE product_id IN (?)", [missing]);
+      names.forEach((n) => lines.set(n.product_id, { product_id: n.product_id, product_name: n.product_name, allocated: 0, sold: 0, free: 0, amount: 0 }));
+    }
 
-    const products = day.products.map((p) => {
-      const left = Math.max(0, p.allocated - p.sold);
+    const products = [...lines.values()].map((p) => {
+      const waiting = (asked.get(p.product_id) || {}).asked || 0;
+      const taken = p.allocated + waiting;
+      const left = Math.max(0, taken - p.sold);
       const damaged = Math.min(reported[p.product_id] || 0, left);
       return {
         // sold is what was charged; free replacements are counted as damage (the shop gave a damaged piece back).
-        product_id: p.product_id, product_name: p.product_name, allocated: p.allocated, sold: p.sold - (p.free || 0), free: p.free || 0,
-        left, damaged, balance: left - damaged, over_sold: p.sold > p.allocated, amount: p.amount,
+        // allocated is everything they took: the office's allocation plus what still waits for verification.
+        product_id: p.product_id, product_name: p.product_name, allocated: taken, waiting, sold: p.sold - (p.free || 0), free: p.free || 0,
+        left, damaged, balance: left - damaged, over_sold: p.sold > taken, amount: p.amount,
       };
-    });
+    }).sort((a, b) => a.product_name.localeCompare(b.product_name));
 
     let settled = null;
     if (products.length === 0) {
@@ -809,13 +820,19 @@ exports.saveDamage = async (req, res) => {
     const items = Array.isArray(req.body.items) ? req.body.items : [];
     await connection.beginTransaction();
     const day = await loadDay(connection, staffId, date, true);
+    const asked = await sellableByProduct(connection, staffId, date);
     const byId = new Map(day.products.map((p) => [p.product_id, p]));
+    const waitingIds = [...asked].filter(([id, r]) => r.asked > 0 && !byId.has(id)).map(([id]) => id);
+    if (waitingIds.length) {
+      const [names] = await connection.query("SELECT product_id, product_name FROM products WHERE product_id IN (?)", [waitingIds]);
+      names.forEach((n) => byId.set(n.product_id, { product_id: n.product_id, product_name: n.product_name, allocated: 0, sold: 0 }));
+    }
     const now = getISTTimestamp();
     for (const it of items) {
       const p = byId.get(Number(it.product_id));
       if (!p) continue;
       const damaged = Math.max(0, Math.floor(Number(it.damaged) || 0));
-      const left = Math.max(0, p.allocated - p.sold);
+      const left = Math.max(0, p.allocated + ((asked.get(p.product_id) || {}).asked || 0) - p.sold);
       if (damaged > left) {
         await connection.rollback();
         return res.status(400).json({ message: `${p.product_name}: only ${left} left, so damage cannot be ${damaged}` });
