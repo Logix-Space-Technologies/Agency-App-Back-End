@@ -1751,8 +1751,9 @@ exports.searchSales = async (req, res) => {
      let subquery =  "";
      let nameField = "";
       if (user_type === "marketing") {
-            subquery = `LEFT JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id`;
-            nameField = "u.name AS name";
+            subquery = `LEFT JOIN users u ON s.sale_type = 'marketing' AND f.UserId = u.user_id
+                        LEFT JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id`;
+            nameField = `CASE WHEN s.sale_type = 'marketing' THEN u.name ELSE c.Name END AS name`;
       }
        else if (user_type === "customer") {
             subquery = `LEFT JOIN Customers c ON s.sale_type != 'marketing' AND f.UserId = c.id`;
@@ -1779,13 +1780,16 @@ exports.searchSales = async (req, res) => {
         f.VehcileServiceExpenses,
         f.OtherExpenses,
         f.isGstBilling,
-        s.sale_type
+        s.sale_type,
+        au.name AS sold_by
       FROM final_sale f
       JOIN (
         SELECT sale_tracking_Id, MAX(sale_type) AS sale_type
         FROM sales
         GROUP BY sale_tracking_Id
       ) s ON f.sale_tracking_Id = s.sale_tracking_Id ${subquery}
+      LEFT JOIN app_invoices ai ON ai.final_sale_tracking_id = f.sale_tracking_Id
+      LEFT JOIN users au ON au.user_id = ai.staff_id
       WHERE f.isActive = 1
     `;
 
@@ -1805,8 +1809,9 @@ exports.searchSales = async (req, res) => {
     // --- Optional User Filter ---
     if (user_type && user_type !== "all" && user_id && user_id !== "all") {
       if (user_type === "marketing") {
-        query += ` AND s.sale_type = 'marketing' AND u.user_id = ?`;
-        queryParams.push(user_id);
+        // A salesperson's own marketing sales, plus the shop sales they made on the mobile app (booked to the shop).
+        query += ` AND ((s.sale_type = 'marketing' AND u.user_id = ?) OR ai.staff_id = ?)`;
+        queryParams.push(user_id, user_id);
       } else if (user_type === "customer") {
         query += ` AND s.sale_type != 'marketing' AND c.id = ?`;
         queryParams.push(user_id);
