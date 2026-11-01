@@ -74,7 +74,6 @@ const editPendingInvoice = async (conn, { invoiceId, items, payment = {}, notes,
     lines.push({ productId, name, quantity, systemPrice, soldPrice, lineTotal, priceId });
   }
 
-  if (lines.every((l) => l.free)) throw fail(400, "A free replacement goes together with a sale. Add at least one item that is charged.");
 
   // The salesperson can only sell what they took; the office may correct any invoice and settlement checks the rest.
   if (onlyStaffId !== null) {

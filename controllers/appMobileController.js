@@ -457,8 +457,6 @@ exports.createInvoice = async (req, res) => {
       lines.push({ productId, quantity, systemPrice, soldPrice, lineTotal, priceId: product.price_id });
     }
 
-    if (lines.every((l) => l.free)) return res.status(400).json({ message: "A free replacement goes together with a sale. Add at least one item that is charged." });
-
     // Only the stock they took (and have not yet sold) can go on an invoice. Free replacements come off it too.
     await assertSellable(pool, staffId, today, lines);
 
