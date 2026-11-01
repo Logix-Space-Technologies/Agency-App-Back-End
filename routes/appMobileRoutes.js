@@ -33,6 +33,7 @@ router.put("/day/km", day.saveKm);
 router.post("/day/settle-request", day.requestSettle);
 router.delete("/day/settle-request", day.cancelSettleRequest);
 router.post("/fuel", day.addFuel);
+router.put("/fuel/:id", day.editFuel);
 router.delete("/fuel/:id", day.deleteFuel);
 router.post("/self-allocations", day.createSelfAllocation);
 router.put("/self-allocations/:id", day.updateSelfAllocation);

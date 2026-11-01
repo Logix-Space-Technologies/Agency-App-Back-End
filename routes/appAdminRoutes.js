@@ -27,6 +27,7 @@ router.post("/invoices/reject", c.rejectInvoice);
 
 router.post("/vehicles", e.listVehicles);
 router.post("/vehicles/km", e.vehicleKmLog);
+router.post("/vehicles/fuel", e.fuelBills);
 router.post("/vehicles/save", e.saveVehicle);
 router.post("/vehicles/delete", e.deleteVehicle);
 
