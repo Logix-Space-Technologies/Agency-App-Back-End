@@ -52,8 +52,15 @@ const assertSellable = async (db, staffId, date, lines, excludeInvoiceId = 0) =>
     const [p] = await db.query("SELECT product_id, product_name FROM products WHERE product_id IN (?)", [ids]);
     p.forEach((x) => names.set(x.product_id, x.product_name));
   }
-  const problems = [];
+  // A product can be on an invoice twice (sold and as a free replacement): what counts is the total.
+  const wanted = new Map();
   for (const l of lines) {
+    const w = wanted.get(l.productId);
+    if (w) w.quantity += l.quantity;
+    else wanted.set(l.productId, { ...l });
+  }
+  const problems = [];
+  for (const l of wanted.values()) {
     const r = map.get(l.productId) || { allocated: 0, asked: 0, sold: 0, damaged: 0, available: 0 };
     if (l.quantity > r.available) {
       const name = l.name || names.get(l.productId) || `Product ${l.productId}`;

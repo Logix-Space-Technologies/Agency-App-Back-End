@@ -91,7 +91,7 @@ const postInvoiceTx = async (connection, invoiceId, adminId, { checkAllocation =
                           is_credit, sale_tracking_Id, sale_date, damaged_count, is_settled, loss_count, is_price_changed, isActive)
        VALUES ('direct', ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, 0, ?, 1)`,
       [inv.staff_id, it.product_id, it.price_id, it.quantity, it.line_total, tracking, saleDate, settledFlag,
-       Number(it.sold_price) !== Number(it.system_price) ? 1 : 0]
+       Number(it.sold_price) > 0 && Number(it.sold_price) !== Number(it.system_price) ? 1 : 0]
     );
     await connection.query("UPDATE stock SET quantity = quantity - ? WHERE product_id = ?", [it.quantity, it.product_id]);
     const [stockRows] = await connection.query("SELECT stock_id FROM stock WHERE product_id = ? AND isActive = 1", [it.product_id]);

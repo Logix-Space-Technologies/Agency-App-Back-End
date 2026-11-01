@@ -34,7 +34,7 @@ const editPendingInvoice = async (conn, { invoiceId, items, payment = {}, notes,
      WHERE it.app_invoice_id = ?`,
     [invoiceId]
   );
-  const oldByProduct = new Map(oldItems.map((o) => [o.product_id, o]));
+  const oldByProduct = new Map(oldItems.map((o) => [`${o.product_id}:${Number(o.sold_price) > 0 ? "paid" : "free"}`, o]));
   const [latest] = await conn.query(LATEST_PRICE_SQL, [getISTDate()]);
   const latestByProduct = new Map(latest.map((p) => [p.product_id, p]));
 
@@ -44,21 +44,27 @@ const editPendingInvoice = async (conn, { invoiceId, items, payment = {}, notes,
   for (const raw of items) {
     const productId = Number(raw.product_id);
     const quantity = Number(raw.quantity);
-    const soldPrice = money(raw.price);
+    const free = raw.free === true;
+    const soldPrice = free ? 0 : money(raw.price);
     const product = latestByProduct.get(productId);
-    const name = (oldByProduct.get(productId) || product || {}).product_name || `Product ${productId}`;
-    if (!product && !oldByProduct.has(productId)) throw fail(400, "A product is no longer available");
-    if (seen.has(productId)) throw fail(400, `${name} is added twice`);
-    seen.add(productId);
+    const key = `${productId}:${free ? "free" : "paid"}`;
+    const name = (oldByProduct.get(key) || product || {}).product_name || `Product ${productId}`;
+    if (!product && !oldByProduct.has(key)) throw fail(400, "A product is no longer available");
+    if (seen.has(key)) throw fail(400, `${name} is added twice${free ? " as a free replacement" : ""}`);
+    seen.add(key);
     if (!Number.isInteger(quantity) || quantity <= 0) throw fail(400, `Enter a whole quantity for ${name}`);
-    if (!(soldPrice > 0)) throw fail(400, `Enter a price for ${name}`);
+    if (!free && !(soldPrice > 0)) throw fail(400, `Enter a price for ${name}`);
 
-    const old = oldByProduct.get(productId);
+    const old = oldByProduct.get(key);
     // A line that was already on the invoice keeps the price it was compared against.
     const systemPrice = money(old ? old.system_price : product.price);
     const priceId = old ? old.price_id : product.price_id;
     const lineTotal = money(quantity * soldPrice);
     total = money(total + lineTotal);
+    if (free) {
+      lines.push({ productId, name, quantity, systemPrice, soldPrice: 0, lineTotal: 0, priceId, free: true });
+      continue;
+    }
     diffAmount = money(diffAmount + (soldPrice - systemPrice) * quantity);
     if (systemPrice > 0) {
       maxPct = Math.max(maxPct, Math.abs(soldPrice - systemPrice) / systemPrice * 100);
@@ -67,6 +73,8 @@ const editPendingInvoice = async (conn, { invoiceId, items, payment = {}, notes,
     if (soldPrice < systemPrice - 0.004) anyBelow = true;
     lines.push({ productId, name, quantity, systemPrice, soldPrice, lineTotal, priceId });
   }
+
+  if (lines.every((l) => l.free)) throw fail(400, "A free replacement goes together with a sale. Add at least one item that is charged.");
 
   // The salesperson can only sell what they took; the office may correct any invoice and settlement checks the rest.
   if (onlyStaffId !== null) {
@@ -108,8 +116,8 @@ const editPendingInvoice = async (conn, { invoiceId, items, payment = {}, notes,
     invoiceNo: inv.invoice_no,
     oldTotal: Number(inv.total_amount),
     total, credit, flag,
-    before: oldItems.map((o) => `${o.product_name} ${o.quantity}x${Number(o.sold_price)}`).join(", "),
-    after: lines.map((l) => `${l.name} ${l.quantity}x${l.soldPrice}`).join(", "),
+    before: oldItems.map((o) => `${o.product_name} ${o.quantity}x${Number(o.sold_price) > 0 ? Number(o.sold_price) : "FREE"}`).join(", "),
+    after: lines.map((l) => `${l.name} ${l.quantity}x${l.free ? "FREE" : l.soldPrice}`).join(", "),
   };
 };
 

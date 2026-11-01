@@ -22,7 +22,8 @@ const loadDay = async (db, staffId, date, lock = false) => {
     [staffId, date]
   );
   const [sold] = await db.query(
-    `SELECT it.product_id, SUM(it.quantity) AS sold, SUM(it.line_total) AS amount
+    `SELECT it.product_id, SUM(it.quantity) AS sold, SUM(it.line_total) AS amount,
+            SUM(CASE WHEN it.sold_price = 0 THEN it.quantity ELSE 0 END) AS free
      FROM app_invoice_items it JOIN app_invoices i ON i.app_invoice_id = it.app_invoice_id
      WHERE i.staff_id = ? AND i.invoice_date = ? AND i.status = 'pending'
      GROUP BY it.product_id`,
@@ -42,7 +43,7 @@ const loadDay = async (db, staffId, date, lock = false) => {
 
   const byProduct = new Map();
   const row = (id) => {
-    if (!byProduct.has(id)) byProduct.set(id, { product_id: id, allocated: 0, sold: 0, amount: 0, alloc_rows: [] });
+    if (!byProduct.has(id)) byProduct.set(id, { product_id: id, allocated: 0, sold: 0, free: 0, amount: 0, alloc_rows: [] });
     return byProduct.get(id);
   };
   for (const a of allocs) {
@@ -52,7 +53,8 @@ const loadDay = async (db, staffId, date, lock = false) => {
   }
   for (const s of sold) {
     const r = row(s.product_id);
-    r.sold = Number(s.sold);
+    r.sold = Number(s.sold); // every piece that left the stock: charged ones and free replacements
+    r.free = Number(s.free);
     r.amount = money(s.amount);
   }
   const ids = [...byProduct.keys()];
@@ -65,7 +67,7 @@ const loadDay = async (db, staffId, date, lock = false) => {
     .map((r) => ({
       ...r,
       product_name: names.get(r.product_id) || `Product ${r.product_id}`,
-      avg_price: r.sold > 0 ? money(r.amount / r.sold) : 0,
+      avg_price: r.sold - r.free > 0 ? money(r.amount / (r.sold - r.free)) : 0,
       expected_balance: Math.max(0, r.allocated - r.sold),
       over_sold: r.sold > r.allocated,
       not_allocated: r.allocated === 0 && r.sold > 0,
@@ -317,7 +319,7 @@ exports.settleDay = async (req, res) => {
       vehicle: { name: vehicle.vehicle_name, reg_no: vehicle.vehicle_reg, start_km: vehicle.start_km, end_km: vehicle.end_km, km_run: vehicle.km_run },
       fuel_bills: openFuel.map((f) => ({ bill_no: f.bill_no, amount: f.amount })),
       items: lines.map((l) => ({
-        product_id: l.product_id, product_name: l.product_name, allocated: l.allocated, sold: l.sold,
+        product_id: l.product_id, product_name: l.product_name, allocated: l.allocated, sold: l.sold, free: l.free || 0,
         balance: l.balance, damaged: l.damaged, loss: l.loss, amount: l.amount, price: l.avg_price,
         over_sold: l.over_sold, not_allocated: l.not_allocated,
         reported_damage: reported[l.product_id] || 0,
