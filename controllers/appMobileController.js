@@ -590,7 +590,8 @@ exports.getInvoices = async (req, res) => {
     const [rows] = await pool.query(
       `SELECT i.app_invoice_id, i.invoice_no, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date,
               DATE_FORMAT(i.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
-              i.total_amount, i.credit_amount, ${statusExpr('i')} AS status, i.price_flag, s.shop_name
+              i.total_amount, i.cash_amount, i.upi_amount, i.card_amount, i.credit_amount,
+              ${statusExpr('i')} AS status, i.price_flag, s.shop_name
        FROM app_invoices i JOIN app_shops s ON s.shop_id = i.shop_id
        WHERE ${conditions.join(" AND ")}
        ORDER BY i.app_invoice_id DESC LIMIT 300`,

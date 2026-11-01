@@ -688,6 +688,48 @@ exports.saveVehicle = async (req, res) => {
   }
 };
 
+// Who used which vehicle on which day and how far it ran. One row per salesperson per day, with the day's fuel.
+// The page groups these by day or by month.
+exports.vehicleKmLog = async (req, res) => {
+  try {
+    const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+    const to = isDate(req.body.to) ? req.body.to : today();
+    const from = isDate(req.body.from) ? req.body.from : `${to.slice(0, 8)}01`;
+    const conditions = ["i.info_date BETWEEN ? AND ?", "(i.start_km IS NOT NULL OR i.end_km IS NOT NULL)"];
+    const params = [from, to];
+    if (Number(req.body.vehicle_id)) { conditions.push("i.vehicle_id = ?"); params.push(Number(req.body.vehicle_id)); }
+    if (Number(req.body.staff_id)) { conditions.push("i.staff_id = ?"); params.push(Number(req.body.staff_id)); }
+
+    const [rows] = await pool.query(
+      `SELECT DATE_FORMAT(i.info_date, '%Y-%m-%d') AS date, i.staff_id, u.name AS staff_name,
+              i.vehicle_id, v.name AS vehicle_name, v.reg_no, i.start_km, i.end_km,
+              (SELECT COALESCE(SUM(f.amount), 0) FROM app_fuel_entries f WHERE f.staff_id = i.staff_id AND f.fuel_date = i.info_date) AS fuel
+       FROM app_day_info i
+       LEFT JOIN users u ON u.user_id = i.staff_id
+       LEFT JOIN app_vehicles v ON v.vehicle_id = i.vehicle_id
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY i.info_date DESC, u.name
+       LIMIT 5000`,
+      params
+    );
+    const days = rows.map((r) => {
+      const start = r.start_km === null ? null : Number(r.start_km);
+      const end = r.end_km === null ? null : Number(r.end_km);
+      return {
+        date: r.date, staff_id: r.staff_id, staff_name: r.staff_name || "-",
+        vehicle_id: r.vehicle_id, vehicle_name: r.vehicle_name || "No vehicle", reg_no: r.reg_no || "",
+        start_km: start, end_km: end,
+        km_run: start !== null && end !== null && end >= start ? Math.round((end - start) * 10) / 10 : null,
+        fuel: money(r.fuel),
+      };
+    });
+    res.json({ from, to, days });
+  } catch (error) {
+    console.error("vehicleKmLog error:", error);
+    res.status(500).json({ message: "Could not load the KM log" });
+  }
+};
+
 // A vehicle that was never used is deleted; one with history is only switched off so old days keep their name.
 exports.deleteVehicle = async (req, res) => {
   try {
