@@ -394,10 +394,11 @@ exports.invoiceDetail = async (req, res) => {
       [id]
     );
     const lines = items.map((it) => {
-      const diff = Number((it.sold_price - it.system_price).toFixed(2));
-      const pct = it.system_price > 0 ? Number(((diff / it.system_price) * 100).toFixed(2)) : 0;
+      const free = Number(it.sold_price) === 0; // a free replacement for a damaged piece
+      const diff = free ? 0 : Number((it.sold_price - it.system_price).toFixed(2));
+      const pct = !free && it.system_price > 0 ? Number(((diff / it.system_price) * 100).toFixed(2)) : 0;
       const isBelow = diff < -0.004;
-      return { ...it, diff, diff_pct: pct, below: isBelow, high_diff: isBelow || pct >= PRICE_ALERT_PCT, stock_after: it.stock_now - it.quantity };
+      return { ...it, free, diff, diff_pct: pct, below: isBelow, high_diff: isBelow || pct >= PRICE_ALERT_PCT, stock_after: it.stock_now - it.quantity };
     });
     const [later] = await pool.query(
       `SELECT a.amount, a.cash_amount, a.upi_amount, a.card_amount, a.posted,

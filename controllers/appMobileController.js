@@ -249,7 +249,7 @@ exports.getShopHistory = async (req, res) => {
               i.app_invoice_id AS seq, it.quantity, it.sold_price AS price
        FROM app_invoice_items it
        JOIN app_invoices i ON i.app_invoice_id = it.app_invoice_id
-       WHERE i.shop_id = ? AND i.status <> 'rejected' AND NOT ${deletedByAdmin('i')}`,
+       WHERE i.shop_id = ? AND i.status <> 'rejected' AND it.sold_price > 0 AND NOT ${deletedByAdmin('i')}`,
       [shopId]
     );
 
@@ -424,21 +424,28 @@ exports.createInvoice = async (req, res) => {
     for (const raw of items) {
       const productId = Number(raw.product_id);
       const quantity = Number(raw.quantity);
-      const soldPrice = money(raw.price);
+      // A free replacement (for a damaged piece the shop gives back) has no charge: price 0, stock still goes down.
+      const free = raw.free === true;
+      const soldPrice = free ? 0 : money(raw.price);
       const product = prices.get(productId);
       if (!product) return res.status(400).json({ message: "A product on the invoice is no longer available" });
-      if (seen.has(productId)) return res.status(400).json({ message: `${product.product_name} is added twice` });
-      seen.add(productId);
+      const key = `${productId}:${free ? "free" : "paid"}`;
+      if (seen.has(key)) return res.status(400).json({ message: `${product.product_name} is added twice${free ? " as a free replacement" : ""}` });
+      seen.add(key);
       if (!Number.isInteger(quantity) || quantity <= 0) {
         return res.status(400).json({ message: `Enter a whole quantity for ${product.product_name}` });
       }
-      if (!(soldPrice > 0)) {
+      if (!free && !(soldPrice > 0)) {
         return res.status(400).json({ message: `Enter a price for ${product.product_name}` });
       }
 
       const systemPrice = money(product.price);
       const lineTotal = money(quantity * soldPrice);
       total = money(total + lineTotal);
+      if (free) {
+        lines.push({ productId, quantity, systemPrice, soldPrice: 0, lineTotal: 0, priceId: product.price_id, free: true });
+        continue;
+      }
       diffAmount = money(diffAmount + (soldPrice - systemPrice) * quantity);
       if (systemPrice > 0) {
         maxPct = Math.max(maxPct, Math.abs(soldPrice - systemPrice) / systemPrice * 100);
@@ -450,7 +457,9 @@ exports.createInvoice = async (req, res) => {
       lines.push({ productId, quantity, systemPrice, soldPrice, lineTotal, priceId: product.price_id });
     }
 
-    // Only the stock they took (and have not yet sold) can go on an invoice.
+    if (lines.every((l) => l.free)) return res.status(400).json({ message: "A free replacement goes together with a sale. Add at least one item that is charged." });
+
+    // Only the stock they took (and have not yet sold) can go on an invoice. Free replacements come off it too.
     await assertSellable(pool, staffId, today, lines);
 
     const cash = money(payment.cash);
@@ -526,7 +535,7 @@ exports.createInvoice = async (req, res) => {
     const invoice = await loadInvoice(invoiceId, staffId);
     await appLog({
       req, staffId, action: "invoice_created",
-      details: `Invoice ${invoice.invoice_no} for ${shop.shop_name}, total ${total}${anyBelow ? ", sold BELOW the latest price" : flag ? ", sold above the latest price" : ""}`,
+      details: `Invoice ${invoice.invoice_no} for ${shop.shop_name}, total ${total}${lines.some((l) => l.free) ? `, FREE replacement: ${lines.filter((l) => l.free).map((l) => `${(prices.get(l.productId) || {}).product_name} x ${l.quantity}`).join(", ")}` : ""}${anyBelow ? ", sold BELOW the latest price" : flag ? ", sold above the latest price" : ""}`,
       latitude: geo[0], longitude: geo[1],
     });
     res.status(201).json({ invoice });
