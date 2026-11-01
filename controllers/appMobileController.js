@@ -570,6 +570,62 @@ exports.updateInvoice = async (req, res) => {
   }
 };
 
+// The salesperson removes their own invoice before asking for settlement. The invoice becomes "rejected" with a
+// fixed reason, so the phone shows it as deleted by them and the office sees it in the list with that reason.
+// Stock needs no adjusting: the store quantity only moves when the office settles the day, and what the
+// salesperson can still sell is worked out from the pending invoices, so the pieces are free again at once.
+const SELF_DELETED = "Deleted by the salesperson";
+exports.deleteInvoice = async (req, res) => {
+  const staffId = req.staff.user_id;
+  const connection = await pool.getConnection();
+  try {
+    const invoiceId = Number(req.params.id);
+    await connection.beginTransaction();
+    const [rows] = await connection.query(
+      "SELECT app_invoice_id, invoice_no, status, total_amount, DATE_FORMAT(invoice_date, '%Y-%m-%d') AS invoice_date FROM app_invoices WHERE app_invoice_id = ? AND staff_id = ? FOR UPDATE",
+      [invoiceId, staffId]
+    );
+    const inv = rows[0];
+    if (!inv) throw Object.assign(new Error("Invoice not found"), { status: 404 });
+    if (inv.status !== "pending") {
+      throw Object.assign(new Error("This invoice is already with the office and cannot be deleted. Ask the office."), { status: 400 });
+    }
+    const [[asked]] = await connection.query(
+      "SELECT COUNT(*) AS n FROM app_day_info WHERE staff_id = ? AND info_date = ? AND settle_requested_at IS NOT NULL",
+      [staffId, inv.invoice_date]
+    );
+    if (asked.n > 0) {
+      throw Object.assign(new Error("You have requested settlement for this day. Withdraw the settlement request first if you need to delete an invoice."), { status: 400 });
+    }
+    // Money taken for older bills together with this invoice, or collected against it later, is tied to it.
+    const [[{ withDues }]] = await connection.query("SELECT COALESCE(SUM(total_amount), 0) AS withDues FROM app_payments WHERE with_invoice_id = ?", [invoiceId]);
+    const [[{ later }]] = await connection.query("SELECT COALESCE(SUM(amount), 0) AS later FROM app_payment_allocations WHERE invoice_id = ?", [invoiceId]);
+    if (Number(withDues) > 0) {
+      throw Object.assign(new Error(`Rs. ${Number(withDues)} for the shop's older bills was taken with this invoice, so it cannot be deleted from the phone. Ask the office.`), { status: 400 });
+    }
+    if (Number(later) > 0) {
+      throw Object.assign(new Error(`Rs. ${Number(later)} was already collected against this invoice, so it cannot be deleted. Ask the office.`), { status: 400 });
+    }
+    await connection.query(
+      "UPDATE app_invoices SET status = 'rejected', reject_reason = ?, settled_by = NULL, settled_at = ? WHERE app_invoice_id = ? AND status = 'pending'",
+      [SELF_DELETED, getISTTimestamp(), invoiceId]
+    );
+    await connection.commit();
+    await appLog({
+      req, staffId, action: "invoice_deleted",
+      details: `Invoice ${inv.invoice_no} (Rs. ${inv.total_amount}) deleted by the salesperson before settlement`,
+    });
+    res.json({ message: "Invoice deleted. The pieces are back in your stock." });
+  } catch (error) {
+    await connection.rollback();
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error("App deleteInvoice error:", error);
+    res.status(500).json({ message: "Could not delete the invoice" });
+  } finally {
+    connection.release();
+  }
+};
+
 exports.getInvoices = async (req, res) => {
   try {
     const conditions = ["i.staff_id = ?"];
@@ -589,7 +645,7 @@ exports.getInvoices = async (req, res) => {
       `SELECT i.app_invoice_id, i.invoice_no, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date,
               DATE_FORMAT(i.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
               i.total_amount, i.cash_amount, i.upi_amount, i.card_amount, i.credit_amount,
-              ${statusExpr('i')} AS status, i.price_flag, s.shop_name
+              ${statusExpr('i')} AS status, i.price_flag, i.reject_reason, s.shop_name
        FROM app_invoices i JOIN app_shops s ON s.shop_id = i.shop_id
        WHERE ${conditions.join(" AND ")}
        ORDER BY i.app_invoice_id DESC LIMIT 300`,
