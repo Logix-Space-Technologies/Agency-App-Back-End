@@ -22,6 +22,7 @@ router.post("/invoices", c.createInvoice);
 router.get("/invoices", c.getInvoices);
 router.get("/invoices/:id", c.getInvoice);
 router.put("/invoices/:id", c.updateInvoice);
+router.delete("/invoices/:id", c.deleteInvoice);
 router.get("/stock", c.getMyStock);
 router.get("/settlements", c.getSettlements);
 router.get("/settlements/:id", c.getSettlement);
