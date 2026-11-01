@@ -742,6 +742,7 @@ exports.getMyStock = async (req, res) => {
       return {
         // sold is what was charged; free replacements are counted as damage (the shop gave a damaged piece back).
         // allocated is everything they took: the office's allocation plus what still waits for verification.
+        self_taken: (asked.get(p.product_id) || {}).self || 0, office: p.allocated,
         product_id: p.product_id, product_name: p.product_name, allocated: taken, waiting, sold: p.sold - (p.free || 0), free: p.free || 0,
         left, damaged, balance: left - damaged, over_sold: p.sold > taken, amount: p.amount,
       };

@@ -121,7 +121,7 @@ exports.getDay = async (req, res) => {
     const stock = ids
       .map((id) => {
         const r = sellable.get(id);
-        return { product_id: id, product_name: names.get(id) || `Product ${id}`, taken: r.allocated + r.asked, waiting: r.asked, sold: r.sold - r.free, free: r.free, damaged: r.damaged + r.free, left: Math.max(0, r.available) };
+        return { product_id: id, product_name: names.get(id) || `Product ${id}`, taken: r.allocated + r.asked, waiting: r.asked, self_taken: r.self, office: r.allocated, sold: r.sold - r.free, free: r.free, damaged: r.damaged + r.free, left: Math.max(0, r.available) };
       })
       .filter((x) => x.taken > 0 || x.sold > 0)
       .sort((x, y) => x.product_name.localeCompare(y.product_name));
