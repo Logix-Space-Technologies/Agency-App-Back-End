@@ -20,7 +20,12 @@ const sellableByProduct = async (db, staffId, date, excludeInvoiceId = 0) => {
   );
   // What the salesperson themselves asked for with Take stock today. It is the same stock the office then verifies and
   // allocates, so it is only shown next to the office's number, never added to it.
-  const [mine] = await db.query(
+  // Once the office has settled the day, what was left went back to the store: their own count no longer applies.
+  const [[{ n: settledBefore }]] = await db.query(
+    "SELECT COUNT(*) AS n FROM app_day_settlements WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0",
+    [staffId, date]
+  );
+  const [mine] = settledBefore > 0 ? [[]] : await db.query(
     `SELECT it.product_id, SUM(it.requested_qty) AS q
      FROM app_self_allocation_items it JOIN app_self_allocations r ON r.request_id = it.request_id
      WHERE r.staff_id = ? AND r.status IN ('verified', 'pending') AND r.alloc_date = ?
@@ -47,8 +52,11 @@ const sellableByProduct = async (db, staffId, date, excludeInvoiceId = 0) => {
   sold.forEach((a) => { row(a.product_id).sold = Number(a.q); row(a.product_id).free = Number(a.free); }); // sold = every piece off the stock, free replacements included
   broken.forEach((a) => { row(a.product_id).damaged = Number(a.damaged_qty); });
   for (const r of map.values()) {
-    r.damaged = Math.min(r.damaged, Math.max(0, r.allocated + r.asked - r.sold));
-    r.available = r.allocated + r.asked - r.sold - r.damaged;
+    // What they hold is what they took themselves, or what the office allocated if that is more. A salesperson may
+    // arrange some stock from outside, so their own count can be higher than the office's; it is the one that counts here.
+    r.taken = Math.max(r.allocated + r.asked, r.self);
+    r.damaged = Math.min(r.damaged, Math.max(0, r.taken - r.sold));
+    r.available = r.taken - r.sold - r.damaged;
   }
   return map;
 };
@@ -71,10 +79,10 @@ const assertSellable = async (db, staffId, date, lines, excludeInvoiceId = 0) =>
   }
   const problems = [];
   for (const l of wanted.values()) {
-    const r = map.get(l.productId) || { allocated: 0, asked: 0, sold: 0, damaged: 0, available: 0 };
+    const r = map.get(l.productId) || { allocated: 0, asked: 0, sold: 0, damaged: 0, available: 0, taken: 0 };
     if (l.quantity > r.available) {
       const name = l.name || names.get(l.productId) || `Product ${l.productId}`;
-      const taken = r.allocated + r.asked;
+      const taken = r.taken;
       problems.push(
         taken === 0
           ? `${name}: you have not taken this item. Take it from Take stock first.`
