@@ -1744,6 +1744,29 @@ exports.addSales = async (req, res) => {
 };
 
 // search
+// Gives a mobile-app day settlement its invoice number (next in the non-GST series) if it has none yet.
+const ensureDayInvoiceNo = async (settlementId) => {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [[row]] = await conn.query("SELECT details FROM app_day_settlements WHERE settlement_id = ? FOR UPDATE", [settlementId]);
+    const det = typeof row.details === "string" ? JSON.parse(row.details) : row.details;
+    if (!det.invoice_no) {
+      const { nextNgstNumber } = require("../utils/appSettle");
+      det.invoice_no = await nextNgstNumber(conn);
+      await conn.query("UPDATE app_day_settlements SET details = ? WHERE settlement_id = ?", [JSON.stringify(det), settlementId]);
+    }
+    await conn.commit();
+    return det.invoice_no;
+  } catch (e) {
+    await conn.rollback();
+    console.error("ensureDayInvoiceNo error:", e);
+    return null;
+  } finally {
+    conn.release();
+  }
+};
+
 exports.searchSales = async (req, res) => {
   try {
     const { sale_date, from_date, to_date, user_type, user_id, include_shops } = req.body;
@@ -1846,6 +1869,8 @@ exports.searchSales = async (req, res) => {
         let det = null;
         try { det = typeof d.details === "string" ? JSON.parse(d.details) : d.details; } catch (e) { det = null; }
         if (!det || det.undone) continue;
+        // Days settled before the combined invoice number existed get theirs the first time they are listed.
+        if (!det.invoice_no) det.invoice_no = await ensureDayInvoiceNo(d.settlement_id);
         const tracking = (det.invoices || []).map((i) => i.tracking_id).filter(Boolean);
         let paid = 0, settled = 1;
         if (tracking.length) {
@@ -1858,7 +1883,7 @@ exports.searchSales = async (req, res) => {
         const ex = (det.handover && det.handover.expenses) || {};
         combined.push({
           id: d.settlement_id, settlement_id: d.settlement_id, sale_tracking_Id: null,
-          invoiceNumber: `Day Settlement ${d.settlement_id}`, TotalAmount: Number(det.totals.total), name: d.staff_name,
+          invoiceNumber: det.invoice_no || `Day Settlement ${d.settlement_id}`, TotalAmount: Number(det.totals.total), name: d.staff_name,
           DateofTransaction: d.settle_date, isSettled: settled, AmountPaid: paid,
           FuelExpenses: Number(ex.fuel || 0), VehcileServiceExpenses: Number(ex.vehicle_service || 0), OtherExpenses: Number(ex.other || 0),
           isGstBilling: 0, sale_type: "app_day", invoice_count: (det.invoices || []).length, sold_by: null,
