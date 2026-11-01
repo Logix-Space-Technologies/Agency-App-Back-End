@@ -606,8 +606,10 @@ GROUP BY
   }
 };
 
-// One credit line per settled mobile-app day: the salesman's shortage (what he should have handed over less what he
-// handed over), reduced by anything he paid afterwards from View Credit. Payments are kept in the settlement record.
+// One credit line per settled mobile-app day, the same meaning as a marketing settlement: what the salesman is answerable
+// for (sale less expenses) minus what he handed over. That is the part of the day's bills still unpaid by the shops (read live,
+// so later collections count) plus any shortage in what he handed over, less what he paid afterwards from View Credit.
+// Payments are kept in the settlement record.
 const appDayCreditRows = async (staffId, startDate, endDate) => {
   const conds = ["d.staff_id = ?", "d.invoice_count > 0"];
   const params = [staffId];
@@ -617,23 +619,41 @@ const appDayCreditRows = async (staffId, startDate, endDate) => {
      FROM app_day_settlements d LEFT JOIN users u ON u.user_id = d.staff_id WHERE ${conds.join(" AND ")} ORDER BY d.settlement_id DESC`,
     params
   );
-  const out = [];
+  const parsed = [];
   for (const d of days) {
     let det = null;
     try { det = typeof d.details === "string" ? JSON.parse(d.details) : d.details; } catch (e) { det = null; }
     if (!det || det.undone || !det.handover) continue;
+    parsed.push({ d, det });
+  }
+  const tracking = parsed.flatMap((x) => (x.det.invoices || []).map((i) => i.tracking_id)).filter(Boolean);
+  const unpaid = {};
+  if (tracking.length) {
+    const [fs] = await pool.query(
+      "SELECT sale_tracking_Id, TotalAmount, AmountPaid FROM final_sale WHERE sale_tracking_Id IN (?) AND isActive = 1",
+      [tracking]
+    );
+    for (const f of fs) unpaid[f.sale_tracking_Id] = Math.max(0, Number(f.TotalAmount) - Number(f.AmountPaid));
+  }
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const out = [];
+  for (const { d, det } of parsed) {
     const h = det.handover;
+    const shopUnpaid = (det.invoices || []).reduce((t, i) => t + (unpaid[i.tracking_id] || 0), 0);
+    const shortage = Number(h.net_payable) - Number(h.received.total);
     const later = (det.credit_payments || []).reduce((t, p) => t + Number(p.total || 0), 0);
-    const credit = Math.round((Number(h.net_payable) - Number(h.received.total) - later) * 100) / 100;
+    const credit = r2(shopUnpaid + shortage - later);
     if (Math.abs(credit) < 0.01) continue;
     const ex = h.expenses || {};
+    const total = Number(det.totals.total);
+    const finalAmount = r2(total - Number(ex.total || 0));
     out.push({
       id: d.settlement_id, sale_type: "app_day", name: d.staff_name, sale_tracking_Id: null,
       invoiceNumber: det.invoice_no || null,
-      TotalAmount: Number(h.expected.total), UserId: d.staff_id, DateofTransaction: d.settle_date, isSettled: 0,
-      AmountPaid: Math.round((Number(h.received.total) + later) * 100) / 100,
+      TotalAmount: total, UserId: d.staff_id, DateofTransaction: d.settle_date, isSettled: 0,
+      AmountPaid: r2(finalAmount - credit),
       FuelExpenses: Number(ex.fuel || 0), VehcileServiceExpenses: Number(ex.vehicle_service || 0), OtherExpenses: Number(ex.other || 0),
-      finalAmount: Number(h.net_payable), credit,
+      finalAmount, credit,
     });
   }
   return out;
