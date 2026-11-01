@@ -645,7 +645,8 @@ exports.getInvoices = async (req, res) => {
       `SELECT i.app_invoice_id, i.invoice_no, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date,
               DATE_FORMAT(i.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
               i.total_amount, i.cash_amount, i.upi_amount, i.card_amount, i.credit_amount,
-              ${statusExpr('i')} AS status, i.price_flag, i.reject_reason, s.shop_name
+              ${statusExpr('i')} AS status, i.price_flag, i.reject_reason, s.shop_name,
+              COALESCE((SELECT SUM(a.amount) FROM app_payment_allocations a WHERE a.invoice_id = i.app_invoice_id), 0) AS collected_later
        FROM app_invoices i JOIN app_shops s ON s.shop_id = i.shop_id
        WHERE ${conditions.join(" AND ")}
        ORDER BY i.app_invoice_id DESC LIMIT 300`,
@@ -945,9 +946,12 @@ exports.getReport = async (req, res) => {
     const [[totals]] = await pool.query(
       `SELECT COUNT(*) AS invoices, COALESCE(SUM(total_amount), 0) AS total,
               COALESCE(SUM(cash_amount), 0) AS cash, COALESCE(SUM(upi_amount), 0) AS upi,
-              COALESCE(SUM(card_amount), 0) AS card, COALESCE(SUM(credit_amount), 0) AS credit,
+              COALESCE(SUM(card_amount), 0) AS card,
+              COALESCE(SUM(GREATEST(0, credit_amount - COALESCE(c.collected, 0))), 0) AS credit,
               COALESCE(SUM(status = 'pending'), 0) AS pending, COALESCE(SUM(status = 'settled'), 0) AS settled
        FROM app_invoices i
+       LEFT JOIN (SELECT invoice_id, SUM(amount) AS collected FROM app_payment_allocations GROUP BY invoice_id) c
+         ON c.invoice_id = i.app_invoice_id
        WHERE i.staff_id = ? AND i.status <> 'rejected' AND NOT ${deletedByAdmin('i')} AND i.invoice_date BETWEEN ? AND ?`,
       [staffId, from, to]
     );
