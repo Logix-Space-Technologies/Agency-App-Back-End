@@ -25,15 +25,21 @@ const sellableByProduct = async (db, staffId, date, excludeInvoiceId = 0) => {
      GROUP BY it.product_id`,
     [staffId, date, excludeInvoiceId]
   );
+  // Pieces the salesperson reported damaged that day cannot be sold either.
+  const [broken] = await db.query("SELECT product_id, damaged_qty FROM app_damage_reports WHERE staff_id = ? AND report_date = ?", [staffId, date]);
   const map = new Map();
   const row = (id) => {
-    if (!map.has(id)) map.set(id, { allocated: 0, asked: 0, sold: 0 });
+    if (!map.has(id)) map.set(id, { allocated: 0, asked: 0, sold: 0, damaged: 0 });
     return map.get(id);
   };
   alloc.forEach((a) => { row(a.product_id).allocated = Number(a.q); });
   asked.forEach((a) => { row(a.product_id).asked = Number(a.q); });
   sold.forEach((a) => { row(a.product_id).sold = Number(a.q); });
-  for (const r of map.values()) r.available = r.allocated + r.asked - r.sold;
+  broken.forEach((a) => { row(a.product_id).damaged = Number(a.damaged_qty); });
+  for (const r of map.values()) {
+    r.damaged = Math.min(r.damaged, Math.max(0, r.allocated + r.asked - r.sold));
+    r.available = r.allocated + r.asked - r.sold - r.damaged;
+  }
   return map;
 };
 
@@ -48,14 +54,14 @@ const assertSellable = async (db, staffId, date, lines, excludeInvoiceId = 0) =>
   }
   const problems = [];
   for (const l of lines) {
-    const r = map.get(l.productId) || { allocated: 0, asked: 0, sold: 0, available: 0 };
+    const r = map.get(l.productId) || { allocated: 0, asked: 0, sold: 0, damaged: 0, available: 0 };
     if (l.quantity > r.available) {
       const name = l.name || names.get(l.productId) || `Product ${l.productId}`;
       const taken = r.allocated + r.asked;
       problems.push(
         taken === 0
           ? `${name}: you have not taken this item. Take it from Take stock first.`
-          : `${name}: you can sell ${Math.max(0, r.available)} more (taken ${taken}, already on invoices ${r.sold}), but this has ${l.quantity}.`
+          : `${name}: you can sell ${Math.max(0, r.available)} more (taken ${taken}, already on invoices ${r.sold}${r.damaged ? `, damaged ${r.damaged}` : ""}), but this has ${l.quantity}.`
       );
     }
   }
