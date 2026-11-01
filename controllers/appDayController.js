@@ -233,6 +233,37 @@ exports.addFuel = async (req, res) => {
   }
 };
 
+// Change an entry the office has not settled yet (a wrong amount or bill number, a missing note).
+exports.editFuel = async (req, res) => {
+  try {
+    const staffId = req.staff.user_id;
+    const [rows] = await pool.query(
+      "SELECT fuel_id, settlement_id, bill_no, amount, DATE_FORMAT(fuel_date, '%Y-%m-%d') AS fuel_date FROM app_fuel_entries WHERE fuel_id = ? AND staff_id = ?",
+      [Number(req.params.id), staffId]
+    );
+    const row = rows[0];
+    if (!row) throw fail(404, "Fuel entry not found");
+    if (row.settlement_id) throw fail(400, "The office has already settled this fuel entry, so it cannot be changed");
+    const amount = money(req.body.amount);
+    const bill = String(req.body.bill_no || "").trim().slice(0, 60);
+    const note = String(req.body.note || "").trim().slice(0, 255) || null;
+    if (!(amount > 0) || amount > 1000000) throw fail(400, "Enter the fuel amount");
+    if (!bill) throw fail(400, "Enter the bill number");
+    const [dup] = await pool.query("SELECT fuel_id FROM app_fuel_entries WHERE staff_id = ? AND bill_no = ? AND fuel_id <> ? LIMIT 1", [staffId, bill, row.fuel_id]);
+    if (dup.length) throw fail(400, `Bill number ${bill} is already entered`);
+    await pool.query("UPDATE app_fuel_entries SET amount = ?, bill_no = ?, note = ? WHERE fuel_id = ?", [amount, bill, note, row.fuel_id]);
+    await appLog({
+      req, staffId, action: "fuel_edited",
+      details: `Fuel ${row.fuel_date} changed: Rs. ${money(row.amount)} bill ${row.bill_no} -> Rs. ${amount} bill ${bill}`,
+    });
+    res.json({ message: "Fuel updated", ...(await dayInfo(pool, staffId, row.fuel_date)) });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error("App editFuel error:", error);
+    res.status(500).json({ message: "Could not change the fuel entry" });
+  }
+};
+
 exports.deleteFuel = async (req, res) => {
   try {
     const staffId = req.staff.user_id;
@@ -727,6 +758,41 @@ exports.vehicleKmLog = async (req, res) => {
   } catch (error) {
     console.error("vehicleKmLog error:", error);
     res.status(500).json({ message: "Could not load the KM log" });
+  }
+};
+
+// Every fuel bill the salespeople entered on the phone, with the vehicle they used that day.
+exports.fuelBills = async (req, res) => {
+  try {
+    const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+    const to = isDate(req.body.to) ? req.body.to : today();
+    const from = isDate(req.body.from) ? req.body.from : `${to.slice(0, 8)}01`;
+    const conditions = ["f.fuel_date BETWEEN ? AND ?"];
+    const params = [from, to];
+    if (Number(req.body.vehicle_id)) { conditions.push("i.vehicle_id = ?"); params.push(Number(req.body.vehicle_id)); }
+    if (Number(req.body.staff_id)) { conditions.push("f.staff_id = ?"); params.push(Number(req.body.staff_id)); }
+    const [rows] = await pool.query(
+      `SELECT f.fuel_id, DATE_FORMAT(f.fuel_date, '%Y-%m-%d') AS date, DATE_FORMAT(f.created_at, '%H:%i') AS time,
+              f.staff_id, u.name AS staff_name, i.vehicle_id, v.name AS vehicle_name, v.reg_no,
+              f.amount, f.bill_no, f.note, f.settlement_id
+       FROM app_fuel_entries f
+       LEFT JOIN users u ON u.user_id = f.staff_id
+       LEFT JOIN app_day_info i ON i.staff_id = f.staff_id AND i.info_date = f.fuel_date
+       LEFT JOIN app_vehicles v ON v.vehicle_id = i.vehicle_id
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY f.fuel_date DESC, f.fuel_id DESC
+       LIMIT 5000`,
+      params
+    );
+    const bills = rows.map((r) => ({
+      fuel_id: r.fuel_id, date: r.date, time: r.time, staff_id: r.staff_id, staff_name: r.staff_name || "-",
+      vehicle_id: r.vehicle_id, vehicle_name: r.vehicle_name || "No vehicle", reg_no: r.reg_no || "",
+      amount: money(r.amount), bill_no: r.bill_no, note: r.note || "", settled: r.settlement_id !== null,
+    }));
+    res.json({ from, to, bills });
+  } catch (error) {
+    console.error("fuelBills error:", error);
+    res.status(500).json({ message: "Could not load the fuel bills" });
   }
 };
 
