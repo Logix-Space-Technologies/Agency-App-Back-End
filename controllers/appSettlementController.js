@@ -264,11 +264,13 @@ exports.settleDay = async (req, res) => {
     }
 
     // 2. Damaged and lost stock, the same way the marketing settlement records it.
-    const withShortage = lines.filter((l) => l.damaged > 0 || l.loss > 0);
+    // Free replacements are damage too: the shop gave a damaged piece back and got a good one, so the good piece
+    // leaves the stock as damage (no sale line) and the damaged quantity of the day includes it.
+    const withShortage = lines.filter((l) => l.damaged > 0 || l.loss > 0 || l.free > 0);
     for (const l of withShortage) {
       await connection.query(
         "UPDATE stock SET Damage_Qty = Damage_Qty + ?, Loss_Qty = Loss_Qty + ? WHERE product_id = ? AND isActive = 1",
-        [l.damaged, l.loss, l.product_id]
+        [l.damaged + (l.free || 0), l.loss, l.product_id]
       );
     }
     let dsTracking = null;
@@ -292,7 +294,7 @@ exports.settleDay = async (req, res) => {
           `INSERT INTO sales (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received,
                               is_credit, sale_tracking_Id, sale_date, damaged_count, is_settled, loss_count, is_price_changed, isActive)
            VALUES ('marketing', ?, ?, ?, 0, 0, 0, ?, ?, ?, 1, ?, 0, 1)`,
-          [staffId, l.product_id, price[0] ? price[0].price_id : null, tracking, date, l.damaged, l.loss]
+          [staffId, l.product_id, price[0] ? price[0].price_id : null, tracking, date, l.damaged + (l.free || 0), l.loss]
         );
       }
     }

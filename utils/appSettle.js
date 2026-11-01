@@ -86,6 +86,8 @@ const postInvoiceTx = async (connection, invoiceId, adminId, { checkAllocation =
   }
 
   for (const it of items) {
+    // A free replacement is not a sale: the day settlement records it as damage instead.
+    if (Number(it.sold_price) === 0) continue;
     await connection.query(
       `INSERT INTO sales (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received,
                           is_credit, sale_tracking_Id, sale_date, damaged_count, is_settled, loss_count, is_price_changed, isActive)
