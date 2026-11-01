@@ -731,7 +731,8 @@ exports.getMyStock = async (req, res) => {
       const left = Math.max(0, p.allocated - p.sold);
       const damaged = Math.min(reported[p.product_id] || 0, left);
       return {
-        product_id: p.product_id, product_name: p.product_name, allocated: p.allocated, sold: p.sold,
+        // sold is what was charged; free replacements are counted as damage (the shop gave a damaged piece back).
+        product_id: p.product_id, product_name: p.product_name, allocated: p.allocated, sold: p.sold - (p.free || 0), free: p.free || 0,
         left, damaged, balance: left - damaged, over_sold: p.sold > p.allocated, amount: p.amount,
       };
     });
@@ -746,7 +747,7 @@ exports.getMyStock = async (req, res) => {
         const d = JSON.parse(rows[0].details);
         settled = {
           settlement_id: d.settlement_id, settled_at: d.settled_at,
-          items: d.items.map((i) => ({ product_name: i.product_name, allocated: i.allocated, sold: i.sold, balance: i.balance, damaged: i.damaged, loss: i.loss })),
+          items: d.items.map((i) => ({ product_name: i.product_name, allocated: i.allocated, sold: i.sold - (i.free || 0), balance: i.balance, damaged: i.damaged + (i.free || 0), loss: i.loss })),
         };
       }
     }
