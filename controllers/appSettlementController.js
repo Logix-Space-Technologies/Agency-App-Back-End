@@ -630,11 +630,14 @@ exports.listSettlements = async (req, res) => {
     );
     res.json({
       settlements: rows.map(({ details, ...r }) => {
-        let h = null;
-        try { h = details ? JSON.parse(details).handover : null; } catch (e) { h = null; }
-        let undone = false;
-        try { undone = !!(details && JSON.parse(details).undone); } catch (e) { undone = false; }
-        return { ...r, received_total: h ? h.received.total : null, difference: h ? h.difference : null, undone };
+        let det = null;
+        try { det = details ? JSON.parse(details) : null; } catch (e) { det = null; }
+        const h = det ? det.handover : null;
+        // Credit left with the shops is the salesperson's to collect, so what is not paid to the office is a shortage.
+        const t = (det && det.totals) || {};
+        const creditLeft = Math.max(0, Number(t.credit || 0) - Number(t.collected_later || 0));
+        const balance = h ? money(Number(h.net_payable) + creditLeft - Number(h.received.total)) : null;
+        return { ...r, received_total: h ? h.received.total : null, difference: h ? h.difference : null, balance, undone: !!(det && det.undone) };
       }),
     });
   } catch (error) {
