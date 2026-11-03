@@ -172,6 +172,12 @@ const oldDuesList = async (db, staffId, date) => {
   );
   return rows.map((r) => ({
     shop_name: r.shop_name, invoice_no: r.invoice_no, bill_date: r.bill_date, paid_at: r.paid_at, amount: money(r.amount),
+    // A payment mixing methods is split in proportion, so the cash, UPI and card of the list add up to the money received.
+    ...["cash", "upi", "card"].reduce((o, k) => {
+      const tot = Number(r.cash_amount) + Number(r.upi_amount) + Number(r.card_amount);
+      o[k] = tot > 0 ? money((Number(r.amount) * Number(r[`${k}_amount`])) / tot) : 0;
+      return o;
+    }, {}),
     method: [Number(r.cash_amount) > 0 && "Cash", Number(r.upi_amount) > 0 && "UPI", Number(r.card_amount) > 0 && "Card"].filter(Boolean).join(" + "),
   }));
 };
