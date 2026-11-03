@@ -3,6 +3,8 @@ const { logUserActivity } = require("../utils/logUserActivity");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 const { postInvoiceTx, trackingId, nextNgstNumber } = require("../utils/appSettle");
 const { dayInfo } = require("./appDayController");
+const { OUTSTANDING_SQL, COLLECTED_JOIN } = require("../utils/appDues");
+const { deletedByAdmin } = require("../utils/appInvoiceStatus");
 
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
 const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -150,6 +152,23 @@ const expectedHandover = async (db, staffId, date, totals) => {
 };
 exports.expectedHandover = expectedHandover;
 
+// Shops that still owe this salesperson money for bills made before [date]: what is still unpaid on those
+// bills, shop by shop (the salesperson's to collect).
+const pendingOldDues = async (db, staffId, date) => {
+  const [rows] = await db.query(
+    `SELECT s.shop_name, COUNT(*) AS bills, DATE_FORMAT(MIN(i.invoice_date), '%Y-%m-%d') AS oldest,
+            SUM(${OUTSTANDING_SQL}) AS due
+     FROM app_invoices i ${COLLECTED_JOIN}
+     JOIN app_shops s ON s.shop_id = i.shop_id
+     WHERE i.staff_id = ? AND i.invoice_date < ? AND i.status <> 'rejected' AND NOT ${deletedByAdmin("i")}
+       AND ${OUTSTANDING_SQL} > 0.004
+     GROUP BY s.shop_id, s.shop_name ORDER BY due DESC`,
+    [staffId, date]
+  );
+  const list = rows.map((r) => ({ shop_name: r.shop_name, bills: Number(r.bills), oldest: r.oldest, due: money(r.due) }));
+  return { rows: list, total: money(list.reduce((t, r) => t + r.due, 0)) };
+};
+
 // Payments the salesperson took that day against bills of earlier days (old dues), shop by shop.
 // Counted the same way as expectedHandover: after an earlier settlement of the same day only newer payments.
 const oldDuesList = async (db, staffId, date, window) => {
@@ -216,7 +235,7 @@ exports.previewDay = async (req, res) => {
     // Fuel already counted in an earlier settlement of the same day is not offered again.
     info.fuel = info.fuel.filter((f) => !f.settlement_id);
     info.fuel_total = money(info.fuel.reduce((t, f) => t + f.amount, 0));
-    res.json({ staff: staff[0], date, ...day, handover, old_dues_list: await oldDuesList(pool, staffId, date), vehicle: info });
+    res.json({ staff: staff[0], date, ...day, handover, old_dues_list: await oldDuesList(pool, staffId, date), pending_old_dues: await pendingOldDues(pool, staffId, date), vehicle: info });
   } catch (error) {
     console.error("previewDay error:", error);
     res.status(500).json({ message: "Could not load the day" });
@@ -260,6 +279,7 @@ exports.settleDay = async (req, res) => {
     // What the salesperson collected, less the expenses they paid, is what they should hand over.
     const expected = await expectedHandover(connection, staffId, date, day.totals);
     const oldDues = await oldDuesList(connection, staffId, date);
+    const pendingOld = await pendingOldDues(connection, staffId, date);
     const exp = req.body.expenses || {};
     const expenses = { fuel: money(exp.fuel), vehicle_service: money(exp.vehicle_service), other: money(exp.other) };
     for (const k of Object.keys(expenses)) {
@@ -417,6 +437,7 @@ exports.settleDay = async (req, res) => {
       })),
       invoices: posted,
       old_dues_list: oldDues,
+      pending_old_dues: pendingOld,
       // Everything Undo needs to put the day back exactly as it was.
       undo: {
         ds_tracking: dsTracking,
@@ -725,6 +746,10 @@ exports.settlementDetail = async (req, res) => {
         [rows[0].staff_id, rows[0].settle_date, Number(req.body.settlement_id)]
       );
       settlement.old_dues_list = await oldDuesList(pool, rows[0].staff_id, rows[0].settle_date, { after: prev && prev.at, upTo: rows[0].settled_at });
+    }
+    // Older settlements did not save the shops still owing from earlier days; show them as they stand now.
+    if (settlement.pending_old_dues === undefined && settlement.handover) {
+      settlement.pending_old_dues = { ...(await pendingOldDues(pool, rows[0].staff_id, rows[0].settle_date)), as_of_now: true };
     }
     res.json({ settlement });
   } catch (error) {

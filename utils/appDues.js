@@ -121,4 +121,4 @@ const collectDues = async (conn, { shopId, staffId, payment, withInvoiceId = nul
   return { payment_id: paid.insertId, total, allocations };
 };
 
-module.exports = { outstandingInvoices, duesByShop, collectDues, postAllocation, money };
+module.exports = { outstandingInvoices, duesByShop, collectDues, postAllocation, money, OUTSTANDING_SQL, COLLECTED_JOIN };
