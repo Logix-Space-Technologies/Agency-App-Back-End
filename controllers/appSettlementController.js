@@ -150,6 +150,32 @@ const expectedHandover = async (db, staffId, date, totals) => {
 };
 exports.expectedHandover = expectedHandover;
 
+// Payments the salesperson took that day against bills of earlier days (old dues), shop by shop.
+// Counted the same way as expectedHandover: after an earlier settlement of the same day only newer payments.
+const oldDuesList = async (db, staffId, date) => {
+  const [[last]] = await db.query(
+    `SELECT DATE_FORMAT(MAX(settled_at), '%Y-%m-%d %H:%i:%s') AS at
+     FROM app_day_settlements WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0`,
+    [staffId, date]
+  );
+  const after = last && last.at;
+  const [rows] = await db.query(
+    `SELECT p.payment_id, DATE_FORMAT(p.created_at, '%H:%i') AS paid_at, s.shop_name, i.invoice_no,
+            DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS bill_date, a.amount, p.cash_amount, p.upi_amount, p.card_amount
+     FROM app_payment_allocations a
+     JOIN app_payments p ON p.payment_id = a.payment_id
+     JOIN app_invoices i ON i.app_invoice_id = a.invoice_id
+     JOIN app_shops s ON s.shop_id = p.shop_id
+     WHERE p.staff_id = ? AND DATE(p.created_at) = ? ${after ? "AND p.created_at > ?" : ""} AND i.invoice_date <> ?
+     ORDER BY p.payment_id, i.invoice_date`,
+    after ? [staffId, date, after, date] : [staffId, date, date]
+  );
+  return rows.map((r) => ({
+    shop_name: r.shop_name, invoice_no: r.invoice_no, bill_date: r.bill_date, paid_at: r.paid_at, amount: money(r.amount),
+    method: [Number(r.cash_amount) > 0 && "Cash", Number(r.upi_amount) > 0 && "UPI", Number(r.card_amount) > 0 && "Card"].filter(Boolean).join(" + "),
+  }));
+};
+
 // Damage the salesperson reported from the phone for this day: { product_id: qty }.
 const reportedDamage = async (db, staffId, date) => {
   const [rows] = await db.query(
@@ -177,7 +203,7 @@ exports.previewDay = async (req, res) => {
     // Fuel already counted in an earlier settlement of the same day is not offered again.
     info.fuel = info.fuel.filter((f) => !f.settlement_id);
     info.fuel_total = money(info.fuel.reduce((t, f) => t + f.amount, 0));
-    res.json({ staff: staff[0], date, ...day, handover, vehicle: info });
+    res.json({ staff: staff[0], date, ...day, handover, old_dues_list: await oldDuesList(pool, staffId, date), vehicle: info });
   } catch (error) {
     console.error("previewDay error:", error);
     res.status(500).json({ message: "Could not load the day" });
@@ -220,6 +246,7 @@ exports.settleDay = async (req, res) => {
     // Balance and damage come from the office; loss is whatever is left of the allocation.
     // What the salesperson collected, less the expenses they paid, is what they should hand over.
     const expected = await expectedHandover(connection, staffId, date, day.totals);
+    const oldDues = await oldDuesList(connection, staffId, date);
     const exp = req.body.expenses || {};
     const expenses = { fuel: money(exp.fuel), vehicle_service: money(exp.vehicle_service), other: money(exp.other) };
     for (const k of Object.keys(expenses)) {
@@ -376,6 +403,7 @@ exports.settleDay = async (req, res) => {
         reported_damage: reported[l.product_id] || 0,
       })),
       invoices: posted,
+      old_dues_list: oldDues,
       // Everything Undo needs to put the day back exactly as it was.
       undo: {
         ds_tracking: dsTracking,
