@@ -747,8 +747,8 @@ exports.settlementDetail = async (req, res) => {
       );
       settlement.old_dues_list = await oldDuesList(pool, rows[0].staff_id, rows[0].settle_date, { after: prev && prev.at, upTo: rows[0].settled_at });
     }
-    // Older settlements did not save the shops still owing from earlier days; show them as they stand now.
-    if (settlement.pending_old_dues === undefined && settlement.handover) {
+    // What shops still owe from earlier days is always shown as it stands today, not as it stood at settlement.
+    if (settlement.handover) {
       settlement.pending_old_dues = { ...(await pendingOldDues(pool, rows[0].staff_id, rows[0].settle_date)), as_of_now: true };
     }
     res.json({ settlement });
