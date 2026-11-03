@@ -22,6 +22,24 @@ const loadDay = async (db, staffId, date, lock = false) => {
      ORDER BY i.app_invoice_id${suffix}`,
     [staffId, date]
   );
+  // What shops paid later against these bills, by method (a payment is split across its cash, UPI and card in proportion).
+  const laterBy = new Map();
+  if (invoices.length) {
+    const [later] = await db.query(
+      `SELECT a.invoice_id,
+              SUM(a.amount * p.cash_amount / NULLIF(p.total_amount, 0)) AS cash,
+              SUM(a.amount * p.upi_amount / NULLIF(p.total_amount, 0)) AS upi,
+              SUM(a.amount * p.card_amount / NULLIF(p.total_amount, 0)) AS card
+       FROM app_payment_allocations a JOIN app_payments p ON p.payment_id = a.payment_id
+       WHERE a.invoice_id IN (?) GROUP BY a.invoice_id`,
+      [invoices.map((i) => i.app_invoice_id)]
+    );
+    later.forEach((l) => laterBy.set(l.invoice_id, l));
+  }
+  invoices.forEach((i) => {
+    const l = laterBy.get(i.app_invoice_id) || {};
+    i.later_cash = money(l.cash); i.later_upi = money(l.upi); i.later_card = money(l.card);
+  });
   const [sold] = await db.query(
     `SELECT it.product_id, SUM(it.quantity) AS sold, SUM(it.line_total) AS amount,
             SUM(CASE WHEN it.sold_price = 0 THEN it.quantity ELSE 0 END) AS free
@@ -103,6 +121,7 @@ const loadDay = async (db, staffId, date, lock = false) => {
     totals: {
       total: sum("total_amount"), cash: sum("cash_amount"), upi: sum("upi_amount"), card: sum("card_amount"), credit: sum("credit_amount"),
       // Paid by the shops after the bill was made (phone "collect dues"): shown beside the credit, which is stored as billed.
+      later_cash: sum("later_cash"), later_upi: sum("later_upi"), later_card: sum("later_card"),
       collected_later: money(invoices.reduce((t, i) => t + Math.min(Number(i.credit_amount), Number(i.collected_later)), 0)),
     },
   };
@@ -264,7 +283,8 @@ exports.settleDay = async (req, res) => {
       const r = await postInvoiceTx(connection, inv.app_invoice_id, adminId, { checkAllocation: false });
       posted.push({ invoice_id: inv.app_invoice_id, tracking_id: r.tracking, invoice_no: inv.invoice_no, books_no: r.invoiceNumber, shop_name: inv.shop_name,
         total: Number(inv.total_amount), cash: Number(inv.cash_amount), upi: Number(inv.upi_amount),
-        card: Number(inv.card_amount), credit: Number(inv.credit_amount) });
+        card: Number(inv.card_amount), credit: Number(inv.credit_amount),
+        later_cash: inv.later_cash, later_upi: inv.later_upi, later_card: inv.later_card });
     }
 
     // Expenses the salesperson paid go in as ordinary expense vouchers, so Cash Flow and the Cash Report see them.
