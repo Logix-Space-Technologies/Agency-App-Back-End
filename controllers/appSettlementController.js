@@ -152,13 +152,20 @@ exports.expectedHandover = expectedHandover;
 
 // Payments the salesperson took that day against bills of earlier days (old dues), shop by shop.
 // Counted the same way as expectedHandover: after an earlier settlement of the same day only newer payments.
-const oldDuesList = async (db, staffId, date) => {
-  const [[last]] = await db.query(
-    `SELECT DATE_FORMAT(MAX(settled_at), '%Y-%m-%d %H:%i:%s') AS at
-     FROM app_day_settlements WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0`,
-    [staffId, date]
-  );
-  const after = last && last.at;
+const oldDuesList = async (db, staffId, date, window) => {
+  // `window` = { after, upTo } rebuilds the list of a day that was settled before it was saved with the settlement.
+  let after;
+  if (window) {
+    after = window.after;
+  } else {
+    const [[last]] = await db.query(
+      `SELECT DATE_FORMAT(MAX(settled_at), '%Y-%m-%d %H:%i:%s') AS at
+       FROM app_day_settlements WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0`,
+      [staffId, date]
+    );
+    after = last && last.at;
+  }
+  const upTo = window && window.upTo;
   const [rows] = await db.query(
     `SELECT p.payment_id, DATE_FORMAT(p.created_at, '%H:%i') AS paid_at, s.shop_name, i.invoice_no,
             DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS bill_date, a.amount, p.cash_amount, p.upi_amount, p.card_amount
@@ -166,9 +173,9 @@ const oldDuesList = async (db, staffId, date) => {
      JOIN app_payments p ON p.payment_id = a.payment_id
      JOIN app_invoices i ON i.app_invoice_id = a.invoice_id
      JOIN app_shops s ON s.shop_id = p.shop_id
-     WHERE p.staff_id = ? AND DATE(p.created_at) = ? ${after ? "AND p.created_at > ?" : ""} AND i.invoice_date <> ?
+     WHERE p.staff_id = ? AND DATE(p.created_at) = ? ${after ? "AND p.created_at > ?" : ""} ${upTo ? "AND p.created_at <= ?" : ""} AND i.invoice_date <> ?
      ORDER BY p.payment_id, i.invoice_date`,
-    after ? [staffId, date, after, date] : [staffId, date, date]
+    [staffId, date, ...(after ? [after] : []), ...(upTo ? [upTo] : []), date]
   );
   return rows.map((r) => ({
     shop_name: r.shop_name, invoice_no: r.invoice_no, bill_date: r.bill_date, paid_at: r.paid_at, amount: money(r.amount),
@@ -702,9 +709,24 @@ exports.listSettlements = async (req, res) => {
 
 exports.settlementDetail = async (req, res) => {
   try {
-    const [rows] = await pool.query("SELECT details FROM app_day_settlements WHERE settlement_id = ?", [Number(req.body.settlement_id)]);
+    const [rows] = await pool.query(
+      `SELECT details, staff_id, DATE_FORMAT(settle_date, '%Y-%m-%d') AS settle_date,
+              DATE_FORMAT(settled_at, '%Y-%m-%d %H:%i:%s') AS settled_at
+       FROM app_day_settlements WHERE settlement_id = ?`,
+      [Number(req.body.settlement_id)]
+    );
     if (!rows[0] || !rows[0].details) return res.status(404).json({ message: "Settlement not found" });
-    res.json({ settlement: JSON.parse(rows[0].details) });
+    const settlement = typeof rows[0].details === "string" ? JSON.parse(rows[0].details) : rows[0].details;
+    // A day settled before the old dues list was saved gets it rebuilt from the payments of that settlement's window.
+    if (settlement.old_dues_list === undefined && settlement.handover) {
+      const [[prev]] = await pool.query(
+        `SELECT DATE_FORMAT(MAX(settled_at), '%Y-%m-%d %H:%i:%s') AS at FROM app_day_settlements
+         WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0 AND settlement_id < ?`,
+        [rows[0].staff_id, rows[0].settle_date, Number(req.body.settlement_id)]
+      );
+      settlement.old_dues_list = await oldDuesList(pool, rows[0].staff_id, rows[0].settle_date, { after: prev && prev.at, upTo: rows[0].settled_at });
+    }
+    res.json({ settlement });
   } catch (error) {
     console.error("settlementDetail error:", error);
     res.status(500).json({ message: "Could not load the settlement" });
