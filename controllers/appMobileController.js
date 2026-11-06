@@ -987,6 +987,76 @@ exports.getReport = async (req, res) => {
   }
 };
 
+// What was sold in a period, item by item and shop by shop: for every item the shops it went to and how
+// many each took, and for every shop its bills with the items on them. Optional shop_id narrows it to one shop.
+exports.getSalesDetail = async (req, res) => {
+  try {
+    const today = getISTDate();
+    const from = isDate(req.query.from) ? req.query.from : today;
+    const to = isDate(req.query.to) ? req.query.to : from;
+    const params = [req.staff.user_id, from, to];
+    let shopFilter = "";
+    if (req.query.shop_id) { shopFilter = "AND i.shop_id = ?"; params.push(Number(req.query.shop_id)); }
+
+    const [lines] = await pool.query(
+      `SELECT i.app_invoice_id, i.invoice_no, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date,
+              DATE_FORMAT(i.created_at, '%H:%i') AS bill_time, i.shop_id, s.shop_name, i.total_amount,
+              ${statusExpr('i')} AS status,
+              it.product_id, p.product_name, it.quantity, it.sold_price, it.line_total
+       FROM app_invoices i
+       JOIN app_shops s ON s.shop_id = i.shop_id
+       JOIN app_invoice_items it ON it.app_invoice_id = i.app_invoice_id
+       JOIN products p ON p.product_id = it.product_id
+       WHERE i.staff_id = ? AND i.invoice_date BETWEEN ? AND ? AND i.status <> 'rejected' AND NOT ${deletedByAdmin('i')}
+         ${shopFilter}
+       ORDER BY i.invoice_date, i.app_invoice_id, it.item_id`,
+      params
+    );
+
+    const products = new Map();
+    const shops = new Map();
+    for (const l of lines) {
+      const qty = Number(l.quantity) || 0;
+      const amount = money(l.line_total);
+
+      if (!products.has(l.product_id)) products.set(l.product_id, { product_id: l.product_id, product_name: l.product_name, quantity: 0, free: 0, amount: 0, shops: new Map() });
+      const pr = products.get(l.product_id);
+      pr.quantity += qty; pr.amount = money(pr.amount + amount);
+      if (Number(l.sold_price) === 0) pr.free += qty;
+      if (!pr.shops.has(l.shop_id)) pr.shops.set(l.shop_id, { shop_id: l.shop_id, shop_name: l.shop_name, quantity: 0, amount: 0, bills: new Set() });
+      const ps = pr.shops.get(l.shop_id);
+      ps.quantity += qty; ps.amount = money(ps.amount + amount); ps.bills.add(l.invoice_no);
+
+      if (!shops.has(l.shop_id)) shops.set(l.shop_id, { shop_id: l.shop_id, shop_name: l.shop_name, quantity: 0, amount: 0, invoices: new Map() });
+      const sh = shops.get(l.shop_id);
+      sh.quantity += qty; sh.amount = money(sh.amount + amount);
+      if (!sh.invoices.has(l.app_invoice_id)) {
+        sh.invoices.set(l.app_invoice_id, {
+          invoice_id: l.app_invoice_id, invoice_no: l.invoice_no, date: l.invoice_date, time: l.bill_time,
+          total: money(l.total_amount), status: l.status, items: [],
+        });
+      }
+      sh.invoices.get(l.app_invoice_id).items.push({
+        product_id: l.product_id, product_name: l.product_name, quantity: qty,
+        price: money(l.sold_price), amount, free: Number(l.sold_price) === 0,
+      });
+    }
+
+    res.json({
+      from, to,
+      products: [...products.values()]
+        .map((p) => ({ ...p, shops: [...p.shops.values()].map((x) => ({ ...x, bills: [...x.bills] })).sort((a, b) => b.quantity - a.quantity) }))
+        .sort((a, b) => a.product_name.localeCompare(b.product_name)),
+      shops: [...shops.values()]
+        .map((x) => ({ ...x, invoices: [...x.invoices.values()] }))
+        .sort((a, b) => a.shop_name.localeCompare(b.shop_name, undefined, { numeric: true })),
+    });
+  } catch (error) {
+    console.error("App getSalesDetail error:", error);
+    res.status(500).json({ message: "Could not load the sales detail" });
+  }
+};
+
 // ---------------------------------------------------------------- activity log
 
 exports.postLog = async (req, res) => {
