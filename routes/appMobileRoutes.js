@@ -28,6 +28,7 @@ router.get("/settlements", c.getSettlements);
 router.get("/settlements/:id", c.getSettlement);
 router.put("/stock/damage", c.saveDamage);
 router.get("/reports", c.getReport);
+router.get("/sales-detail", c.getSalesDetail);
 router.get("/vehicles", day.getVehicles);
 router.get("/day", day.getDay);
 router.put("/day/km", day.saveKm);
