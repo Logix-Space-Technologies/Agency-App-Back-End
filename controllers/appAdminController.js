@@ -3,7 +3,7 @@ const pool = require("../config/db");
 const { purgeOldAppLogs, RETENTION_DAYS } = require("../utils/appLog");
 const { logUserActivity } = require("../utils/logUserActivity");
 const { deletedByAdmin, statusExpr, belowPriceSql, abovePriceSql } = require("../utils/appInvoiceStatus");
-const { duesByShop, postAllocation } = require("../utils/appDues");
+const { duesByShop, postAllocation, OUTSTANDING_SQL, COLLECTED_JOIN } = require("../utils/appDues");
 const { editPendingInvoice } = require("../utils/appInvoiceEdit");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 const { CURRENT_STOCK_SQL } = require("../utils/appStock");
@@ -246,8 +246,21 @@ exports.listShops = async (req, res) => {
 
     const { limit, page, offset } = pageArgs(req.body);
     const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total ${from} WHERE ${where}`, params);
+    // Newest first, or by what the shop still owes (highest or lowest) across every page.
+    const bySort = ["dues_desc", "dues_asc"].includes(req.body.sort);
+    const duesJoin = bySort
+      ? `LEFT JOIN (
+           SELECT i.shop_id, SUM(${OUTSTANDING_SQL}) AS owed
+           FROM app_invoices i ${COLLECTED_JOIN}
+           WHERE i.status <> 'rejected' AND NOT ${deletedByAdmin("i")}
+           GROUP BY i.shop_id
+         ) dd ON dd.shop_id = s.shop_id`
+      : "";
+    const order = bySort
+      ? `COALESCE(dd.owed, 0) ${req.body.sort === "dues_asc" ? "ASC" : "DESC"}, s.created_at DESC, s.shop_id DESC`
+      : "s.created_at DESC, s.shop_id DESC";
     const [rows] = await pool.query(
-      `SELECT ${SHOP_SELECT} ${from} WHERE ${where} ORDER BY s.created_at DESC, s.shop_id DESC LIMIT ? OFFSET ?`,
+      `SELECT ${SHOP_SELECT} ${from} ${duesJoin} WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
     // Map view: every matching shop that has a location, not just the current page.
