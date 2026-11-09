@@ -617,6 +617,7 @@ exports.fetchCreditCustomers = async (req, res) => {
     const limit = Math.min(Math.max(Number(req.body.limit) || 15, 1), 100);
     const page = Math.max(Number(req.body.page) || 1, 1);
     const offset = (page - 1) * limit;
+    const isDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
 
     const DUE = "GREATEST(0, (fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) - fs.AmountPaid)";
     const FROM = `FROM final_sale fs
@@ -629,40 +630,51 @@ exports.fetchCreditCustomers = async (req, res) => {
       conds.push("(c.Name LIKE ? OR c.Place LIKE ? OR c.Mobile LIKE ?)");
       params.push(`%${q}%`, `%${q}%`, `%${q}%`);
     }
+    // The date filter narrows the list and the outstanding total; the period cards always show their own periods.
+    const rangeConds = [...conds];
+    const rangeParams = [...params];
+    if (isDay(req.body.startDate) && isDay(req.body.endDate)) {
+      rangeConds.push("DATE(fs.DateofTransaction) BETWEEN ? AND ?");
+      rangeParams.push(req.body.startDate, req.body.endDate);
+    }
     const where = conds.join(" AND ");
+    const rangeWhere = rangeConds.join(" AND ");
 
     const per = periodRanges(getISTDate());
     const periodSums = Object.entries({ today: per.today, week: per.week, month: per.month, year: per.year });
     const [[cards]] = await pool.query(
-      `SELECT COALESCE(SUM(${DUE}), 0) AS outstanding, COUNT(*) AS bills, COUNT(DISTINCT fs.UserId) AS customers,
-              ${periodSums.map(([k]) => `COALESCE(SUM(CASE WHEN DATE(fs.DateofTransaction) BETWEEN ? AND ? THEN ${DUE} END), 0) AS ${k}_amount,
+      `SELECT ${periodSums.map(([k]) => `COALESCE(SUM(CASE WHEN DATE(fs.DateofTransaction) BETWEEN ? AND ? THEN ${DUE} END), 0) AS ${k}_amount,
               COALESCE(SUM(DATE(fs.DateofTransaction) BETWEEN ? AND ?), 0) AS ${k}_bills`).join(",\n              ")}
        ${FROM} WHERE ${where}`,
       [...periodSums.flatMap(([, r]) => [r[0], r[1], r[0], r[1]]), ...params]
+    );
+    const [[all]] = await pool.query(
+      `SELECT COALESCE(SUM(${DUE}), 0) AS outstanding, COUNT(*) AS bills, COUNT(DISTINCT fs.UserId) AS customers ${FROM} WHERE ${rangeWhere}`,
+      rangeParams
     );
     const money = (v) => Math.round((Number(v) || 0) * 100) / 100;
     const period = (k) => ({ amount: money(cards[`${k}_amount`]), bills: Number(cards[`${k}_bills`]) });
 
     const [[{ total }]] = await pool.query(
-      `SELECT COUNT(*) AS total FROM (SELECT fs.UserId ${FROM} WHERE ${where} GROUP BY fs.UserId) t`,
-      params
+      `SELECT COUNT(*) AS total FROM (SELECT fs.UserId ${FROM} WHERE ${rangeWhere} GROUP BY fs.UserId) t`,
+      rangeParams
     );
     const [rows] = await pool.query(
       `SELECT fs.UserId AS customer_id, c.Name AS name, c.Place AS place, c.Mobile AS mobile,
               COUNT(*) AS bills, SUM(${DUE}) AS due,
               SUM(fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) AS billed,
               DATE_FORMAT(MIN(fs.DateofTransaction), '%Y-%m-%d') AS oldest, DATE_FORMAT(MAX(fs.DateofTransaction), '%Y-%m-%d') AS latest
-       ${FROM} WHERE ${where}
+       ${FROM} WHERE ${rangeWhere}
        GROUP BY fs.UserId, c.Name, c.Place, c.Mobile
        ORDER BY due ${sort}, c.Name
        LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
+      [...rangeParams, limit, offset]
     );
 
     res.json({
       success: true,
       cards: {
-        outstanding: { amount: money(cards.outstanding), bills: Number(cards.bills), customers: Number(cards.customers) },
+        outstanding: { amount: money(all.outstanding), bills: Number(all.bills), customers: Number(all.customers) },
         today: period("today"), week: period("week"), month: period("month"), year: period("year"),
       },
       customers: rows.map((r) => ({ ...r, due: money(r.due), billed: money(r.billed), bills: Number(r.bills) })),
@@ -679,8 +691,9 @@ exports.fetchCreditCustomers = async (req, res) => {
 // so later collections count) plus any shortage in what he handed over, less what he paid afterwards from View Credit.
 // Payments are kept in the settlement record.
 const appDayCreditRows = async (staffId, startDate, endDate) => {
-  const conds = ["d.staff_id = ?", "d.invoice_count > 0"];
-  const params = [staffId];
+  const conds = ["d.invoice_count > 0"];
+  const params = [];
+  if (staffId) { conds.push("d.staff_id = ?"); params.push(staffId); } // no salesperson: every one of them
   if (startDate && endDate) { conds.push("d.settle_date BETWEEN ? AND ?"); params.push(startDate, endDate); }
   const [days] = await pool.query(
     `SELECT d.settlement_id, d.staff_id, u.name AS staff_name, DATE_FORMAT(d.settle_date, '%Y-%m-%d') AS settle_date, d.details
@@ -725,6 +738,116 @@ const appDayCreditRows = async (staffId, startDate, endDate) => {
     });
   }
   return out;
+};
+
+// Every mobile-app day with an open shortage, read compactly (only the few figures needed, not the whole settlement
+// record) so this stays quick as settlements pile up. Falls back to the full read if the database cannot do JSON paths.
+const appDayCreditAll = async () => {
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const asValue = (v) => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === "string") { try { return JSON.parse(v); } catch (e) { return null; } }
+    return v;
+  };
+  try {
+    const [days] = await pool.query(
+      `SELECT d.settlement_id, d.staff_id, u.name AS staff_name, DATE_FORMAT(d.settle_date, '%Y-%m-%d') AS settle_date,
+              JSON_EXTRACT(d.details, '$.undone') AS undone,
+              JSON_EXTRACT(d.details, '$.handover.net_payable') AS net_payable,
+              JSON_EXTRACT(d.details, '$.handover.received.total') AS received,
+              JSON_EXTRACT(d.details, '$.credit_payments[*].total') AS later,
+              JSON_EXTRACT(d.details, '$.invoices[*].tracking_id') AS tracking
+       FROM app_day_settlements d LEFT JOIN users u ON u.user_id = d.staff_id
+       WHERE d.invoice_count > 0 AND d.details IS NOT NULL`
+    );
+    const parsed = days
+      .map((d) => ({ d, undone: asValue(d.undone), net: asValue(d.net_payable), got: asValue(d.received), later: asValue(d.later), tracking: asValue(d.tracking) }))
+      .filter((x) => !x.undone && x.net !== null && x.got !== null);
+    const ids = [...new Set(parsed.flatMap((x) => (Array.isArray(x.tracking) ? x.tracking : [])).filter(Boolean))];
+    const unpaid = {};
+    for (let i = 0; i < ids.length; i += 1000) {
+      const [fs] = await pool.query(
+        "SELECT sale_tracking_Id, TotalAmount, AmountPaid FROM final_sale WHERE sale_tracking_Id IN (?) AND isActive = 1",
+        [ids.slice(i, i + 1000)]
+      );
+      for (const f of fs) unpaid[f.sale_tracking_Id] = Math.max(0, Number(f.TotalAmount) - Number(f.AmountPaid));
+    }
+    const out = [];
+    for (const x of parsed) {
+      const shopUnpaid = (Array.isArray(x.tracking) ? x.tracking : []).reduce((t, id) => t + (unpaid[id] || 0), 0);
+      const later = (Array.isArray(x.later) ? x.later : []).reduce((t, v) => t + (Number(v) || 0), 0);
+      const credit = r2(shopUnpaid + (Number(x.net) - Number(x.got)) - later);
+      if (Math.abs(credit) < 0.01) continue;
+      out.push({ staff_id: x.d.staff_id, name: x.d.staff_name, date: x.d.settle_date, credit });
+    }
+    return out;
+  } catch (error) {
+    console.warn("appDayCreditAll: reading the compact way failed, reading full records:", error.message);
+    const rows = await appDayCreditRows(null);
+    return rows.map((r) => ({ staff_id: r.UserId, name: r.name, date: r.DateofTransaction, credit: r.credit }));
+  }
+};
+
+// Salespeople who still owe the office, highest dues first: unpaid marketing bills plus the open shortage of mobile-app
+// days (the same two sources as View Credit for one salesperson), with the credit of today, this week, this month and
+// this year. `q` matches the name; the date range narrows the list and the outstanding total.
+exports.fetchCreditStaff = async (req, res) => {
+  try {
+    const q = String(req.body.q || "").trim().toLowerCase().slice(0, 100);
+    const asc = req.body.sort === "due_asc";
+    const limit = Math.min(Math.max(Number(req.body.limit) || 15, 1), 100);
+    const page = Math.max(Number(req.body.page) || 1, 1);
+    const isDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
+    const hasRange = isDay(req.body.startDate) && isDay(req.body.endDate);
+    const money = (v) => Math.round((Number(v) || 0) * 100) / 100;
+
+    const DUE = "GREATEST(0, (fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) - fs.AmountPaid)";
+    const [marketing] = await pool.query(
+      `SELECT fs.UserId AS staff_id, u.name AS name, DATE_FORMAT(fs.DateofTransaction, '%Y-%m-%d') AS date, ${DUE} AS credit
+       FROM final_sale fs
+       JOIN (SELECT sale_tracking_Id, MIN(sale_type) AS sale_type FROM sales GROUP BY sale_tracking_Id) s
+         ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type = 'marketing'
+       JOIN users u ON u.user_id = fs.UserId
+       WHERE fs.isActive = 1 AND ${DUE} > 0.004`
+    );
+    const appDays = await appDayCreditAll();
+    const items = [...marketing, ...appDays]
+      .map((r) => ({ ...r, credit: Number(r.credit) }))
+      .filter((r) => r.credit > 0.004 && (!q || String(r.name || "").toLowerCase().includes(q)));
+
+    const per = periodRanges(getISTDate());
+    const within = (r, [from, to]) => r.date >= from && r.date <= to;
+    const sumFor = (range) => {
+      const rows = items.filter((r) => within(r, range));
+      return { amount: money(rows.reduce((t, r) => t + r.credit, 0)), bills: rows.length };
+    };
+    const inRange = hasRange ? items.filter((r) => within(r, [req.body.startDate, req.body.endDate])) : items;
+
+    const byStaff = new Map();
+    for (const r of inRange) {
+      if (!byStaff.has(r.staff_id)) byStaff.set(r.staff_id, { staff_id: r.staff_id, name: r.name, bills: 0, due: 0, oldest: r.date, latest: r.date });
+      const s = byStaff.get(r.staff_id);
+      s.bills += 1; s.due += r.credit;
+      if (r.date < s.oldest) s.oldest = r.date;
+      if (r.date > s.latest) s.latest = r.date;
+    }
+    const list = [...byStaff.values()]
+      .map((s) => ({ ...s, due: money(s.due) }))
+      .sort((a, b) => (asc ? a.due - b.due : b.due - a.due) || String(a.name).localeCompare(String(b.name)));
+
+    res.json({
+      success: true,
+      cards: {
+        outstanding: { amount: money(inRange.reduce((t, r) => t + r.credit, 0)), bills: inRange.length, staff: byStaff.size },
+        today: sumFor(per.today), week: sumFor(per.week), month: sumFor(per.month), year: sumFor(per.year),
+      },
+      staff: list.slice((page - 1) * limit, page * limit),
+      total: list.length, page, limit,
+    });
+  } catch (error) {
+    console.error("Error fetching credit staff:", error);
+    res.status(500).json({ success: false, message: "Failed to load the credit staff" });
+  }
 };
 
 // Takes a payment from a salesman against the shortage of one mobile-app day (View Credit). Not a sale: the books

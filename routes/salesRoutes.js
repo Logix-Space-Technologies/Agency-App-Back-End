@@ -19,6 +19,7 @@ router.post('/latest_price', fecthLatestPrices);
 router.post('/user-credit', fecthAllCreditReportUser);
 router.post('/customer-credit', fecthAllCreditReportCustomers);
 router.post('/credit-customers', require('../controllers/salesController').fetchCreditCustomers);
+router.post('/credit-staff', require('../controllers/salesController').fetchCreditStaff);
 router.post('/inc-credit', incCredit);
 router.post('/updateExpenses', updateSaleExpenses);
 router.post('/updateSaleItem', updateSaleItem);
