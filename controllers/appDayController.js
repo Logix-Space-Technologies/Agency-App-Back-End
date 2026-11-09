@@ -12,6 +12,33 @@ const MAX_QTY = 100000;
 
 // ---------------------------------------------------------------- shared
 
+// Trays taken in the morning and returned at settlement. A day without a row (every day before this feature)
+// simply has none. Reads survive a server updated before the table was created.
+const REQUIRE_TRAYS = process.env.APP_REQUIRE_TRAYS === "1";
+const trayRow = async (db, staffId, date) => {
+  try {
+    const [rows] = await db.query("SELECT taken, returned FROM app_day_trays WHERE staff_id = ? AND tray_date = ?", [staffId, date]);
+    return rows[0] || {};
+  } catch (error) {
+    if (error.code === "ER_NO_SUCH_TABLE") return {};
+    throw error;
+  }
+};
+const saveTrays = async (db, staffId, date, field, value) => {
+  if (!["taken", "returned"].includes(field)) throw new Error("bad tray field");
+  await db.query(
+    `INSERT INTO app_day_trays (staff_id, tray_date, ${field}, updated_at) VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE ${field} = VALUES(${field}), updated_at = VALUES(updated_at)`,
+    [staffId, date, value, getISTTimestamp()]
+  );
+};
+const readTrays = (v, label) => {
+  if (v === undefined || v === null || v === "") return null;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0 || n > 100000) throw fail(400, `${label} must be a whole number, zero or more`);
+  return n;
+};
+
 // Vehicle KM and the fuel bills of one salesperson day. The settlement page and the printed statement use this too.
 const dayInfo = async (db, staffId, date) => {
   const [[info]] = await db.query(
@@ -28,7 +55,13 @@ const dayInfo = async (db, staffId, date) => {
   );
   const start = info.start_km === undefined || info.start_km === null ? null : Number(info.start_km);
   const end = info.end_km === undefined || info.end_km === null ? null : Number(info.end_km);
+  const trays = await trayRow(db, staffId, date);
+  const taken = trays.taken === undefined || trays.taken === null ? null : Number(trays.taken);
+  const returned = trays.returned === undefined || trays.returned === null ? null : Number(trays.returned);
   return {
+    trays_taken: taken,
+    trays_returned: returned,
+    trays_not_returned: taken !== null && returned !== null ? taken - returned : null,
     vehicle_id: info.vehicle_id || null,
     vehicle_name: info.vehicle_name || null,
     vehicle_reg: info.vehicle_reg || null,
@@ -293,6 +326,9 @@ exports.requestSettle = async (req, res) => {
     if (date > today()) throw fail(400, "You cannot settle a future day");
     const end = readKm(req.body.end_km, "Closing KM");
     if (end === null) throw fail(400, "Enter the vehicle closing KM to request settlement");
+    const returnedTrays = readTrays(req.body.trays_returned, "Trays returned");
+    const tray = await trayRow(pool, staffId, date);
+    if (returnedTrays === null && (REQUIRE_TRAYS || tray.taken != null)) throw fail(400, "Enter how many trays you are returning to request settlement");
 
     const [[pending]] = await pool.query(
       "SELECT COUNT(*) AS n FROM app_invoices WHERE staff_id = ? AND invoice_date = ? AND status = 'pending'",
@@ -312,12 +348,34 @@ exports.requestSettle = async (req, res) => {
        ON DUPLICATE KEY UPDATE vehicle_id = VALUES(vehicle_id), end_km = VALUES(end_km), settle_requested_at = VALUES(settle_requested_at), updated_at = VALUES(updated_at)`,
       [staffId, date, vehicleId, end, now, now]
     );
-    await appLog({ req, staffId, action: "settle_request", details: `Settlement requested for ${date}, closing KM ${end}` });
+    if (returnedTrays !== null) await saveTrays(pool, staffId, date, "returned", returnedTrays);
+    await appLog({ req, staffId, action: "settle_request", details: `Settlement requested for ${date}, closing KM ${end}${returnedTrays !== null ? `, trays returned ${returnedTrays}` : ""}` });
     res.json({ message: "Settlement requested. The office will settle your day.", ...(await dayInfo(pool, staffId, date)) });
   } catch (error) {
     if (error.status) return res.status(error.status).json({ message: error.message });
     console.error("App requestSettle error:", error);
     res.status(500).json({ message: "Could not send the settlement request" });
+  }
+};
+
+// Correct the trays taken today (a wrong count typed in the morning) until settlement is requested.
+exports.saveTraysTaken = async (req, res) => {
+  try {
+    const staffId = req.staff.user_id;
+    const taken = readTrays(req.body.trays_taken, "Trays taken");
+    if (taken === null) throw fail(400, "Enter how many trays you took");
+    const [[asked]] = await pool.query(
+      "SELECT COUNT(*) AS n FROM app_day_info WHERE staff_id = ? AND info_date = ? AND settle_requested_at IS NOT NULL",
+      [staffId, today()]
+    );
+    if (asked.n > 0) throw fail(400, "You have requested settlement. Withdraw the request first to change the trays.");
+    await saveTrays(pool, staffId, today(), "taken", taken);
+    await appLog({ req, staffId, action: "trays_taken", details: `Trays taken today: ${taken}` });
+    res.json({ message: "Trays saved", ...(await dayInfo(pool, staffId, today())) });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error("App saveTraysTaken error:", error);
+    res.status(500).json({ message: "Could not save the trays" });
   }
 };
 
@@ -355,6 +413,10 @@ exports.createSelfAllocation = async (req, res) => {
     const [[km]] = await connection.query("SELECT start_km FROM app_day_info WHERE staff_id = ? AND info_date = ?", [staffId, today()]).then(([rows]) => [[rows[0] || {}]]);
     if (km.start_km === undefined || km.start_km === null) throw fail(400, "Enter your vehicle KM first, then take stock.");
     const items = await cleanItems(connection, req.body.items);
+    // The day's first stock request carries the number of trays taken; later ones can leave it out.
+    const trays = readTrays(req.body.trays_taken, "Trays taken");
+    const haveTrays = (await trayRow(connection, staffId, today())).taken != null;
+    if (!haveTrays && trays === null && REQUIRE_TRAYS) throw fail(400, "Enter how many trays you are taking.");
     const note = String(req.body.note || "").trim().slice(0, 255) || null;
     const now = getISTTimestamp();
     await connection.beginTransaction();
@@ -363,10 +425,11 @@ exports.createSelfAllocation = async (req, res) => {
       [staffId, today(), note, now, now]
     );
     await insertItems(connection, r.insertId, items);
+    if (!haveTrays && trays !== null) await saveTrays(connection, staffId, today(), "taken", trays);
     await connection.commit();
     await appLog({
       req, staffId, action: "self_allocation",
-      details: `Stock request ${r.insertId}: ${items.map((i) => `${i.product_name} x ${i.quantity}`).join(", ")}`.slice(0, 900),
+      details: `Stock request ${r.insertId}: ${items.map((i) => `${i.product_name} x ${i.quantity}`).join(", ")}${!haveTrays && trays !== null ? ` · trays taken ${trays}` : ""}`.slice(0, 900),
     });
     res.json({ message: "Sent to the office for checking", request_id: r.insertId });
   } catch (error) {

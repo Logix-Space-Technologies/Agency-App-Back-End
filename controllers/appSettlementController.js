@@ -427,7 +427,7 @@ exports.settleDay = async (req, res) => {
       settlement_id: settlementId, invoice_no: dayInvoiceNo, staff_id: staffId, staff_name: staff ? staff.name : "", date,
       settled_at: now, settled_by: admin ? admin.name : "Admin", notes: req.body.notes || "",
       totals: day.totals, handover,
-      vehicle: { name: vehicle.vehicle_name, reg_no: vehicle.vehicle_reg, start_km: vehicle.start_km, end_km: vehicle.end_km, km_run: vehicle.km_run },
+      vehicle: { name: vehicle.vehicle_name, reg_no: vehicle.vehicle_reg, start_km: vehicle.start_km, end_km: vehicle.end_km, km_run: vehicle.km_run, trays_taken: vehicle.trays_taken, trays_returned: vehicle.trays_returned },
       fuel_bills: openFuel.map((f) => ({ bill_no: f.bill_no, amount: f.amount })),
       items: lines.map((l) => ({
         product_id: l.product_id, product_name: l.product_name, allocated: l.allocated, sold: l.sold, free: l.free || 0,
@@ -536,6 +536,19 @@ exports.overview = async (req, res) => {
     dmg.forEach((a) => { row(a.staff_id).damaged = Number(a.damaged); });
     reqd.forEach((a) => { const r = row(a.staff_id); r.requested = true; r.requested_at = a.at; r.end_km = a.end_km === null ? null : Number(a.end_km); r.km_run = a.end_km !== null && a.start_km !== null && Number(a.end_km) >= Number(a.start_km) ? Math.round((Number(a.end_km) - Number(a.start_km)) * 10) / 10 : null; r.vehicle = a.vehicle_name ? `${a.vehicle_name} ${a.vehicle_reg}` : null; });
     done.forEach((a) => { const r = row(a.staff_id); r.settled = true; r.settlement_id = a.settlement_id; r.settled_total = money(a.total); });
+    // Trays taken and returned that day, for the staff who have them (days before the feature have none).
+    let trayRows = [];
+    try {
+      [trayRows] = await pool.query("SELECT staff_id, taken, returned FROM app_day_trays WHERE tray_date = ?", [date]);
+    } catch (e) {
+      if (e.code !== "ER_NO_SUCH_TABLE") throw e;
+    }
+    trayRows.forEach((t) => {
+      if (!byStaff.has(t.staff_id)) return;
+      const r = byStaff.get(t.staff_id);
+      r.trays_taken = t.taken === null ? null : Number(t.taken);
+      r.trays_returned = t.returned === null ? null : Number(t.returned);
+    });
 
     const ids = [...byStaff.keys()];
     const names = new Map();
