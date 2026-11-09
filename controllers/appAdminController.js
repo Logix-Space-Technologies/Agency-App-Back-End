@@ -190,6 +190,22 @@ const SHOP_SELECT = `
   s.latitude, s.longitude, s.location_source, s.route_id, r.route_name, s.added_by, u.name AS added_by_name,
   DATE_FORMAT(s.created_at, '%Y-%m-%d %H:%i:%s') AS created_at`;
 
+// Dates (YYYY-MM-DD, India time) for the "added this week / month" filter and cards.
+const shiftDays = (iso, n) => {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+const weekStart = (iso) => shiftDays(iso, -((new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7)); // Monday
+const shopPeriods = (today) => ({
+  today: [today, today],
+  week: [weekStart(today), today],
+  last7: [shiftDays(today, -6), today],
+  month: [`${today.slice(0, 7)}-01`, today],
+  last30: [shiftDays(today, -29), today],
+  year: [`${today.slice(0, 4)}-01-01`, today],
+});
+
 exports.listShops = async (req, res) => {
   try {
     const { route_id, staff_id } = req.body;
@@ -202,13 +218,36 @@ exports.listShops = async (req, res) => {
       conditions.push("(s.shop_name LIKE ? OR s.phone LIKE ? OR s.owner_name LIKE ? OR s.owner_phone LIKE ? OR s.address LIKE ?)");
       params.push(...Array(5).fill(`%${q}%`));
     }
-    const where = conditions.join(" AND ");
     const from = `FROM app_shops s JOIN app_routes r ON r.route_id = s.route_id LEFT JOIN users u ON u.user_id = s.added_by`;
+
+    // The cards count new shops for the route, staff and search chosen, whatever period is picked for the table.
+    const today = getISTDate();
+    const per = shopPeriods(today);
+    const baseWhere = conditions.join(" AND ");
+    const [[counts]] = await pool.query(
+      `SELECT COUNT(*) AS total,
+              COALESCE(SUM(DATE(s.created_at) BETWEEN ? AND ?), 0) AS today,
+              COALESCE(SUM(DATE(s.created_at) BETWEEN ? AND ?), 0) AS week,
+              COALESCE(SUM(DATE(s.created_at) BETWEEN ? AND ?), 0) AS month,
+              COALESCE(SUM(DATE(s.created_at) BETWEEN ? AND ?), 0) AS last30,
+              COALESCE(SUM(DATE(s.created_at) BETWEEN ? AND ?), 0) AS year
+       ${from} WHERE ${baseWhere}`,
+      [...per.today, ...per.week, ...per.month, ...per.last30, ...per.year, ...params]
+    );
+    const stats = { total: Number(counts.total), today: Number(counts.today), week: Number(counts.week), month: Number(counts.month), last30: Number(counts.last30), year: Number(counts.year) };
+
+    // The period filter narrows the list, the map and the "In this period" card.
+    let range = per[req.body.period];
+    if (req.body.period === "custom" && (isDate(req.body.date_from) || isDate(req.body.date_to))) {
+      range = [isDate(req.body.date_from) ? req.body.date_from : "2000-01-01", isDate(req.body.date_to) ? req.body.date_to : today];
+    }
+    if (range) { conditions.push("DATE(s.created_at) BETWEEN ? AND ?"); params.push(range[0], range[1]); }
+    const where = conditions.join(" AND ");
 
     const { limit, page, offset } = pageArgs(req.body);
     const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total ${from} WHERE ${where}`, params);
     const [rows] = await pool.query(
-      `SELECT ${SHOP_SELECT} ${from} WHERE ${where} ORDER BY s.shop_name LIMIT ? OFFSET ?`,
+      `SELECT ${SHOP_SELECT} ${from} WHERE ${where} ORDER BY s.created_at DESC, s.shop_id DESC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
     // Map view: every matching shop that has a location, not just the current page.
@@ -218,7 +257,7 @@ exports.listShops = async (req, res) => {
       params
     );
     const dues = await duesByShop(pool, rows.map((r) => r.shop_id));
-    res.json({ shops: rows.map((r) => ({ ...r, dues: (dues[r.shop_id] || { dues: 0 }).dues })), total, page, limit, pins });
+    res.json({ shops: rows.map((r) => ({ ...r, dues: (dues[r.shop_id] || { dues: 0 }).dues })), total, page, limit, pins, stats, period: range ? { from: range[0], to: range[1] } : null });
   } catch (error) {
     console.error("listShops error:", error);
     res.status(500).json({ message: "Could not load shops" });
