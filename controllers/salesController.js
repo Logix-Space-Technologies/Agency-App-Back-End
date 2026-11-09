@@ -4,6 +4,7 @@ const pool = require("../config/db");
 const { v4: uuidv4 } = require("uuid");
 const { getISTTimestamp, getISTDate, isTooOld, MAX_BACKDATE_DAYS } = require('../utils/dateUtils');
 const { logUserActivity } = require("../utils/logUserActivity");
+const { periodRanges } = require("../utils/periodRanges");
 
 exports.fetchDailyDataForPrint = async (req, res) => {
   const { marketing_staff_id, date } = req.body;
@@ -603,6 +604,73 @@ GROUP BY
     res
       .status(500)
       .json({ success: false, message: "Failed to fetch credit report" });
+  }
+};
+
+// Customers who still owe money, highest dues first, with the credit still unpaid on the bills of today, this
+// week, this month and this year. The same bills and the same dues as the per-customer credit view below.
+// `q` narrows both the cards and the list to customers whose name, place or mobile matches.
+exports.fetchCreditCustomers = async (req, res) => {
+  try {
+    const q = String(req.body.q || "").trim().slice(0, 100);
+    const sort = req.body.sort === "due_asc" ? "ASC" : "DESC";
+    const limit = Math.min(Math.max(Number(req.body.limit) || 15, 1), 100);
+    const page = Math.max(Number(req.body.page) || 1, 1);
+    const offset = (page - 1) * limit;
+
+    const DUE = "GREATEST(0, (fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) - fs.AmountPaid)";
+    const FROM = `FROM final_sale fs
+      JOIN (SELECT sale_tracking_Id, MIN(sale_type) AS sale_type FROM sales GROUP BY sale_tracking_Id) s
+        ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type != 'marketing'
+      JOIN Customers c ON c.id = fs.UserId`;
+    const conds = ["fs.isActive = 1", `${DUE} > 0.004`];
+    const params = [];
+    if (q) {
+      conds.push("(c.Name LIKE ? OR c.Place LIKE ? OR c.Mobile LIKE ?)");
+      params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+    }
+    const where = conds.join(" AND ");
+
+    const per = periodRanges(getISTDate());
+    const periodSums = Object.entries({ today: per.today, week: per.week, month: per.month, year: per.year });
+    const [[cards]] = await pool.query(
+      `SELECT COALESCE(SUM(${DUE}), 0) AS outstanding, COUNT(*) AS bills, COUNT(DISTINCT fs.UserId) AS customers,
+              ${periodSums.map(([k]) => `COALESCE(SUM(CASE WHEN DATE(fs.DateofTransaction) BETWEEN ? AND ? THEN ${DUE} END), 0) AS ${k}_amount,
+              COALESCE(SUM(DATE(fs.DateofTransaction) BETWEEN ? AND ?), 0) AS ${k}_bills`).join(",\n              ")}
+       ${FROM} WHERE ${where}`,
+      [...periodSums.flatMap(([, r]) => [r[0], r[1], r[0], r[1]]), ...params]
+    );
+    const money = (v) => Math.round((Number(v) || 0) * 100) / 100;
+    const period = (k) => ({ amount: money(cards[`${k}_amount`]), bills: Number(cards[`${k}_bills`]) });
+
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(*) AS total FROM (SELECT fs.UserId ${FROM} WHERE ${where} GROUP BY fs.UserId) t`,
+      params
+    );
+    const [rows] = await pool.query(
+      `SELECT fs.UserId AS customer_id, c.Name AS name, c.Place AS place, c.Mobile AS mobile,
+              COUNT(*) AS bills, SUM(${DUE}) AS due,
+              SUM(fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) AS billed,
+              DATE_FORMAT(MIN(fs.DateofTransaction), '%Y-%m-%d') AS oldest, DATE_FORMAT(MAX(fs.DateofTransaction), '%Y-%m-%d') AS latest
+       ${FROM} WHERE ${where}
+       GROUP BY fs.UserId, c.Name, c.Place, c.Mobile
+       ORDER BY due ${sort}, c.Name
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    res.json({
+      success: true,
+      cards: {
+        outstanding: { amount: money(cards.outstanding), bills: Number(cards.bills), customers: Number(cards.customers) },
+        today: period("today"), week: period("week"), month: period("month"), year: period("year"),
+      },
+      customers: rows.map((r) => ({ ...r, due: money(r.due), billed: money(r.billed), bills: Number(r.bills) })),
+      total, page, limit,
+    });
+  } catch (error) {
+    console.error("Error fetching credit customers:", error);
+    res.status(500).json({ success: false, message: "Failed to load the credit customers" });
   }
 };
 

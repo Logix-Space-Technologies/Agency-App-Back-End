@@ -7,6 +7,7 @@ const { duesByShop, postAllocation, OUTSTANDING_SQL, COLLECTED_JOIN } = require(
 const { editPendingInvoice } = require("../utils/appInvoiceEdit");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 const { CURRENT_STOCK_SQL } = require("../utils/appStock");
+const { periodRanges } = require("../utils/periodRanges");
 
 const PRICE_ALERT_PCT = Number(process.env.APP_PRICE_ALERT_PCT) || 10;
 const APP_ROLES = ["marketing_staff", "staff"];
@@ -190,21 +191,7 @@ const SHOP_SELECT = `
   s.latitude, s.longitude, s.location_source, s.route_id, r.route_name, s.added_by, u.name AS added_by_name,
   DATE_FORMAT(s.created_at, '%Y-%m-%d %H:%i:%s') AS created_at`;
 
-// Dates (YYYY-MM-DD, India time) for the "added this week / month" filter and cards.
-const shiftDays = (iso, n) => {
-  const d = new Date(`${iso}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-};
-const weekStart = (iso) => shiftDays(iso, -((new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7)); // Monday
-const shopPeriods = (today) => ({
-  today: [today, today],
-  week: [weekStart(today), today],
-  last7: [shiftDays(today, -6), today],
-  month: [`${today.slice(0, 7)}-01`, today],
-  last30: [shiftDays(today, -29), today],
-  year: [`${today.slice(0, 4)}-01-01`, today],
-});
+const shopPeriods = periodRanges;
 
 exports.listShops = async (req, res) => {
   try {
