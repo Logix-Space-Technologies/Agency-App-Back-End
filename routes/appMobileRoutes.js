@@ -32,6 +32,7 @@ router.get("/sales-detail", c.getSalesDetail);
 router.get("/vehicles", day.getVehicles);
 router.get("/day", day.getDay);
 router.put("/day/km", day.saveKm);
+router.put("/day/trays", day.saveTraysTaken);
 router.post("/day/settle-request", day.requestSettle);
 router.delete("/day/settle-request", day.cancelSettleRequest);
 router.post("/fuel", day.addFuel);
