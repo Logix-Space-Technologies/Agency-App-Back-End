@@ -375,10 +375,23 @@ const loadInvoice = async (invoiceId, staffId) => {
     [invoiceId]
   );
   const shopDues = (await duesByShop(pool, [rows[0].shop_id]))[rows[0].shop_id];
+  // Each payment the shop made against this invoice after it was made, with the method(s) used.
+  const [laterRows] = await pool.query(
+    `SELECT DATE_FORMAT(p.created_at, '%Y-%m-%d %H:%i') AS paid_at, a.amount, p.cash_amount, p.upi_amount, p.card_amount
+     FROM app_payment_allocations a JOIN app_payments p ON p.payment_id = a.payment_id
+     WHERE a.invoice_id = ? ORDER BY p.created_at, a.allocation_id`,
+    [invoiceId]
+  );
+  const laterPayments = laterRows.map((r) => {
+    const mix = Number(r.cash_amount) + Number(r.upi_amount) + Number(r.card_amount);
+    const part = (k) => (mix > 0 ? money((Number(r.amount) * Number(r[`${k}_amount`])) / mix) : 0);
+    return { paid_at: r.paid_at, amount: money(r.amount), cash: part("cash"), upi: part("upi"), card: part("card") };
+  });
   return {
     ...rows[0], items,
     dues_received: Number(received),
     collected_later: Number(later),
+    later_payments: laterPayments,
     shop_dues: shopDues ? shopDues.dues : 0,
   };
 };
@@ -1058,6 +1071,82 @@ exports.getSalesDetail = async (req, res) => {
   } catch (error) {
     console.error("App getSalesDetail error:", error);
     res.status(500).json({ message: "Could not load the sales detail" });
+  }
+};
+
+// The transactions behind the Cash, UPI or Card figure of the report: the part of each bill paid that way, and every
+// payment taken that way (paid later against today's bills, or old dues of earlier days). They add up to the figure.
+exports.getReportTransactions = async (req, res) => {
+  try {
+    // "later" lists every payment shops made after billing (paid later and old dues), all methods together.
+    const method = ["cash", "upi", "card", "later"].includes(req.query.method) ? req.query.method : "cash";
+    const paymentsOnly = method === "later";
+    const period = ["day", "month", "year"].includes(req.query.period) ? req.query.period : "day";
+    const date = isDate(req.query.date) ? req.query.date : getISTDate();
+    const { from, to } = periodRange(period, date);
+    const staffId = req.staff.user_id;
+    const col = paymentsOnly ? "total_amount" : `${method}_amount`;
+
+    const [bills] = paymentsOnly ? [[]] : await pool.query(
+      `SELECT i.app_invoice_id, i.invoice_no, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS d, DATE_FORMAT(i.created_at, '%H:%i') AS t,
+              s.shop_name, i.${col} AS amount, i.total_amount
+       FROM app_invoices i JOIN app_shops s ON s.shop_id = i.shop_id
+       WHERE i.staff_id = ? AND i.status <> 'rejected' AND NOT ${deletedByAdmin('i')} AND i.invoice_date BETWEEN ? AND ? AND i.${col} > 0
+       ORDER BY i.created_at DESC`,
+      [staffId, from, to]
+    );
+    const [pays] = await pool.query(
+      `SELECT p.payment_id, DATE_FORMAT(p.created_at, '%Y-%m-%d') AS d, DATE_FORMAT(p.created_at, '%H:%i') AS t, s.shop_name,
+              p.${col} AS amount, p.total_amount, p.cash_amount, p.upi_amount, p.card_amount, wi.invoice_no AS with_no
+       FROM app_payments p JOIN app_shops s ON s.shop_id = p.shop_id
+       LEFT JOIN app_invoices wi ON wi.app_invoice_id = p.with_invoice_id
+       WHERE p.staff_id = ? AND DATE(p.created_at) BETWEEN ? AND ? AND p.${col} > 0
+       ORDER BY p.created_at DESC`,
+      [staffId, from, to]
+    );
+    const allocBy = new Map();
+    if (pays.length) {
+      const [allocs] = await pool.query(
+        `SELECT a.payment_id, i.invoice_no, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS bill_date
+         FROM app_payment_allocations a JOIN app_invoices i ON i.app_invoice_id = a.invoice_id
+         WHERE a.payment_id IN (?) ORDER BY i.invoice_date, i.app_invoice_id`,
+        [pays.map((p) => p.payment_id)]
+      );
+      for (const a of allocs) {
+        if (!allocBy.has(a.payment_id)) allocBy.set(a.payment_id, []);
+        allocBy.get(a.payment_id).push(a);
+      }
+    }
+
+    const items = [
+      ...bills.map((b) => ({
+        kind: "bill", date: b.d, time: b.t, shop_name: b.shop_name, ref: b.invoice_no, invoice_id: b.app_invoice_id,
+        amount: money(b.amount), note: `Bill total ${money(b.total_amount).toFixed(2)}`,
+      })),
+      ...pays.map((p) => {
+        const a = allocBy.get(p.payment_id) || [];
+        // Paid against a bill of its own day = paid later; against an older bill = old dues.
+        const older = a.some((x) => x.bill_date !== p.d);
+        return {
+          kind: older ? "old_dues" : "paid_later", date: p.d, time: p.t, shop_name: p.shop_name,
+          ref: a.map((x) => x.invoice_no).join(", ") || null, invoice_id: null, amount: money(p.amount),
+          method: [Number(p.cash_amount) > 0 && "Cash", Number(p.upi_amount) > 0 && "UPI", Number(p.card_amount) > 0 && "Card"].filter(Boolean).join(" + "),
+          note: older
+            ? `Old dues${p.with_no ? ` taken with bill ${p.with_no}` : ""}${a.length ? ` · bill date ${a[0].bill_date}` : ""}`
+            : "Paid later for a bill of the same day",
+        };
+      }),
+    ].sort((x, y) => `${y.date} ${y.time}`.localeCompare(`${x.date} ${x.time}`));
+
+    const sum = (kind) => money(items.filter((i) => i.kind === kind).reduce((t, i) => t + i.amount, 0));
+    res.json({
+      method, period, from, to,
+      totals: { total: money(items.reduce((t, i) => t + i.amount, 0)), bills: sum("bill"), paid_later: sum("paid_later"), old_dues: sum("old_dues") },
+      items,
+    });
+  } catch (error) {
+    console.error("App getReportTransactions error:", error);
+    res.status(500).json({ message: "Could not load the transactions" });
   }
 };
 
