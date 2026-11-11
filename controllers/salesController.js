@@ -850,6 +850,39 @@ exports.fetchCreditStaff = async (req, res) => {
   }
 };
 
+// One row per settled mobile-app day in the period where what the salesperson handed over was less than what he should
+// have (collected on the phone, less expenses). The row carries only that shortage minus later payments.
+const appDayShortageRows = async (fromDate, toDate) => {
+  const [days] = await pool.query(
+    `SELECT d.settlement_id, d.staff_id, u.name AS staff_name, DATE_FORMAT(d.settle_date, '%Y-%m-%d') AS settle_date, d.details
+     FROM app_day_settlements d LEFT JOIN users u ON u.user_id = d.staff_id
+     WHERE d.invoice_count > 0 AND d.settle_date BETWEEN ? AND ?
+     ORDER BY d.settlement_id DESC`,
+    [fromDate, toDate]
+  );
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const out = [];
+  for (const d of days) {
+    let det = null;
+    try { det = typeof d.details === "string" ? JSON.parse(d.details) : d.details; } catch (e) { det = null; }
+    if (!det || det.undone || !det.handover || !det.handover.received) continue;
+    const shouldPay = Number(det.handover.net_payable) || 0;
+    const received = Number(det.handover.received.total) || 0;
+    const later = (det.credit_payments || []).reduce((t, p) => t + Number(p.total || 0), 0);
+    const credit = r2(shouldPay - received - later);
+    if (credit < 0.01) continue;
+    out.push({
+      id: `appday-${d.settlement_id}`, sale_type: "app_day", name: d.staff_name, sale_tracking_Id: null,
+      invoiceNumber: det.invoice_no || null,
+      TotalAmount: r2(shouldPay), UserId: d.staff_id, DateofTransaction: d.settle_date, isSettled: 0,
+      AmountPaid: r2(received + later),
+      FuelExpenses: 0, VehcileServiceExpenses: 0, OtherExpenses: 0,
+      credit,
+    });
+  }
+  return out;
+};
+
 // Takes a payment from a salesman against the shortage of one mobile-app day (View Credit). Not a sale: the books
 // already counted what the phone collected, so this only reduces what he owes.
 exports.payAppDayCredit = async (req, res) => {
@@ -1080,7 +1113,13 @@ WHERE
       [fromDate, dateToUse]
     );
 
-    res.json({ success: true, data: rows });
+    // Mobile-app days where the salesperson handed over less than he should have: that shortage is his credit to the
+    // office. Only the shortage is listed here (the shops' unpaid bills of the day are already in the rows above as
+    // the shops' own credit), less whatever he paid afterwards in View Credit.
+    const shortages = await appDayShortageRows(fromDate, dateToUse);
+    const all = [...rows, ...shortages].sort((x, y) => new Date(y.DateofTransaction) - new Date(x.DateofTransaction));
+
+    res.json({ success: true, data: all });
   } catch (error) {
     console.error("Error fetching credit report:", error);
     res
