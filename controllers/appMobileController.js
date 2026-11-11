@@ -5,7 +5,7 @@ const { appLog } = require("../utils/appLog");
 const { deletedByAdmin, statusExpr } = require("../utils/appInvoiceStatus");
 const { outstandingInvoices, duesByShop, collectDues } = require("../utils/appDues");
 const { editPendingInvoice } = require("../utils/appInvoiceEdit");
-const { loadDay, reportedDamage } = require("./appSettlementController");
+const { loadDay, reportedDamage, enrichSettlement } = require("./appSettlementController");
 const { dayInfo } = require("./appDayController");
 const { assertSellable, sellableByProduct } = require("../utils/appSellable");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
@@ -835,7 +835,9 @@ exports.getMyStock = async (req, res) => {
 exports.getSettlement = async (req, res) => {
   try {
     const [rows] = await pool.query(
-      "SELECT details, invoice_count FROM app_day_settlements WHERE settlement_id = ? AND staff_id = ?",
+      `SELECT details, invoice_count, DATE_FORMAT(settle_date, '%Y-%m-%d') AS settle_date,
+              DATE_FORMAT(settled_at, '%Y-%m-%d %H:%i:%s') AS settled_at
+       FROM app_day_settlements WHERE settlement_id = ? AND staff_id = ?`,
       [Number(req.params.id), req.staff.user_id]
     );
     if (!rows[0] || !rows[0].details || rows[0].invoice_count === 0) {
@@ -843,6 +845,8 @@ exports.getSettlement = async (req, res) => {
     }
     const d = JSON.parse(rows[0].details);
     if (d.undone) return res.status(404).json({ message: "This settlement was cancelled by the office" });
+    // The same enriched record the office prints: shop-wise old dues, routes and what shops still owe.
+    await enrichSettlement(d, req.staff.user_id, rows[0].settle_date, rows[0].settled_at, req.params.id);
     delete d.undo; // office-only bookkeeping
     res.json({ settlement: d });
   } catch (error) {

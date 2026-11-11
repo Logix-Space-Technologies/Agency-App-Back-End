@@ -801,6 +801,28 @@ exports.listSettlements = async (req, res) => {
   }
 };
 
+// Fills in what a settlement saved before some figures existed does not carry: the shop-wise old dues of the day, the
+// routes and shop counts (as of today for those), and what shops still owe from earlier days (always as of today).
+// Used for the office print and for the statement the salesperson gets on the phone, so both show the same.
+const enrichSettlement = async (settlement, staffId, settleDate, settledAt, settlementId) => {
+  if (!settlement || !settlement.handover) return settlement;
+  if (settlement.old_dues_list === undefined) {
+    const [[prev]] = await pool.query(
+      `SELECT DATE_FORMAT(MAX(settled_at), '%Y-%m-%d %H:%i:%s') AS at FROM app_day_settlements
+       WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0 AND settlement_id < ?`,
+      [staffId, settleDate, Number(settlementId)]
+    );
+    settlement.old_dues_list = await oldDuesList(pool, staffId, settleDate, { after: prev && prev.at, upTo: settledAt });
+  }
+  if (settlement.route_info === undefined) {
+    const invoiceIds = (settlement.invoices || []).map((i) => i.invoice_id);
+    settlement.route_info = { ...(await routeInfo(pool, staffId, settleDate, invoiceIds)), as_of_now: true };
+  }
+  settlement.pending_old_dues = { ...(await pendingOldDues(pool, staffId, settleDate)), as_of_now: true };
+  return settlement;
+};
+exports.enrichSettlement = enrichSettlement;
+
 exports.settlementDetail = async (req, res) => {
   try {
     const [rows] = await pool.query(
@@ -811,24 +833,7 @@ exports.settlementDetail = async (req, res) => {
     );
     if (!rows[0] || !rows[0].details) return res.status(404).json({ message: "Settlement not found" });
     const settlement = typeof rows[0].details === "string" ? JSON.parse(rows[0].details) : rows[0].details;
-    // A day settled before the old dues list was saved gets it rebuilt from the payments of that settlement's window.
-    if (settlement.old_dues_list === undefined && settlement.handover) {
-      const [[prev]] = await pool.query(
-        `SELECT DATE_FORMAT(MAX(settled_at), '%Y-%m-%d %H:%i:%s') AS at FROM app_day_settlements
-         WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0 AND settlement_id < ?`,
-        [rows[0].staff_id, rows[0].settle_date, Number(req.body.settlement_id)]
-      );
-      settlement.old_dues_list = await oldDuesList(pool, rows[0].staff_id, rows[0].settle_date, { after: prev && prev.at, upTo: rows[0].settled_at });
-    }
-    // A day settled before routes were saved gets them rebuilt from its invoices; the shop counts are as of today.
-    if (settlement.route_info === undefined && settlement.handover) {
-      const invoiceIds = (settlement.invoices || []).map((i) => i.invoice_id);
-      settlement.route_info = { ...(await routeInfo(pool, rows[0].staff_id, rows[0].settle_date, invoiceIds)), as_of_now: true };
-    }
-    // What shops still owe from earlier days is always shown as it stands today, not as it stood at settlement.
-    if (settlement.handover) {
-      settlement.pending_old_dues = { ...(await pendingOldDues(pool, rows[0].staff_id, rows[0].settle_date)), as_of_now: true };
-    }
+    await enrichSettlement(settlement, rows[0].staff_id, rows[0].settle_date, rows[0].settled_at, req.body.settlement_id);
     res.json({ settlement });
   } catch (error) {
     console.error("settlementDetail error:", error);
