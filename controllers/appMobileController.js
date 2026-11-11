@@ -997,7 +997,31 @@ exports.getReport = async (req, res) => {
        FROM app_payments WHERE staff_id = ? AND DATE(created_at) BETWEEN ? AND ?`,
       [staffId, from, to]
     );
-    res.json({ period, from, to, totals: { ...totals, dues_collected: dues.total, dues_cash: dues.cash, dues_upi: dues.upi, dues_card: dues.card }, breakdown, products });
+    // Of the money taken from shops in the period (already part of cash, UPI and card above): what paid a bill of the same
+    // day later ("paid later") and what paid bills of earlier days (old dues). A mixed payment is split in proportion.
+    const [split] = await pool.query(
+      `SELECT (i.invoice_date = DATE(p.created_at)) AS same_day,
+              COALESCE(SUM(a.amount * p.cash_amount / NULLIF(p.total_amount, 0)), 0) AS cash,
+              COALESCE(SUM(a.amount * p.upi_amount / NULLIF(p.total_amount, 0)), 0) AS upi,
+              COALESCE(SUM(a.amount * p.card_amount / NULLIF(p.total_amount, 0)), 0) AS card
+       FROM app_payment_allocations a
+       JOIN app_payments p ON p.payment_id = a.payment_id
+       JOIN app_invoices i ON i.app_invoice_id = a.invoice_id
+       WHERE p.staff_id = ? AND DATE(p.created_at) BETWEEN ? AND ?
+       GROUP BY (i.invoice_date = DATE(p.created_at))`,
+      [staffId, from, to]
+    );
+    const part = (same) => split.find((r) => Boolean(Number(r.same_day)) === same) || { cash: 0, upi: 0, card: 0 };
+    const later = part(true), old = part(false);
+    res.json({
+      period, from, to,
+      totals: {
+        ...totals, dues_collected: dues.total, dues_cash: dues.cash, dues_upi: dues.upi, dues_card: dues.card,
+        later_cash: money(later.cash), later_upi: money(later.upi), later_card: money(later.card),
+        old_cash: money(old.cash), old_upi: money(old.upi), old_card: money(old.card),
+      },
+      breakdown, products,
+    });
   } catch (error) {
     console.error("App getReport error:", error);
     res.status(500).json({ message: "Could not load the report" });
