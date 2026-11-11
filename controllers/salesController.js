@@ -735,6 +735,8 @@ const appDayCreditRows = async (staffId, startDate, endDate) => {
       AmountPaid: r2(finalAmount - credit),
       FuelExpenses: Number(ex.fuel || 0), VehcileServiceExpenses: Number(ex.vehicle_service || 0), OtherExpenses: Number(ex.other || 0),
       finalAmount, credit,
+      // The parts of the credit: what the salesperson handed over short, and what the day's shops have not paid.
+      shortage: r2(shortage - later), shopUnpaid: r2(shopUnpaid),
     });
   }
   return out;
@@ -778,13 +780,13 @@ const appDayCreditAll = async () => {
       const later = (Array.isArray(x.later) ? x.later : []).reduce((t, v) => t + (Number(v) || 0), 0);
       const credit = r2(shopUnpaid + (Number(x.net) - Number(x.got)) - later);
       if (Math.abs(credit) < 0.01) continue;
-      out.push({ staff_id: x.d.staff_id, name: x.d.staff_name, date: x.d.settle_date, credit });
+      out.push({ staff_id: x.d.staff_id, name: x.d.staff_name, date: x.d.settle_date, credit, app: true, shortage: r2(Number(x.net) - Number(x.got) - later), shopUnpaid: r2(shopUnpaid) });
     }
     return out;
   } catch (error) {
     console.warn("appDayCreditAll: reading the compact way failed, reading full records:", error.message);
     const rows = await appDayCreditRows(null);
-    return rows.map((r) => ({ staff_id: r.UserId, name: r.name, date: r.DateofTransaction, credit: r.credit }));
+    return rows.map((r) => ({ staff_id: r.UserId, name: r.name, date: r.DateofTransaction, credit: r.credit, app: true, shortage: r.shortage, shopUnpaid: r.shopUnpaid }));
   }
 };
 
@@ -825,14 +827,15 @@ exports.fetchCreditStaff = async (req, res) => {
 
     const byStaff = new Map();
     for (const r of inRange) {
-      if (!byStaff.has(r.staff_id)) byStaff.set(r.staff_id, { staff_id: r.staff_id, name: r.name, bills: 0, due: 0, oldest: r.date, latest: r.date });
+      if (!byStaff.has(r.staff_id)) byStaff.set(r.staff_id, { staff_id: r.staff_id, name: r.name, bills: 0, due: 0, oldest: r.date, latest: r.date, app_days: 0, app_short: 0, app_shops: 0 });
       const s = byStaff.get(r.staff_id);
       s.bills += 1; s.due += r.credit;
+      if (r.app) { s.app_days += 1; s.app_short += r.shortage || 0; s.app_shops += r.shopUnpaid || 0; }
       if (r.date < s.oldest) s.oldest = r.date;
       if (r.date > s.latest) s.latest = r.date;
     }
     const list = [...byStaff.values()]
-      .map((s) => ({ ...s, due: money(s.due) }))
+      .map((s) => ({ ...s, due: money(s.due), app_short: money(s.app_short), app_shops: money(s.app_shops) }))
       .sort((a, b) => (asc ? a.due - b.due : b.due - a.due) || String(a.name).localeCompare(String(b.name)));
 
     res.json({
