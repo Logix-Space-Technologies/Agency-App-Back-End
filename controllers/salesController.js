@@ -619,57 +619,55 @@ exports.fetchCreditCustomers = async (req, res) => {
     const offset = (page - 1) * limit;
     const isDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
 
-    const DUE = "GREATEST(0, (fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) - fs.AmountPaid)";
+    // What a customer owes is every bill's credit added up, extra payments offsetting shortages, exactly as the bills
+    // screen of that customer does. Only customers who owe money overall are listed.
+    const CREDIT = "((fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) - fs.AmountPaid)";
     const FROM = `FROM final_sale fs
       JOIN (SELECT sale_tracking_Id, MIN(sale_type) AS sale_type FROM sales GROUP BY sale_tracking_Id) s
         ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type != 'marketing'
       JOIN Customers c ON c.id = fs.UserId`;
-    const conds = ["fs.isActive = 1", `${DUE} > 0.004`];
+    const conds = ["fs.isActive = 1", `ABS(${CREDIT}) > 0.004`];
     const params = [];
     if (q) {
       conds.push("(c.Name LIKE ? OR c.Place LIKE ? OR c.Mobile LIKE ?)");
       params.push(`%${q}%`, `%${q}%`, `%${q}%`);
     }
-    // The date filter narrows the list and the outstanding total; the period cards always show their own periods.
+    const where = conds.join(" AND ");
     const rangeConds = [...conds];
     const rangeParams = [...params];
     if (isDay(req.body.startDate) && isDay(req.body.endDate)) {
       rangeConds.push("DATE(fs.DateofTransaction) BETWEEN ? AND ?");
       rangeParams.push(req.body.startDate, req.body.endDate);
     }
-    const where = conds.join(" AND ");
     const rangeWhere = rangeConds.join(" AND ");
+    const money = (v) => Math.round((Number(v) || 0) * 100) / 100;
 
+    // Customers who owe overall; the period cards add up their bills of each period.
     const per = periodRanges(getISTDate());
     const periodSums = Object.entries({ today: per.today, week: per.week, month: per.month, year: per.year });
     const [[cards]] = await pool.query(
-      `SELECT ${periodSums.map(([k]) => `COALESCE(SUM(CASE WHEN DATE(fs.DateofTransaction) BETWEEN ? AND ? THEN ${DUE} END), 0) AS ${k}_amount,
+      `SELECT ${periodSums.map(([k]) => `COALESCE(SUM(CASE WHEN DATE(fs.DateofTransaction) BETWEEN ? AND ? THEN ${CREDIT} END), 0) AS ${k}_amount,
               COALESCE(SUM(DATE(fs.DateofTransaction) BETWEEN ? AND ?), 0) AS ${k}_bills`).join(",\n              ")}
-       ${FROM} WHERE ${where}`,
-      [...periodSums.flatMap(([, r]) => [r[0], r[1], r[0], r[1]]), ...params]
+       ${FROM}
+       JOIN (SELECT fs.UserId AS owing_id ${FROM} WHERE ${where} GROUP BY fs.UserId HAVING SUM(${CREDIT}) > 0.004) ow ON ow.owing_id = fs.UserId
+       WHERE ${where}`,
+      [...periodSums.flatMap(([, r]) => [r[0], r[1], r[0], r[1]]), ...params, ...params]
     );
-    const [[all]] = await pool.query(
-      `SELECT COALESCE(SUM(${DUE}), 0) AS outstanding, COUNT(*) AS bills, COUNT(DISTINCT fs.UserId) AS customers ${FROM} WHERE ${rangeWhere}`,
-      rangeParams
-    );
-    const money = (v) => Math.round((Number(v) || 0) * 100) / 100;
     const period = (k) => ({ amount: money(cards[`${k}_amount`]), bills: Number(cards[`${k}_bills`]) });
 
-    const [[{ total }]] = await pool.query(
-      `SELECT COUNT(*) AS total FROM (SELECT fs.UserId ${FROM} WHERE ${rangeWhere} GROUP BY fs.UserId) t`,
-      rangeParams
-    );
-    const [rows] = await pool.query(
-      `SELECT fs.UserId AS customer_id, c.Name AS name, c.Place AS place, c.Mobile AS mobile,
-              COUNT(*) AS bills, SUM(${DUE}) AS due,
+    // Who owes within the chosen dates: the list, and the total outstanding.
+    const OWING = `SELECT fs.UserId AS customer_id, c.Name AS name, c.Place AS place, c.Mobile AS mobile,
+              COUNT(*) AS bills, SUM(${CREDIT}) AS due,
               SUM(fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) AS billed,
               DATE_FORMAT(MIN(fs.DateofTransaction), '%Y-%m-%d') AS oldest, DATE_FORMAT(MAX(fs.DateofTransaction), '%Y-%m-%d') AS latest
        ${FROM} WHERE ${rangeWhere}
        GROUP BY fs.UserId, c.Name, c.Place, c.Mobile
-       ORDER BY due ${sort}, c.Name
-       LIMIT ? OFFSET ?`,
-      [...rangeParams, limit, offset]
+       HAVING SUM(${CREDIT}) > 0.004`;
+    const [[all]] = await pool.query(
+      `SELECT COALESCE(SUM(t.due), 0) AS outstanding, COALESCE(SUM(t.bills), 0) AS bills, COUNT(*) AS customers FROM (${OWING}) t`,
+      rangeParams
     );
+    const [rows] = await pool.query(`SELECT t.* FROM (${OWING}) t ORDER BY t.due ${sort}, t.name LIMIT ? OFFSET ?`, [...rangeParams, limit, offset]);
 
     res.json({
       success: true,
@@ -678,7 +676,7 @@ exports.fetchCreditCustomers = async (req, res) => {
         today: period("today"), week: period("week"), month: period("month"), year: period("year"),
       },
       customers: rows.map((r) => ({ ...r, due: money(r.due), billed: money(r.billed), bills: Number(r.bills) })),
-      total, page, limit,
+      total: Number(all.customers), page, limit,
     });
   } catch (error) {
     console.error("Error fetching credit customers:", error);
@@ -803,27 +801,40 @@ exports.fetchCreditStaff = async (req, res) => {
     const hasRange = isDay(req.body.startDate) && isDay(req.body.endDate);
     const money = (v) => Math.round((Number(v) || 0) * 100) / 100;
 
-    const DUE = "GREATEST(0, (fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) - fs.AmountPaid)";
+    // A day's credit can be negative (he paid more than he should have). The bills screen adds everything up, so extra
+    // payments offset shortages; the overview must do the same or its totals would not match the bills screen.
+    const CREDIT = "((fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) - fs.AmountPaid)";
     const [marketing] = await pool.query(
-      `SELECT fs.UserId AS staff_id, u.name AS name, DATE_FORMAT(fs.DateofTransaction, '%Y-%m-%d') AS date, ${DUE} AS credit
+      `SELECT fs.UserId AS staff_id, u.name AS name, DATE_FORMAT(fs.DateofTransaction, '%Y-%m-%d') AS date, ${CREDIT} AS credit
        FROM final_sale fs
        JOIN (SELECT sale_tracking_Id, MIN(sale_type) AS sale_type FROM sales GROUP BY sale_tracking_Id) s
          ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type = 'marketing'
        JOIN users u ON u.user_id = fs.UserId
-       WHERE fs.isActive = 1 AND ${DUE} > 0.004`
+       WHERE fs.isActive = 1 AND ABS(${CREDIT}) > 0.004`
     );
     const appDays = await appDayCreditAll();
-    const items = [...marketing, ...appDays]
+    const matching = [...marketing, ...appDays]
       .map((r) => ({ ...r, credit: Number(r.credit) }))
-      .filter((r) => r.credit > 0.004 && (!q || String(r.name || "").toLowerCase().includes(q)));
+      .filter((r) => Math.abs(r.credit) > 0.004 && (!q || String(r.name || "").toLowerCase().includes(q)));
 
     const per = periodRanges(getISTDate());
     const within = (r, [from, to]) => r.date >= from && r.date <= to;
+    const netOf = (rows) => {
+      const m = new Map();
+      for (const r of rows) m.set(r.staff_id, (m.get(r.staff_id) || 0) + r.credit);
+      return m;
+    };
+    // Only people who owe money overall are listed (extra payments are netted against shortages).
+    const owing = new Set([...netOf(matching)].filter(([, net]) => net > 0.004).map(([id]) => id));
+    const items = matching.filter((r) => owing.has(r.staff_id));
     const sumFor = (range) => {
       const rows = items.filter((r) => within(r, range));
       return { amount: money(rows.reduce((t, r) => t + r.credit, 0)), bills: rows.length };
     };
-    const inRange = hasRange ? items.filter((r) => within(r, [req.body.startDate, req.body.endDate])) : items;
+    // A date range lists who owes within that range.
+    let inRange = hasRange ? matching.filter((r) => within(r, [req.body.startDate, req.body.endDate])) : matching;
+    const owingInRange = new Set([...netOf(inRange)].filter(([, net]) => net > 0.004).map(([id]) => id));
+    inRange = inRange.filter((r) => owingInRange.has(r.staff_id));
 
     const byStaff = new Map();
     for (const r of inRange) {
