@@ -220,6 +220,65 @@ const reportedDamage = async (db, staffId, date) => {
 };
 exports.reportedDamage = reportedDamage;
 
+// The routes behind a day's bills: for each route the salesperson is assigned to or sold on, how many shops it has,
+// how many of them were billed in these invoices, and how many were not. Shop counts are as they are when it is
+// read; the settlement saves them so a printed statement keeps showing what was true that day.
+const routeInfo = async (db, staffId, date, invoiceIds) => {
+  const ids = (invoiceIds || []).filter(Boolean);
+  const sold = new Map();
+  if (ids.length) {
+    const [rows] = await db.query(
+      `SELECT COALESCE(i.route_id, s.route_id) AS route_id, COUNT(DISTINCT i.shop_id) AS shops_sold, COUNT(*) AS invoices,
+              COALESCE(SUM(i.total_amount), 0) AS sale
+       FROM app_invoices i JOIN app_shops s ON s.shop_id = i.shop_id
+       WHERE i.app_invoice_id IN (?) GROUP BY COALESCE(i.route_id, s.route_id)`,
+      [ids]
+    );
+    rows.forEach((r) => sold.set(r.route_id, r));
+  }
+  const [assigned] = await db.query(
+    "SELECT sr.route_id FROM app_staff_routes sr JOIN app_routes r ON r.route_id = sr.route_id WHERE sr.staff_id = ? AND sr.isActive = 1 AND r.isActive = 1",
+    [staffId]
+  );
+  const assignedIds = new Set(assigned.map((a) => a.route_id));
+  const routeIds = [...new Set([...assignedIds, ...sold.keys()])].filter((x) => x !== null && x !== undefined);
+  if (!routeIds.length) return { routes: [], totals: { routes: 0, shops_total: 0, shops_sold: 0, shops_not_sold: 0, invoices: 0, sale: 0, new_shops: 0, routes_not_visited: 0 } };
+
+  const [names] = await db.query("SELECT route_id, route_name FROM app_routes WHERE route_id IN (?)", [routeIds]);
+  const [counts] = await db.query(
+    `SELECT route_id, COUNT(*) AS shops_total, COALESCE(SUM(DATE(created_at) = ?), 0) AS new_shops
+     FROM app_shops WHERE route_id IN (?) AND isActive = 1 GROUP BY route_id`,
+    [date, routeIds]
+  );
+  const nameBy = new Map(names.map((n) => [n.route_id, n.route_name]));
+  const countBy = new Map(counts.map((n) => [n.route_id, n]));
+  const routes = routeIds
+    .map((id) => {
+      const s = sold.get(id) || {};
+      const total = Number((countBy.get(id) || {}).shops_total) || 0;
+      const shopsSold = Number(s.shops_sold) || 0;
+      return {
+        route_id: id, route_name: nameBy.get(id) || `Route ${id}`, assigned: assignedIds.has(id),
+        shops_total: total, shops_sold: shopsSold, shops_not_sold: Math.max(0, total - shopsSold),
+        invoices: Number(s.invoices) || 0, sale: money(s.sale), new_shops: Number((countBy.get(id) || {}).new_shops) || 0,
+      };
+    })
+    // Routes that sold first, then the other assigned ones.
+    .sort((a, b) => (b.invoices > 0) - (a.invoices > 0) || a.route_name.localeCompare(b.route_name, undefined, { numeric: true }));
+  // The totals cover the routes that were actually worked; assigned routes with no bill are listed but kept out of them.
+  const worked = routes.filter((r) => r.invoices > 0);
+  const sum = (k) => worked.reduce((t, r) => t + r[k], 0);
+  return {
+    routes,
+    totals: {
+      routes: worked.length, shops_total: sum("shops_total"), shops_sold: sum("shops_sold"), shops_not_sold: sum("shops_not_sold"),
+      invoices: sum("invoices"), sale: money(sum("sale")), new_shops: sum("new_shops"), routes_not_visited: routes.length - worked.length,
+    },
+  };
+};
+
+exports.routeInfo = routeInfo;
+
 exports.previewDay = async (req, res) => {
   try {
     const staffId = Number(req.body.staff_id);
@@ -235,7 +294,7 @@ exports.previewDay = async (req, res) => {
     // Fuel already counted in an earlier settlement of the same day is not offered again.
     info.fuel = info.fuel.filter((f) => !f.settlement_id);
     info.fuel_total = money(info.fuel.reduce((t, f) => t + f.amount, 0));
-    res.json({ staff: staff[0], date, ...day, handover, old_dues_list: await oldDuesList(pool, staffId, date), pending_old_dues: await pendingOldDues(pool, staffId, date), vehicle: info });
+    res.json({ staff: staff[0], date, ...day, handover, old_dues_list: await oldDuesList(pool, staffId, date), pending_old_dues: await pendingOldDues(pool, staffId, date), vehicle: info, route_info: await routeInfo(pool, staffId, date, day.invoices.map((i) => i.app_invoice_id)) });
   } catch (error) {
     console.error("previewDay error:", error);
     res.status(500).json({ message: "Could not load the day" });
@@ -438,6 +497,7 @@ exports.settleDay = async (req, res) => {
       invoices: posted,
       old_dues_list: oldDues,
       pending_old_dues: pendingOld,
+      route_info: await routeInfo(connection, staffId, date, day.invoices.map((i) => i.app_invoice_id)),
       // Everything Undo needs to put the day back exactly as it was.
       undo: {
         ds_tracking: dsTracking,
@@ -759,6 +819,11 @@ exports.settlementDetail = async (req, res) => {
         [rows[0].staff_id, rows[0].settle_date, Number(req.body.settlement_id)]
       );
       settlement.old_dues_list = await oldDuesList(pool, rows[0].staff_id, rows[0].settle_date, { after: prev && prev.at, upTo: rows[0].settled_at });
+    }
+    // A day settled before routes were saved gets them rebuilt from its invoices; the shop counts are as of today.
+    if (settlement.route_info === undefined && settlement.handover) {
+      const invoiceIds = (settlement.invoices || []).map((i) => i.invoice_id);
+      settlement.route_info = { ...(await routeInfo(pool, rows[0].staff_id, rows[0].settle_date, invoiceIds)), as_of_now: true };
     }
     // What shops still owe from earlier days is always shown as it stands today, not as it stood at settlement.
     if (settlement.handover) {
