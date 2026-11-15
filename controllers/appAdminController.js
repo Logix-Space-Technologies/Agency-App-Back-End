@@ -3,7 +3,7 @@ const pool = require("../config/db");
 const { purgeOldAppLogs, RETENTION_DAYS } = require("../utils/appLog");
 const { logUserActivity } = require("../utils/logUserActivity");
 const { deletedByAdmin, statusExpr, belowPriceSql, abovePriceSql } = require("../utils/appInvoiceStatus");
-const { duesByShop, postAllocation, OUTSTANDING_SQL, COLLECTED_JOIN } = require("../utils/appDues");
+const { duesByShop, openCreditInvoices, postAllocation, OUTSTANDING_SQL, COLLECTED_JOIN } = require("../utils/appDues");
 const { editPendingInvoice } = require("../utils/appInvoiceEdit");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 const { CURRENT_STOCK_SQL } = require("../utils/appStock");
@@ -247,32 +247,37 @@ exports.listShops = async (req, res) => {
     const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total ${from} WHERE ${where}`, params);
     // Newest first, or by what the shop still owes (highest or lowest) across every page.
     const bySort = ["dues_desc", "dues_asc"].includes(req.body.sort);
-    const duesJoin = bySort
-      ? `LEFT JOIN (
-           SELECT i.shop_id, SUM(CASE WHEN ${OUTSTANDING_SQL} > 0.004 THEN ${OUTSTANDING_SQL} ELSE 0 END) AS owed
-           FROM app_invoices i ${COLLECTED_JOIN}
-           WHERE i.status <> 'rejected' AND NOT ${deletedByAdmin("i")}
-           GROUP BY i.shop_id
-         ) dd ON dd.shop_id = s.shop_id`
-      : "";
     // Distance from the office: nearest or farthest first, shops without a location always last.
     const byDistance = ["distance_asc", "distance_desc"].includes(req.body.sort);
-    const order = bySort
-      ? (req.body.sort === "dues_asc"
-          // Lowest first among the shops that owe something; shops with no dues come last.
-          ? "(COALESCE(dd.owed, 0) > 0.004) DESC, COALESCE(dd.owed, 0) ASC, s.created_at DESC, s.shop_id DESC"
-          : "COALESCE(dd.owed, 0) DESC, s.created_at DESC, s.shop_id DESC")
-      : byDistance
-        ? `(s.latitude IS NULL OR s.longitude IS NULL) ASC, ${OFFICE_KM_SQL} ${req.body.sort === "distance_desc" ? "DESC" : "ASC"}, s.shop_id DESC`
-        : "s.created_at DESC, s.shop_id DESC";
+    const order = byDistance
+      ? `(s.latitude IS NULL OR s.longitude IS NULL) ASC, ${OFFICE_KM_SQL} ${req.body.sort === "distance_desc" ? "DESC" : "ASC"}, s.shop_id DESC`
+      : "s.created_at DESC, s.shop_id DESC";
+    // Sorting by dues needs every matching shop's dues, so work out the page's shop ids first.
+    let pageIds = null;
+    if (bySort) {
+      const [all] = await pool.query(`SELECT s.shop_id, s.created_at ${from} WHERE ${where}`, params);
+      const owed = {};
+      for (const r of await openCreditInvoices(pool, {})) owed[r.shop_id] = (owed[r.shop_id] || 0) + Number(r.owed);
+      const val = (id) => Math.round((owed[id] || 0) * 100) / 100;
+      const asc = req.body.sort === "dues_asc";
+      all.sort((x, y) => {
+        const a = val(x.shop_id), b = val(y.shop_id);
+        // Lowest first among the shops that owe something; shops with no dues come last.
+        if (asc && (a > 0) !== (b > 0)) return a > 0 ? -1 : 1;
+        if (a !== b) return asc ? a - b : b - a;
+        return new Date(y.created_at) - new Date(x.created_at) || y.shop_id - x.shop_id;
+      });
+      pageIds = all.slice(offset, offset + limit).map((r) => r.shop_id);
+    }
     const [rows] = await pool.query(
       `SELECT ${SHOP_SELECT}, ${OFFICE_KM_SQL} AS distance_km,
               (SELECT GROUP_CONCAT(CONCAT(ru.name, '|', COALESCE(ru.phone, '')) ORDER BY ru.name SEPARATOR ';')
                  FROM app_staff_routes sr JOIN users ru ON ru.user_id = sr.staff_id
                 WHERE sr.route_id = s.route_id AND sr.isActive = 1 AND ru.isActive = 1) AS route_staff
-       ${from} ${duesJoin} WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
+       ${from} WHERE ${where} ${pageIds ? "AND s.shop_id IN (?)" : ""} ORDER BY ${order} ${pageIds ? "" : "LIMIT ? OFFSET ?"}`,
+      pageIds ? [...params, pageIds.length ? pageIds : [0]] : [...params, limit, offset]
     );
+    if (pageIds) rows.sort((x, y) => pageIds.indexOf(x.shop_id) - pageIds.indexOf(y.shop_id));
     // Map view: every matching shop that has a location, not just the current page.
     const [pins] = await pool.query(
       `SELECT s.shop_id, s.shop_name, s.latitude, s.longitude, s.phone, r.route_name
@@ -568,26 +573,30 @@ exports.rejectInvoice = async (req, res) => {
 // staff it is assigned to. Months older than the window are added together as "older".
 exports.duesReport = async (req, res) => {
   try {
-    const monthsBack = Math.min(Math.max(Number(req.body.months) || 6, 1), 24);
+    // Columns are the last N months, or the last N days when group is "day".
+    const byDay = req.body.group === "day";
+    const span = byDay ? Math.min(Math.max(Number(req.body.days) || 14, 1), 90) : Math.min(Math.max(Number(req.body.months) || 6, 1), 24);
     const routeFilter = Number(req.body.route_id) || null;
-    const [y, m] = getISTDate().split("-").map(Number);
+    const [y, m, dd] = getISTDate().split("-").map(Number);
     const months = [];
-    for (let k = 0; k < monthsBack; k++) {
-      const d = new Date(Date.UTC(y, m - 1 - k, 1));
-      months.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
+    for (let k = 0; k < span; k++) {
+      const d = byDay ? new Date(Date.UTC(y, m - 1, dd - k)) : new Date(Date.UTC(y, m - 1 - k, 1));
+      const base = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      months.push(byDay ? `${base}-${String(d.getUTCDate()).padStart(2, "0")}` : base);
     }
     const bucket = (ym) => (months.includes(ym) ? ym : "older");
 
-    const [rows] = await pool.query(
-      `SELECT s.shop_id, s.shop_name, s.phone, s.route_id, DATE_FORMAT(i.invoice_date, '%Y-%m') AS ym,
-              SUM(${OUTSTANDING_SQL}) AS owed, COUNT(*) AS bills
-       FROM app_invoices i ${COLLECTED_JOIN}
-       JOIN app_shops s ON s.shop_id = i.shop_id
-       WHERE i.status <> 'rejected' AND NOT ${deletedByAdmin("i")} AND ${OUTSTANDING_SQL} > 0.004
-         ${routeFilter ? "AND s.route_id = ?" : ""}
-       GROUP BY s.shop_id, s.shop_name, s.phone, s.route_id, ym`,
-      routeFilter ? [routeFilter] : []
-    );
+    const open = await openCreditInvoices(pool, { routeId: routeFilter });
+    const ids = [...new Set(open.map((r) => r.shop_id))];
+    const [shopRows] = ids.length ? await pool.query("SELECT shop_id, shop_name, phone, route_id FROM app_shops WHERE shop_id IN (?)", [ids]) : [[]];
+    const shopInfo = new Map(shopRows.map((x) => [x.shop_id, x]));
+    const grouped = new Map();
+    for (const r of open) {
+      const k = `${r.shop_id}|${byDay ? r.ymd : r.ym}`;
+      const g = grouped.get(k) || { shop_id: r.shop_id, ym: byDay ? r.ymd : r.ym, owed: 0, bills: 0 };
+      g.owed += Number(r.owed); g.bills += 1; grouped.set(k, g);
+    }
+    const rows = [...grouped.values()].filter((g) => shopInfo.has(g.shop_id)).map((g) => ({ ...g, ...shopInfo.get(g.shop_id) }));
     const [routeRows] = await pool.query(
       `SELECT r.route_id, r.route_name,
               (SELECT COUNT(*) FROM app_shops s WHERE s.route_id = r.route_id AND s.isActive = 1) AS shop_count
@@ -620,7 +629,7 @@ exports.duesReport = async (req, res) => {
     const out = [...routes.values()].map((r) => ({
       ...r, shops_owing: r.shops.size, shops: [...r.shops.values()].sort((a, b) => b.dues - a.dues),
     })).sort((a, b) => b.dues - a.dues || a.route_name.localeCompare(b.route_name));
-    res.json({ months, routes: out, totals });
+    res.json({ group: byDay ? "day" : "month", months, routes: out, totals });
   } catch (error) {
     console.error("duesReport error:", error);
     res.status(500).json({ message: "Could not load the dues report" });

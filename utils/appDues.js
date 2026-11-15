@@ -41,6 +41,32 @@ const duesByShop = async (db, shopIds) => {
   return map;
 };
 
+// Every unpaid credit invoice, newest data for reports: [{ shop_id, ym, owed, ... }].
+// The "deleted by the office" check looks into final_sale once per invoice, which is slow when run over
+// every invoice in the system. So first take only the few invoices that still owe money, then ask
+// final_sale about just those.
+const openCreditInvoices = async (db, { shopIds = null, routeId = null } = {}) => {
+  const where = [];
+  const params = [];
+  if (shopIds) { if (!shopIds.length) return []; where.push("i.shop_id IN (?)"); params.push(shopIds); }
+  if (routeId) { where.push("i.shop_id IN (SELECT shop_id FROM app_shops WHERE route_id = ?)"); params.push(routeId); }
+  const [rows] = await db.query(
+    `SELECT i.app_invoice_id, i.shop_id, i.status, i.final_sale_tracking_id,
+            DATE_FORMAT(i.invoice_date, '%Y-%m') AS ym, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS ymd, ${OUTSTANDING_SQL} AS owed
+     FROM app_invoices i ${COLLECTED_JOIN}
+     WHERE i.status <> 'rejected' AND i.credit_amount > 0 AND ${OUTSTANDING_SQL} > 0.004
+       ${where.length ? "AND " + where.join(" AND ") : ""}`,
+    params
+  );
+  const tracking = [...new Set(rows.filter((r) => r.status === "settled" && r.final_sale_tracking_id).map((r) => r.final_sale_tracking_id))];
+  const deleted = new Set();
+  for (let k = 0; k < tracking.length; k += 1000) {
+    const [gone] = await db.query("SELECT DISTINCT sale_tracking_Id FROM final_sale WHERE isActive = 0 AND sale_tracking_Id IN (?)", [tracking.slice(k, k + 1000)]);
+    for (const g of gone) deleted.add(String(g.sale_tracking_Id));
+  }
+  return rows.filter((r) => !(r.status === "settled" && r.final_sale_tracking_id && deleted.has(String(r.final_sale_tracking_id))));
+};
+
 // Adds a collected amount to the office sale behind a settled invoice, the same way the web's
 // credit collection does: raise AmountPaid and write a payment history row.
 const postAllocation = async (db, allocation, trackingId) => {
@@ -121,4 +147,4 @@ const collectDues = async (conn, { shopId, staffId, payment, withInvoiceId = nul
   return { payment_id: paid.insertId, total, allocations };
 };
 
-module.exports = { outstandingInvoices, duesByShop, collectDues, postAllocation, money, OUTSTANDING_SQL, COLLECTED_JOIN };
+module.exports = { outstandingInvoices, duesByShop, openCreditInvoices, collectDues, postAllocation, money, OUTSTANDING_SQL, COLLECTED_JOIN };
