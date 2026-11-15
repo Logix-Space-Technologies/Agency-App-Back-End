@@ -193,6 +193,16 @@ const SHOP_SELECT = `
 
 const shopPeriods = periodRanges;
 
+// Sree Kailasam Agencies, Mamood (Google Maps pin). Override with OFFICE_LAT / OFFICE_LNG in .env.
+const OFFICE = {
+  lat: Number(process.env.OFFICE_LAT) || 9.1645598,
+  lng: Number(process.env.OFFICE_LNG) || 76.6573596,
+};
+// Straight-line (great-circle) kilometres from the office, NULL for a shop without a location.
+const OFFICE_KM_SQL = `ROUND(IF(s.latitude IS NULL OR s.longitude IS NULL, NULL,
+  6371 * 2 * ASIN(SQRT(POW(SIN(RADIANS(s.latitude - ${OFFICE.lat}) / 2), 2) +
+  COS(RADIANS(${OFFICE.lat})) * COS(RADIANS(s.latitude)) * POW(SIN(RADIANS(s.longitude - ${OFFICE.lng}) / 2), 2)))), 2)`;
+
 exports.listShops = async (req, res) => {
   try {
     const { route_id, staff_id } = req.body;
@@ -243,11 +253,15 @@ exports.listShops = async (req, res) => {
            GROUP BY i.shop_id
          ) dd ON dd.shop_id = s.shop_id`
       : "";
+    // Distance from the office: nearest or farthest first, shops without a location always last.
+    const byDistance = ["distance_asc", "distance_desc"].includes(req.body.sort);
     const order = bySort
       ? `COALESCE(dd.owed, 0) ${req.body.sort === "dues_asc" ? "ASC" : "DESC"}, s.created_at DESC, s.shop_id DESC`
-      : "s.created_at DESC, s.shop_id DESC";
+      : byDistance
+        ? `(s.latitude IS NULL OR s.longitude IS NULL) ASC, ${OFFICE_KM_SQL} ${req.body.sort === "distance_desc" ? "DESC" : "ASC"}, s.shop_id DESC`
+        : "s.created_at DESC, s.shop_id DESC";
     const [rows] = await pool.query(
-      `SELECT ${SHOP_SELECT} ${from} ${duesJoin} WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`,
+      `SELECT ${SHOP_SELECT}, ${OFFICE_KM_SQL} AS distance_km ${from} ${duesJoin} WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
     // Map view: every matching shop that has a location, not just the current page.
@@ -257,7 +271,7 @@ exports.listShops = async (req, res) => {
       params
     );
     const dues = await duesByShop(pool, rows.map((r) => r.shop_id));
-    res.json({ shops: rows.map((r) => ({ ...r, dues: (dues[r.shop_id] || { dues: 0 }).dues })), total, page, limit, pins, stats, period: range ? { from: range[0], to: range[1] } : null });
+    res.json({ shops: rows.map((r) => ({ ...r, dues: (dues[r.shop_id] || { dues: 0 }).dues })), total, page, limit, pins, stats, office: OFFICE, period: range ? { from: range[0], to: range[1] } : null });
   } catch (error) {
     console.error("listShops error:", error);
     res.status(500).json({ message: "Could not load shops" });
