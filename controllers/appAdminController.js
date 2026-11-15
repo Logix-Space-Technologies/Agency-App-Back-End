@@ -203,6 +203,8 @@ const OFFICE_KM_SQL = `ROUND(IF(s.latitude IS NULL OR s.longitude IS NULL, NULL,
   6371 * 2 * ASIN(SQRT(POW(SIN(RADIANS(s.latitude - ${OFFICE.lat}) / 2), 2) +
   COS(RADIANS(${OFFICE.lat})) * COS(RADIANS(s.latitude)) * POW(SIN(RADIANS(s.longitude - ${OFFICE.lng}) / 2), 2)))), 2)`;
 
+const parseStaff = (v) => (v ? String(v).split(";").map((x) => { const [name, phone] = x.split("|"); return { name, phone }; }) : []);
+
 exports.listShops = async (req, res) => {
   try {
     const { route_id, staff_id } = req.body;
@@ -247,7 +249,7 @@ exports.listShops = async (req, res) => {
     const bySort = ["dues_desc", "dues_asc"].includes(req.body.sort);
     const duesJoin = bySort
       ? `LEFT JOIN (
-           SELECT i.shop_id, SUM(${OUTSTANDING_SQL}) AS owed
+           SELECT i.shop_id, SUM(CASE WHEN ${OUTSTANDING_SQL} > 0.004 THEN ${OUTSTANDING_SQL} ELSE 0 END) AS owed
            FROM app_invoices i ${COLLECTED_JOIN}
            WHERE i.status <> 'rejected' AND NOT ${deletedByAdmin("i")}
            GROUP BY i.shop_id
@@ -256,12 +258,19 @@ exports.listShops = async (req, res) => {
     // Distance from the office: nearest or farthest first, shops without a location always last.
     const byDistance = ["distance_asc", "distance_desc"].includes(req.body.sort);
     const order = bySort
-      ? `COALESCE(dd.owed, 0) ${req.body.sort === "dues_asc" ? "ASC" : "DESC"}, s.created_at DESC, s.shop_id DESC`
+      ? (req.body.sort === "dues_asc"
+          // Lowest first among the shops that owe something; shops with no dues come last.
+          ? "(COALESCE(dd.owed, 0) > 0.004) DESC, COALESCE(dd.owed, 0) ASC, s.created_at DESC, s.shop_id DESC"
+          : "COALESCE(dd.owed, 0) DESC, s.created_at DESC, s.shop_id DESC")
       : byDistance
         ? `(s.latitude IS NULL OR s.longitude IS NULL) ASC, ${OFFICE_KM_SQL} ${req.body.sort === "distance_desc" ? "DESC" : "ASC"}, s.shop_id DESC`
         : "s.created_at DESC, s.shop_id DESC";
     const [rows] = await pool.query(
-      `SELECT ${SHOP_SELECT}, ${OFFICE_KM_SQL} AS distance_km ${from} ${duesJoin} WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`,
+      `SELECT ${SHOP_SELECT}, ${OFFICE_KM_SQL} AS distance_km,
+              (SELECT GROUP_CONCAT(CONCAT(ru.name, '|', COALESCE(ru.phone, '')) ORDER BY ru.name SEPARATOR ';')
+                 FROM app_staff_routes sr JOIN users ru ON ru.user_id = sr.staff_id
+                WHERE sr.route_id = s.route_id AND sr.isActive = 1 AND ru.isActive = 1) AS route_staff
+       ${from} ${duesJoin} WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
     // Map view: every matching shop that has a location, not just the current page.
@@ -271,7 +280,7 @@ exports.listShops = async (req, res) => {
       params
     );
     const dues = await duesByShop(pool, rows.map((r) => r.shop_id));
-    res.json({ shops: rows.map((r) => ({ ...r, dues: (dues[r.shop_id] || { dues: 0 }).dues })), total, page, limit, pins, stats, office: OFFICE, period: range ? { from: range[0], to: range[1] } : null });
+    res.json({ shops: rows.map((r) => ({ ...r, route_staff: parseStaff(r.route_staff), dues: (dues[r.shop_id] || { dues: 0 }).dues })), total, page, limit, pins, stats, office: OFFICE, period: range ? { from: range[0], to: range[1] } : null });
   } catch (error) {
     console.error("listShops error:", error);
     res.status(500).json({ message: "Could not load shops" });
@@ -551,3 +560,70 @@ exports.rejectInvoice = async (req, res) => {
     res.status(500).json({ message: "Could not reject the invoice" });
   }
 };
+
+
+// ---------------------------------------------------------------- dues by route, shop and month
+
+// Unpaid credit, grouped by route, then shop, then the month of the bill. Each route carries the
+// staff it is assigned to. Months older than the window are added together as "older".
+exports.duesReport = async (req, res) => {
+  try {
+    const monthsBack = Math.min(Math.max(Number(req.body.months) || 6, 1), 24);
+    const routeFilter = Number(req.body.route_id) || null;
+    const [y, m] = getISTDate().split("-").map(Number);
+    const months = [];
+    for (let k = 0; k < monthsBack; k++) {
+      const d = new Date(Date.UTC(y, m - 1 - k, 1));
+      months.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
+    }
+    const bucket = (ym) => (months.includes(ym) ? ym : "older");
+
+    const [rows] = await pool.query(
+      `SELECT s.shop_id, s.shop_name, s.phone, s.route_id, DATE_FORMAT(i.invoice_date, '%Y-%m') AS ym,
+              SUM(${OUTSTANDING_SQL}) AS owed, COUNT(*) AS bills
+       FROM app_invoices i ${COLLECTED_JOIN}
+       JOIN app_shops s ON s.shop_id = i.shop_id
+       WHERE i.status <> 'rejected' AND NOT ${deletedByAdmin("i")} AND ${OUTSTANDING_SQL} > 0.004
+         ${routeFilter ? "AND s.route_id = ?" : ""}
+       GROUP BY s.shop_id, s.shop_name, s.phone, s.route_id, ym`,
+      routeFilter ? [routeFilter] : []
+    );
+    const [routeRows] = await pool.query(
+      `SELECT r.route_id, r.route_name,
+              (SELECT COUNT(*) FROM app_shops s WHERE s.route_id = r.route_id AND s.isActive = 1) AS shop_count
+       FROM app_routes r WHERE r.isActive = 1 ${routeFilter ? "AND r.route_id = ?" : ""} ORDER BY r.route_name`,
+      routeFilter ? [routeFilter] : []
+    );
+    const [staffRows] = await pool.query(
+      `SELECT sr.route_id, u.user_id, u.name, u.phone, u.isBlocked
+       FROM app_staff_routes sr JOIN users u ON u.user_id = sr.staff_id
+       WHERE sr.isActive = 1 AND u.isActive = 1 ORDER BY u.name`
+    );
+
+    const empty = () => Object.fromEntries([...months, "older"].map((k) => [k, 0]));
+    const routes = new Map(routeRows.map((r) => [r.route_id, {
+      route_id: r.route_id, route_name: r.route_name, shop_count: Number(r.shop_count),
+      staff: staffRows.filter((x) => x.route_id === r.route_id).map(({ user_id, name, phone, isBlocked }) => ({ user_id, name, phone, blocked: !!isBlocked })),
+      dues: 0, bills: 0, by_month: empty(), shops: new Map(),
+    }]));
+    const totals = { dues: 0, bills: 0, by_month: empty(), shops_owing: 0 };
+    for (const r of rows) {
+      const route = routes.get(r.route_id);
+      if (!route) continue; // a deleted route
+      const owed = money2(r.owed), key = bucket(r.ym);
+      let shop = route.shops.get(r.shop_id);
+      if (!shop) { shop = { shop_id: r.shop_id, shop_name: r.shop_name, phone: r.phone, dues: 0, bills: 0, by_month: empty() }; route.shops.set(r.shop_id, shop); totals.shops_owing += 1; }
+      shop.dues = money2(shop.dues + owed); shop.bills += Number(r.bills); shop.by_month[key] = money2(shop.by_month[key] + owed);
+      route.dues = money2(route.dues + owed); route.bills += Number(r.bills); route.by_month[key] = money2(route.by_month[key] + owed);
+      totals.dues = money2(totals.dues + owed); totals.bills += Number(r.bills); totals.by_month[key] = money2(totals.by_month[key] + owed);
+    }
+    const out = [...routes.values()].map((r) => ({
+      ...r, shops_owing: r.shops.size, shops: [...r.shops.values()].sort((a, b) => b.dues - a.dues),
+    })).sort((a, b) => b.dues - a.dues || a.route_name.localeCompare(b.route_name));
+    res.json({ months, routes: out, totals });
+  } catch (error) {
+    console.error("duesReport error:", error);
+    res.status(500).json({ message: "Could not load the dues report" });
+  }
+};
+const money2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
