@@ -626,8 +626,40 @@ exports.duesReport = async (req, res) => {
       route.dues = money2(route.dues + owed); route.bills += Number(r.bills); route.by_month[key] = money2(route.by_month[key] + owed);
       totals.dues = money2(totals.dues + owed); totals.bills += Number(r.bills); totals.by_month[key] = money2(totals.by_month[key] + owed);
     }
+
+    // Who billed it: each person's own dues on a route, and on each shop, so two people on one route stay apart.
+    const billerIds = [...new Set(open.map((r) => r.staff_id).filter(Boolean))];
+    const [billerRows] = billerIds.length ? await pool.query("SELECT user_id, name, phone FROM users WHERE user_id IN (?)", [billerIds]) : [[]];
+    const billers = new Map(billerRows.map((u) => [u.user_id, u]));
+    const people = new Map(); // route_id -> Map(user_id -> person)
+    for (const r of routes.values()) {
+      const m = new Map();
+      for (const st of r.staff) m.set(st.user_id, { ...st, assigned: true, dues: 0, bills: 0, shop_ids: new Set(), by_month: empty() });
+      people.set(r.route_id, m);
+    }
+    for (const inv of open) {
+      const info = shopInfo.get(inv.shop_id);
+      const route = info && routes.get(info.route_id);
+      if (!route) continue;
+      const owed = money2(inv.owed), key = bucket(byDay ? inv.ymd : inv.ym), who = inv.staff_id || 0;
+      const m = people.get(route.route_id);
+      if (!m.has(who)) {
+        const u = billers.get(who);
+        m.set(who, { user_id: who, name: u ? u.name : "Unknown", phone: u ? u.phone : "", blocked: false, assigned: false, dues: 0, bills: 0, shop_ids: new Set(), by_month: empty() });
+      }
+      const p = m.get(who);
+      p.dues = money2(p.dues + owed); p.bills += 1; p.shop_ids.add(inv.shop_id); p.by_month[key] = money2(p.by_month[key] + owed);
+      const shop = route.shops.get(inv.shop_id);
+      if (shop) {
+        shop.people = shop.people || new Map();
+        const sp = shop.people.get(who) || { user_id: who, name: p.name, dues: 0 };
+        sp.dues = money2(sp.dues + owed); shop.people.set(who, sp);
+      }
+    }
     const out = [...routes.values()].map((r) => ({
-      ...r, shops_owing: r.shops.size, shops: [...r.shops.values()].sort((a, b) => b.dues - a.dues),
+      ...r, shops_owing: r.shops.size,
+      people: [...people.get(r.route_id).values()].map(({ shop_ids, ...p }) => ({ ...p, shops_owing: shop_ids.size })).sort((a, b) => b.dues - a.dues || a.name.localeCompare(b.name)),
+      shops: [...r.shops.values()].map((sh) => ({ ...sh, people: sh.people ? [...sh.people.values()].sort((a, b) => b.dues - a.dues) : [] })).sort((a, b) => b.dues - a.dues),
     })).sort((a, b) => b.dues - a.dues || a.route_name.localeCompare(b.route_name));
     res.json({ group: byDay ? "day" : "month", months, routes: out, totals });
   } catch (error) {
