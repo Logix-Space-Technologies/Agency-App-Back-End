@@ -51,7 +51,7 @@ const openCreditInvoices = async (db, { shopIds = null, routeId = null } = {}) =
   if (shopIds) { if (!shopIds.length) return []; where.push("i.shop_id IN (?)"); params.push(shopIds); }
   if (routeId) { where.push("i.shop_id IN (SELECT shop_id FROM app_shops WHERE route_id = ?)"); params.push(routeId); }
   const [rows] = await db.query(
-    `SELECT i.app_invoice_id, i.shop_id, i.status, i.final_sale_tracking_id,
+    `SELECT i.app_invoice_id, i.shop_id, i.staff_id, i.status, i.final_sale_tracking_id,
             DATE_FORMAT(i.invoice_date, '%Y-%m') AS ym, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS ymd, ${OUTSTANDING_SQL} AS owed
      FROM app_invoices i ${COLLECTED_JOIN}
      WHERE i.status <> 'rejected' AND i.credit_amount > 0 AND ${OUTSTANDING_SQL} > 0.004
