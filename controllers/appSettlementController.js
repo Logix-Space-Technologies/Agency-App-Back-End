@@ -103,11 +103,23 @@ const loadDay = async (db, staffId, date, lock = false) => {
     const [p] = await db.query("SELECT product_id, product_name FROM products WHERE product_id IN (?)", [ids]);
     p.forEach((x) => names.set(x.product_id, x.product_name));
   }
+  // Latest marketing price on that day, to put a value on balance, damage and loss for products with no sale.
+  const listPrice = new Map();
+  if (ids.length) {
+    const [pr] = await db.query(
+      `SELECT product_id, marketing_selling_price FROM product_prices
+       WHERE product_id IN (?) AND isActive = 1 AND effective_date <= ? ORDER BY effective_date, price_id`,
+      [ids, date]
+    );
+    pr.forEach((x) => listPrice.set(x.product_id, Number(x.marketing_selling_price) || 0));
+  }
   const products = [...byProduct.values()]
     .map((r) => ({
       ...r,
       product_name: names.get(r.product_id) || `Product ${r.product_id}`,
       avg_price: r.sold - r.free > 0 ? money(r.amount / (r.sold - r.free)) : 0,
+      // Price used to value balance, damage and loss: what it sold for, else the current marketing price.
+      unit_price: r.sold - r.free > 0 ? money(r.amount / (r.sold - r.free)) : money(listPrice.get(r.product_id) || 0),
       expected_balance: Math.max(0, r.allocated - r.sold),
       // The office only has to add allocation when the sale is higher than its own allocation. It then brings the allocation up to
       // the higher of what the salesperson took (they may have arranged some stock from outside) and what they sold.
