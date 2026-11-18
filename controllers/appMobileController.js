@@ -8,6 +8,7 @@ const { editPendingInvoice } = require("../utils/appInvoiceEdit");
 const { loadDay, reportedDamage, enrichSettlement } = require("./appSettlementController");
 const { dayInfo } = require("./appDayController");
 const { assertSellable, sellableByProduct } = require("../utils/appSellable");
+const { latestForInvoice } = require("./appCorrectionController");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 // A sold price this far from the current marketing price is flagged for the admin.
@@ -393,6 +394,7 @@ const loadInvoice = async (invoiceId, staffId) => {
     collected_later: Number(later),
     later_payments: laterPayments,
     shop_dues: shopDues ? shopDues.dues : 0,
+    correction: await latestForInvoice(pool, invoiceId),
   };
 };
 
@@ -636,6 +638,45 @@ exports.deleteInvoice = async (req, res) => {
     res.status(500).json({ message: "Could not delete the invoice" });
   } finally {
     connection.release();
+  }
+};
+
+// Before a bill is added: has this salesperson already billed the same shop today with the same products and quantities?
+// It only warns; the phone decides whether to add it anyway.
+exports.checkDuplicate = async (req, res) => {
+  try {
+    const shopId = Number(req.body.shop_id);
+    const wanted = new Map();
+    for (const it of Array.isArray(req.body.items) ? req.body.items : []) {
+      const id = Number(it.product_id), q = Number(it.quantity);
+      if (id && q > 0) wanted.set(id, (wanted.get(id) || 0) + q);
+    }
+    if (!shopId || !wanted.size) return res.json({ duplicates: [] });
+    const [bills] = await pool.query(
+      `SELECT i.app_invoice_id, i.invoice_no, DATE_FORMAT(i.created_at, '%H:%i') AS time, i.total_amount, ${statusExpr("i")} AS status
+       FROM app_invoices i
+       WHERE i.staff_id = ? AND i.shop_id = ? AND i.invoice_date = ? AND i.status <> 'rejected' AND NOT ${deletedByAdmin("i")}
+       ORDER BY i.app_invoice_id DESC LIMIT 20`,
+      [req.staff.user_id, shopId, getISTDate()]
+    );
+    if (!bills.length) return res.json({ duplicates: [] });
+    const [lines] = await pool.query(
+      "SELECT app_invoice_id, product_id, SUM(quantity) AS qty FROM app_invoice_items WHERE app_invoice_id IN (?) GROUP BY app_invoice_id, product_id",
+      [bills.map((b) => b.app_invoice_id)]
+    );
+    const have = new Map();
+    for (const l of lines) {
+      if (!have.has(l.app_invoice_id)) have.set(l.app_invoice_id, new Map());
+      have.get(l.app_invoice_id).set(l.product_id, Number(l.qty));
+    }
+    const same = (a, b) => a.size === b.size && [...a].every(([k, v]) => b.get(k) === v);
+    const duplicates = bills
+      .filter((b) => have.has(b.app_invoice_id) && same(have.get(b.app_invoice_id), wanted))
+      .map((b) => ({ app_invoice_id: b.app_invoice_id, invoice_no: b.invoice_no, time: b.time, total_amount: Number(b.total_amount), status: b.status }));
+    res.json({ duplicates });
+  } catch (error) {
+    console.error("App checkDuplicate error:", error);
+    res.status(500).json({ message: "Could not check for a repeated bill" });
   }
 };
 

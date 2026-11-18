@@ -3,6 +3,7 @@ const router = express.Router();
 const c = require("../controllers/appAdminController");
 const d = require("../controllers/appSettlementController");
 const e = require("../controllers/appDayController");
+const corr = require("../controllers/appCorrectionController");
 
 router.post("/routes", c.listRoutes);
 router.post("/routes/save", c.saveRoute);
@@ -25,6 +26,10 @@ router.post("/invoices/products", c.invoiceProducts);
 router.post("/invoices/update", c.updateInvoice);
 router.post("/invoices/settle", c.settleInvoices);
 router.post("/invoices/reject", c.rejectInvoice);
+router.post("/invoices/delete", corr.deleteBill);
+router.post("/corrections", corr.list);
+router.post("/corrections/count", corr.openCount);
+router.post("/corrections/dismiss", corr.dismiss);
 
 router.post("/vehicles", e.listVehicles);
 router.post("/vehicles/km", e.vehicleKmLog);
