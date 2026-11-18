@@ -3,6 +3,7 @@ const router = express.Router();
 const { requireStaff } = require("../middleware/appAuth");
 const c = require("../controllers/appMobileController");
 const day = require("../controllers/appDayController");
+const corr = require("../controllers/appCorrectionController");
 
 router.post("/login", c.login);
 
@@ -18,9 +19,11 @@ router.get("/shops/:id/dues", c.getShopDues);
 router.post("/shops/:id/collect", c.collectShopDues);
 router.get("/dues", c.getDues);
 router.get("/products", c.getProducts);
+router.post("/invoices/check-duplicate", c.checkDuplicate);
 router.post("/invoices", c.createInvoice);
 router.get("/invoices", c.getInvoices);
 router.get("/invoices/:id", c.getInvoice);
+router.post("/invoices/:id/correction", corr.report);
 router.put("/invoices/:id", c.updateInvoice);
 router.delete("/invoices/:id", c.deleteInvoice);
 router.get("/stock", c.getMyStock);
