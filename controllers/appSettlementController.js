@@ -127,7 +127,9 @@ const loadDay = async (db, staffId, date, lock = false) => {
       to_add: r.sold > r.allocated ? Math.max(r.sold, r.self_taken) - r.allocated : 0,
       not_allocated: r.allocated === 0 && r.sold > 0,
     }))
-    .sort((a, b) => a.product_name.localeCompare(b.product_name));
+    // In the order the stock was allocated (the Map keeps it). Products with no allocation (sold from outside, or only taken
+    // by the salesperson) come after, by name.
+    .sort((a, b) => (a.allocated > 0 ? 0 : 1) - (b.allocated > 0 ? 0 : 1) || (a.allocated > 0 ? 0 : a.product_name.localeCompare(b.product_name)));
 
   const sum = (key) => money(invoices.reduce((t, i) => t + Number(i[key]), 0));
   return {
