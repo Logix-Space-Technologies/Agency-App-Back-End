@@ -39,6 +39,33 @@ const loadDay = async (db, staffId, date, lock = false) => {
     );
     later.forEach((l) => laterBy.set(l.invoice_id, l));
   }
+  // Bills that look like the same bill made twice: same shop, same products and quantities, same day, same salesperson.
+  // Only a flag for the office (it can reject the extra one); a real repeat sale is still allowed.
+  if (invoices.length) {
+    const [lines] = await db.query(
+      `SELECT i.app_invoice_id, i.invoice_no, i.shop_id, it.product_id, SUM(it.quantity) AS qty
+       FROM app_invoices i JOIN app_invoice_items it ON it.app_invoice_id = i.app_invoice_id
+       WHERE i.staff_id = ? AND i.invoice_date = ? AND i.status <> 'rejected' AND NOT ${deletedByAdmin("i")}
+       GROUP BY i.app_invoice_id, i.invoice_no, i.shop_id, it.product_id`,
+      [staffId, date]
+    );
+    const sig = new Map(); // invoice id -> { no, text }
+    for (const l of lines) {
+      const e = sig.get(l.app_invoice_id) || { no: l.invoice_no, shop: l.shop_id, parts: [] };
+      e.parts.push(`${l.product_id}x${Number(l.qty)}`);
+      sig.set(l.app_invoice_id, e);
+    }
+    const groups = new Map();
+    for (const [id, e] of sig) {
+      const key = `${e.shop}|${e.parts.sort().join(",")}`;
+      groups.set(key, [...(groups.get(key) || []), { id, no: e.no }]);
+    }
+    for (const i of invoices) {
+      const e = sig.get(i.app_invoice_id);
+      const same = e ? (groups.get(`${e.shop}|${e.parts.join(",")}`) || []).filter((x) => x.id !== i.app_invoice_id) : [];
+      i.possible_duplicate_of = same.map((x) => x.no);
+    }
+  }
   invoices.forEach((i) => {
     const l = laterBy.get(i.app_invoice_id) || {};
     i.later_cash = money(l.cash); i.later_upi = money(l.upi); i.later_card = money(l.card);
