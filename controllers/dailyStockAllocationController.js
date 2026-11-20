@@ -269,18 +269,46 @@ exports.addDailyStockAllocation = async (req, res) => {
       connection = await pool.getConnection();
       await connection.beginTransaction();
 
+      // A row identical to one added seconds ago is a double click: ignore it quietly.
       const skipped = [];
       for (const alloc of allocations) {
-        const { product_id, allocated_quantity } = alloc;
-
-        // The same row added a few seconds ago is a double click, not a second allocation.
         const [[again]] = await connection.query(
           `SELECT COUNT(*) AS n FROM daily_stock_allocation
            WHERE marketing_staff_id = ? AND product_id = ? AND allocated_quantity = ? AND date = ? AND isActive = 1
              AND created >= DATE_SUB(?, INTERVAL 20 SECOND)`,
-          [marketing_staff_id, product_id, allocated_quantity, saleDate, getISTTimestamp()]
+          [marketing_staff_id, alloc.product_id, alloc.allocated_quantity, saleDate, getISTTimestamp()]
         );
-        if (again.n > 0) { skipped.push(product_id); continue; }
+        if (again.n > 0) skipped.push(alloc.product_id);
+      }
+
+      // The same item already allocated to this person for this date, at any earlier time: ask before adding more.
+      if (req.body.confirmExisting !== true) {
+        const wanted = allocations.filter((a) => !skipped.includes(a.product_id)).map((a) => Number(a.product_id));
+        if (wanted.length) {
+          const [existing] = await connection.query(
+            `SELECT d.product_id, p.product_name, SUM(d.allocated_quantity) AS quantity
+             FROM daily_stock_allocation d JOIN products p ON p.product_id = d.product_id
+             WHERE d.marketing_staff_id = ? AND d.date = ? AND d.isActive = 1 AND d.converted_to_sales = 0
+               AND d.allocated_quantity > 0 AND d.product_id IN (?)
+             GROUP BY d.product_id, p.product_name`,
+            [marketing_staff_id, saleDate, wanted]
+          );
+          if (existing.length) {
+            await connection.rollback();
+            connection.release();
+            connection = null;
+            return res.status(409).json({
+              code: "ALLOCATION_EXISTS",
+              error: "This item is already allocated to this salesperson for this date.",
+              existing: existing.map((e) => ({ product_id: e.product_id, product_name: e.product_name, quantity: Number(e.quantity) })),
+            });
+          }
+        }
+      }
+
+      for (const alloc of allocations) {
+        const { product_id, allocated_quantity } = alloc;
+        if (skipped.includes(product_id)) continue;
 
         await connection.execute(
           'INSERT INTO `daily_stock_allocation` (`marketing_staff_id`, `product_id`, `allocated_quantity`, `date`, `addedDate`,  `isActive`, `converted_to_sales`, `addedBy`, `created`) VALUES (?, ?, ?, ? ,now(), 1, 0, ?, ?)',
