@@ -14,6 +14,7 @@ router.post("/staff/routes", c.setStaffRoutes);
 
 router.post("/shops", c.listShops);
 router.post("/shops/dues-report", c.duesReport);
+router.post("/shops/not-visited", c.notVisitedShops);
 router.post("/shops/save", c.saveShop);
 router.post("/shops/delete", c.deleteShop);
 

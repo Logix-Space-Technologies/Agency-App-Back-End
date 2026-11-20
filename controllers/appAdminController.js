@@ -668,3 +668,61 @@ exports.duesReport = async (req, res) => {
   }
 };
 const money2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+
+// ---------------------------------------------------------------- shops not visited lately
+
+// A visit is a bill to the shop (the app records bills, not visits without a sale). Lists the shops whose last bill is
+// at least `days` days old, or that were never billed (counted from the day they were added), most overdue first.
+exports.notVisitedShops = async (req, res) => {
+  try {
+    const days = Math.min(Math.max(Number(req.body.days) || 2, 1), 365);
+    const routeId = Number(req.body.route_id) || null;
+    const staffId = Number(req.body.staff_id) || null; // the salesperson who last billed the shop
+    const q = text(req.body.q, 100);
+    const today = getISTDate();
+    const params = [today];
+    const where = ["s.isActive = 1"];
+    if (routeId) { where.push("s.route_id = ?"); params.push(routeId); }
+    if (q) { where.push("(s.shop_name LIKE ? OR s.phone LIKE ? OR s.owner_name LIKE ?)"); params.push(`%${q}%`, `%${q}%`, `%${q}%`); }
+    const [all] = await pool.query(
+      `SELECT s.shop_id, s.shop_name, s.phone, s.owner_name, s.route_id, r.route_name,
+              DATE_FORMAT(s.created_at, '%Y-%m-%d') AS added_on,
+              DATE_FORMAT(l.last_date, '%Y-%m-%d') AS last_billed, l.last_staff_id, lu.name AS last_staff_name, COALESCE(l.bills, 0) AS bills,
+              DATEDIFF(?, COALESCE(l.last_date, DATE(s.created_at))) AS days_since,
+              (SELECT GROUP_CONCAT(CONCAT(ru.name, '|', COALESCE(ru.phone, '')) ORDER BY ru.name SEPARATOR ';')
+                 FROM app_staff_routes sr JOIN users ru ON ru.user_id = sr.staff_id
+                WHERE sr.route_id = s.route_id AND sr.isActive = 1 AND ru.isActive = 1) AS route_staff
+       FROM app_shops s
+       JOIN app_routes r ON r.route_id = s.route_id
+       LEFT JOIN (
+         SELECT shop_id, MAX(invoice_date) AS last_date, COUNT(*) AS bills,
+                CAST(SUBSTRING_INDEX(GROUP_CONCAT(staff_id ORDER BY invoice_date DESC, app_invoice_id DESC), ',', 1) AS UNSIGNED) AS last_staff_id
+         FROM app_invoices WHERE status <> 'rejected' GROUP BY shop_id
+       ) l ON l.shop_id = s.shop_id
+       LEFT JOIN users lu ON lu.user_id = l.last_staff_id
+       WHERE ${where.join(" AND ")}`,
+      params
+    );
+    const base = staffId ? all.filter((x) => x.last_staff_id === staffId) : all;
+    const rows = base.filter((x) => Number(x.days_since) >= days);
+    rows.sort((a, b) => Number(b.days_since) - Number(a.days_since) || a.shop_name.localeCompare(b.shop_name));
+    const count = (n) => base.filter((x) => Number(x.days_since) >= n).length;
+    const summary = { total_shops: base.length, d2: count(2), d3: count(3), d7: count(7), d15: count(15), d30: count(30), never_billed: base.filter((x) => !x.last_billed).length };
+
+    const { limit, offset, page } = pageArgs(req.body, 25);
+    const pageRows = rows.slice(offset, offset + limit);
+    const dues = await duesByShop(pool, pageRows.map((r) => r.shop_id));
+    res.json({
+      days, total: rows.length, page, limit, summary,
+      shops: pageRows.map((r) => ({
+        shop_id: r.shop_id, shop_name: r.shop_name, phone: r.phone, owner_name: r.owner_name, route_name: r.route_name, added_on: r.added_on,
+        last_billed: r.last_billed, last_staff_name: r.last_staff_name, bills: Number(r.bills), days_since: Number(r.days_since),
+        never_billed: !r.last_billed, route_staff: parseStaff(r.route_staff), dues: (dues[r.shop_id] || { dues: 0 }).dues,
+      })),
+    });
+  } catch (error) {
+    console.error("notVisitedShops error:", error);
+    res.status(500).json({ message: "Could not load the shops" });
+  }
+};
