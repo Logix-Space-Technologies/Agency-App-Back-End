@@ -269,8 +269,18 @@ exports.addDailyStockAllocation = async (req, res) => {
       connection = await pool.getConnection();
       await connection.beginTransaction();
 
+      const skipped = [];
       for (const alloc of allocations) {
         const { product_id, allocated_quantity } = alloc;
+
+        // The same row added a few seconds ago is a double click, not a second allocation.
+        const [[again]] = await connection.query(
+          `SELECT COUNT(*) AS n FROM daily_stock_allocation
+           WHERE marketing_staff_id = ? AND product_id = ? AND allocated_quantity = ? AND date = ? AND isActive = 1
+             AND created >= DATE_SUB(?, INTERVAL 20 SECOND)`,
+          [marketing_staff_id, product_id, allocated_quantity, saleDate, getISTTimestamp()]
+        );
+        if (again.n > 0) { skipped.push(product_id); continue; }
 
         await connection.execute(
           'INSERT INTO `daily_stock_allocation` (`marketing_staff_id`, `product_id`, `allocated_quantity`, `date`, `addedDate`,  `isActive`, `converted_to_sales`, `addedBy`, `created`) VALUES (?, ?, ?, ? ,now(), 1, 0, ?, ?)',
@@ -290,7 +300,7 @@ exports.addDailyStockAllocation = async (req, res) => {
         reference_id: `${marketing_staff_id}|${saleDate}`,
         });
 
-      res.json({ message: 'daily stock allocations added successfully' });
+      res.json({ message: skipped.length ? 'daily stock allocations added (a repeated row was ignored)' : 'daily stock allocations added successfully', skipped });
     } catch (error) {
       if (connection) await connection.rollback();
       console.error(error);

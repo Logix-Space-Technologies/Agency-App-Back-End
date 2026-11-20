@@ -5,6 +5,7 @@ const { postInvoiceTx, trackingId, nextNgstNumber } = require("../utils/appSettl
 const { dayInfo } = require("./appDayController");
 const { OUTSTANDING_SQL, COLLECTED_JOIN } = require("../utils/appDues");
 const { deletedByAdmin } = require("../utils/appInvoiceStatus");
+const { CURRENT_STOCK_SQL } = require("../utils/appStock");
 
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
 const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -312,6 +313,51 @@ exports.previewDay = async (req, res) => {
   } catch (error) {
     console.error("previewDay error:", error);
     res.status(500).json({ message: "Could not load the day" });
+  }
+};
+
+// Adds exactly the allocation a day is missing. The shortage is worked out here, inside a lock, at the moment of the
+// click, so pressing it twice (or from a screen that is out of date) never adds more than is still missing.
+exports.topUpAllocation = async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const staffId = Number(req.body.staff_id);
+    const date = req.body.date;
+    const adminId = req.body.userId || null;
+    if (!staffId || !isDate(date)) throw fail(400, "Choose a salesperson and a date");
+    await connection.beginTransaction();
+    const day = await loadDay(connection, staffId, date, true); // locks the allocation rows of the day
+    const missing = day.products.filter((p) => p.over_sold && p.to_add > 0);
+    if (!missing.length) {
+      await connection.commit();
+      return res.json({ message: "Nothing is missing. The allocation already covers what was sold.", added: [], warnings: [] });
+    }
+    const now = getISTTimestamp();
+    const added = [];
+    const warnings = [];
+    for (const p of missing) {
+      const [[s]] = await connection.query(`SELECT ${CURRENT_STOCK_SQL(String(Number(p.product_id)))} AS available`);
+      if (Number(s.available) < p.to_add) warnings.push(`${p.product_name}: adding ${p.to_add} but the store shows only ${Math.max(0, Number(s.available))} free`);
+      await connection.query(
+        `INSERT INTO daily_stock_allocation (marketing_staff_id, product_id, allocated_quantity, date, addedDate, isActive, converted_to_sales, addedBy, created)
+         VALUES (?, ?, ?, ?, now(), 1, 0, ?, ?)`,
+        [staffId, p.product_id, p.to_add, date, adminId, now]
+      );
+      added.push({ product_id: p.product_id, product_name: p.product_name, quantity: p.to_add });
+    }
+    await connection.commit();
+    await logUserActivity({
+      req, user_id: adminId, action: `Allocation topped up for staff ${staffId} on ${date}: ${added.map((a) => `${a.product_name} +${a.quantity}`).join(", ")}`,
+      reference_type: "daily_stock_allocation_batch", reference_id: `${staffId}|${date}`,
+    });
+    res.json({ message: `Allocation added: ${added.map((a) => `${a.product_name} +${a.quantity}`).join(", ")}`, added, warnings });
+  } catch (error) {
+    await connection.rollback();
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error("topUpAllocation error:", error);
+    res.status(500).json({ message: "Could not add the allocation" });
+  } finally {
+    connection.release();
   }
 };
 
