@@ -432,7 +432,42 @@ exports.settleDay = async (req, res) => {
       if (!Number.isFinite(expenses[k]) || expenses[k] < 0) throw fail(400, "Expenses must be zero or more");
     }
     expenses.total = money(expenses.fuel + expenses.vehicle_service + expenses.other);
-    const netPayable = money(expected.total - expenses.total);
+    const reported = await reportedDamage(connection, staffId, date);
+    // Balance and damage are counted by the office. What is left over is either missing stock (loss) or, when the salesperson
+    // holds more than expected, extra stock. Missing stock can be charged to the salesperson as an extra sale at a price;
+    // extra stock in hand lowers what was sold (and the amount) by that many pieces.
+    const lines = day.products.map((p) => {
+      const gap = p.allocated - p.sold; // what should be left with the salesperson
+      const input = entered.get(p.product_id) || {};
+      let damaged = int(input.damaged);
+      let balance = input.balance === undefined || input.balance === "" ? Math.max(0, gap - damaged) : int(input.balance);
+      let loss = 0, charged = 0, excess = 0;
+      const price = money(Number(input.price) > 0 ? input.price : p.unit_price);
+      if (gap <= 0) {
+        balance = 0; damaged = 0; // nothing left to return; any shortage is already in the sold column
+      } else {
+        loss = gap - balance - damaged;
+        if (loss < 0) {
+          excess = -loss;
+          loss = 0;
+          if (input.accept_excess !== true) {
+            throw fail(400, `${p.product_name}: balance (${balance}) and damaged (${damaged}) are more than what is left (${gap}). Tick "count extra stock" to reduce the sale by ${excess}.`);
+          }
+          if (excess > p.sold - (p.free || 0)) {
+            throw fail(400, `${p.product_name}: only ${p.sold - (p.free || 0)} were sold on the phone, so at most that many can be taken off.`);
+          }
+        } else if (loss > 0 && input.charge === true) {
+          charged = loss;
+          loss = 0;
+        }
+        if ((charged > 0 || excess > 0) && !(price > 0)) throw fail(400, `${p.product_name}: enter a price for the adjustment`);
+      }
+      return { ...p, balance, damaged, loss, charged, excess, adj_price: price, charged_amount: money(charged * price), excess_amount: money(excess * price) };
+    });
+    const extraCharge = money(lines.reduce((t, l) => t + l.charged_amount, 0));
+    const reduction = money(lines.reduce((t, l) => t + l.excess_amount, 0));
+
+    const netPayable = money(expected.total - expenses.total - reduction);
 
     // Payment breakdown: starts as the same cash, UPI and card they collected (cash is reduced by the expenses).
     const got = req.body.received || {};
@@ -448,22 +483,6 @@ exports.settleDay = async (req, res) => {
     }
     received.total = money(received.cash + received.upi + received.card);
     const handover = { expected, expenses, net_payable: netPayable, received, difference: money(received.total - netPayable) };
-    const reported = await reportedDamage(connection, staffId, date);
-    const lines = day.products.map((p) => {
-      const gap = p.allocated - p.sold; // what should be left with the salesperson
-      const input = entered.get(p.product_id) || {};
-      let damaged = int(input.damaged);
-      let balance = input.balance === undefined || input.balance === "" ? Math.max(0, gap - damaged) : int(input.balance);
-      let loss = 0;
-      if (gap <= 0) {
-        balance = 0; damaged = 0; // nothing left to return; any shortage is already in the sold column
-      } else {
-        loss = gap - balance - damaged;
-        if (loss < 0) throw fail(400, `${p.product_name}: balance (${balance}) and damaged (${damaged}) are more than what is left (${gap})`);
-      }
-      return { ...p, balance, damaged, loss };
-    });
-
     const vehicle = await dayInfo(connection, staffId, date);
     const openFuel = vehicle.fuel.filter((f) => !f.settlement_id);
 
@@ -519,23 +538,28 @@ exports.settleDay = async (req, res) => {
     // 2. Damaged and lost stock, the same way the marketing settlement records it.
     // Free replacements are damage too: the shop gave a damaged piece back and got a good one, so the good piece
     // leaves the stock as damage (no sale line) and the damaged quantity of the day includes it.
-    const withShortage = lines.filter((l) => l.damaged > 0 || l.loss > 0 || l.free > 0);
-    for (const l of withShortage) {
+    const withShortage = lines.filter((l) => l.damaged > 0 || l.loss > 0 || l.free > 0 || l.charged > 0);
+    // Stock: pieces charged to the salesperson are sold (they leave the stock); extra stock in hand comes back.
+    const stockDelta = [];
+    for (const l of lines.filter((x) => x.damaged > 0 || x.loss > 0 || x.free > 0 || x.charged > 0 || x.excess > 0)) {
+      const delta = l.excess - l.charged;
       await connection.query(
-        "UPDATE stock SET Damage_Qty = Damage_Qty + ?, Loss_Qty = Loss_Qty + ? WHERE product_id = ? AND isActive = 1",
-        [l.damaged + (l.free || 0), l.loss, l.product_id]
+        "UPDATE stock SET quantity = quantity + ?, Damage_Qty = Damage_Qty + ?, Loss_Qty = Loss_Qty + ? WHERE product_id = ? AND isActive = 1",
+        [delta, l.damaged + (l.free || 0), l.loss, l.product_id]
       );
+      if (delta !== 0) stockDelta.push({ product_id: l.product_id, delta });
     }
     let dsTracking = null;
     if (withShortage.length) {
-      // A zero-value record keeps the stock audit in step: the damage and loss rows sit under it.
+      // The day's own record: damage and loss rows sit under it. Pieces charged to the salesperson are an extra sale on it,
+      // unpaid, so they show in his credit until he pays.
       const tracking = trackingId();
       dsTracking = tracking;
       await connection.query(
         `INSERT INTO final_sale (sale_tracking_Id, invoiceNumber, TotalAmount, UserId, DateofTransaction, addedDate,
                                  isSettled, AmountPaid, isGstBilling, created, addedBy, isActive)
-         VALUES (?, ?, 0, ?, ?, ?, 1, 0, 0, ?, ?, 1)`,
-        [tracking, `DS-${settlementId}`, staffId, date, getISTDate(), now, adminId]
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 1)`,
+        [tracking, `DS-${settlementId}`, extraCharge, staffId, date, getISTDate(), extraCharge > 0 ? 0 : 1, now, adminId]
       );
       for (const l of withShortage) {
         const [price] = await connection.query(
@@ -546,9 +570,20 @@ exports.settleDay = async (req, res) => {
         await connection.query(
           `INSERT INTO sales (sale_type, marketing_staff_id, product_id, price_id, quantity_sold, amount_received,
                               is_credit, sale_tracking_Id, sale_date, damaged_count, is_settled, loss_count, is_price_changed, isActive)
-           VALUES ('marketing', ?, ?, ?, 0, 0, 0, ?, ?, ?, 1, ?, 0, 1)`,
-          [staffId, l.product_id, price[0] ? price[0].price_id : null, tracking, date, l.damaged + (l.free || 0), l.loss]
+           VALUES ('marketing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
+          [staffId, l.product_id, price[0] ? price[0].price_id : null, l.charged, l.charged_amount, l.charged > 0 ? 1 : 0, tracking, date,
+           l.damaged + (l.free || 0), l.charged > 0 ? 0 : 1, l.loss]
         );
+        if (l.charged > 0) {
+          const [stockRows] = await connection.query("SELECT stock_id FROM stock WHERE product_id = ? AND isActive = 1", [l.product_id]);
+          if (stockRows[0]) {
+            await connection.query(
+              `INSERT INTO stock_History (stock_Id, Qty, stock_type, AddedDate, AddedBy, CreditOrDebit, ReferenceInvoiceOrSale)
+               VALUES (?, ?, 'sale', ?, ?, 'debit', ?)`,
+              [stockRows[0].stock_id, -l.charged, getISTDate(), adminId || 0, tracking]
+            );
+          }
+        }
       }
     }
 
@@ -572,12 +607,14 @@ exports.settleDay = async (req, res) => {
     const details = {
       settlement_id: settlementId, invoice_no: dayInvoiceNo, staff_id: staffId, staff_name: staff ? staff.name : "", date,
       settled_at: now, settled_by: admin ? admin.name : "Admin", notes: req.body.notes || "",
-      totals: day.totals, handover,
+      totals: { ...day.totals, extra_sale: extraCharge, less_sale: reduction },
+      handover: { ...handover, extra_charge: extraCharge, reduction },
       vehicle: { name: vehicle.vehicle_name, reg_no: vehicle.vehicle_reg, start_km: vehicle.start_km, end_km: vehicle.end_km, km_run: vehicle.km_run, trays_taken: vehicle.trays_taken, trays_returned: vehicle.trays_returned },
       fuel_bills: openFuel.map((f) => ({ bill_no: f.bill_no, amount: f.amount })),
       items: lines.map((l) => ({
         product_id: l.product_id, product_name: l.product_name, allocated: l.allocated, sold: l.sold, free: l.free || 0,
         balance: l.balance, damaged: l.damaged, loss: l.loss, amount: l.amount, price: l.avg_price,
+        charged_qty: l.charged, charged_amount: l.charged_amount, excess_qty: l.excess, excess_amount: l.excess_amount, adj_price: l.adj_price,
         over_sold: l.over_sold, not_allocated: l.not_allocated,
         reported_damage: reported[l.product_id] || 0,
       })),
@@ -588,6 +625,7 @@ exports.settleDay = async (req, res) => {
       // Everything Undo needs to put the day back exactly as it was.
       undo: {
         ds_tracking: dsTracking,
+        stock_delta: stockDelta,
         settle_requested_at: req0.settle_requested_at,
         voucher_ids: voucherIds,
         alloc_before: lines.flatMap((l) => l.alloc_rows.map((a) => ({ daily_stock_id: a.daily_stock_id, allocated_quantity: a.allocated_quantity }))),
@@ -798,6 +836,11 @@ exports.undoDay = async (req, res) => {
     if (d.undo.ds_tracking) {
       await connection.query("UPDATE sales SET isActive = 0 WHERE sale_tracking_Id = ?", [d.undo.ds_tracking]);
       await connection.query("UPDATE final_sale SET isActive = 0 WHERE sale_tracking_Id = ?", [d.undo.ds_tracking]);
+      await connection.query("DELETE FROM stock_History WHERE ReferenceInvoiceOrSale = ?", [d.undo.ds_tracking]);
+    }
+    // Pieces charged to the salesperson go back into stock; extra stock taken back in is taken out again.
+    for (const m of d.undo.stock_delta || []) {
+      await connection.query("UPDATE stock SET quantity = quantity - ? WHERE product_id = ? AND isActive = 1", [m.delta, m.product_id]);
     }
 
     // 3. The allocation is open again with its original quantities.
