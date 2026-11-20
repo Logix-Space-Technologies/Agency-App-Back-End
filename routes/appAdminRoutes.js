@@ -44,6 +44,7 @@ router.post("/self-allocations/reject", e.rejectSelfAllocation);
 router.post("/settlement/overview", d.overview);
 router.post("/settlement/preview", d.previewDay);
 router.post("/settlement/settle", d.settleDay);
+router.post("/settlement/allocate", d.topUpAllocation);
 router.post("/settlement/list", d.listSettlements);
 router.post("/settlement/detail", d.settlementDetail);
 router.post("/settlement/undo", d.undoDay);
