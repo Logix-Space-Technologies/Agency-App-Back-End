@@ -376,7 +376,7 @@ exports.topUpAllocation = async (req, res) => {
     await coverWaitingRequests(connection, staffId, date, added.map((a) => ({ product_id: a.product_id, quantity: a.quantity })));
     await connection.commit();
     await logUserActivity({
-      req, user_id: adminId, action: `Allocation topped up for staff ${staffId} on ${date}: ${added.map((a) => `${a.product_name} +${a.quantity}`).join(", ")}`,
+      req, user_id: adminId, action: `Allocation topped up for staff ${staffId} on ${date}: ${added.map((a) => `${a.product_name} +${a.quantity}`).join(", ")}`.slice(0, 250),
       reference_type: "daily_stock_allocation_batch", reference_id: `${staffId}|${date}`,
     });
     res.json({ message: `Allocation added: ${added.map((a) => `${a.product_name} +${a.quantity}`).join(", ")}`, added, warnings });
