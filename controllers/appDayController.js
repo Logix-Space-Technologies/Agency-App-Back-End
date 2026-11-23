@@ -622,12 +622,33 @@ exports.verifySelfAllocation = async (req, res) => {
     const short = [];
     const tooLow = [];
     const deltas = [];
+    const alreadyAllocated = [];
     for (const productId of new Set([...prev.keys(), ...next.keys()])) {
-      const delta = (next.get(productId) || 0) - (prev.get(productId) || 0);
+      let delta = (next.get(productId) || 0) - (prev.get(productId) || 0);
       if (delta === 0) continue;
       if (!names.has(productId)) {
         const [[p]] = await connection.query("SELECT product_name FROM products WHERE product_id = ?", [productId]);
         names.set(productId, p ? p.product_name : `Product ${productId}`);
+      }
+      if (delta > 0) {
+        // Stock the office already allocated by hand for this day that no request accounts for: it is part of what is asked,
+        // so only the missing part is added (after the office has been told).
+        const [[open]] = await connection.query(
+          `SELECT COALESCE(SUM(allocated_quantity), 0) AS q FROM daily_stock_allocation
+           WHERE marketing_staff_id = ? AND product_id = ? AND date = ? AND converted_to_sales = 0 AND isActive = 1 AND allocated_quantity > 0`,
+          [request.staff_id, productId, request.d]
+        );
+        const [[approvedAll]] = await connection.query(
+          `SELECT COALESCE(SUM(it.approved_qty), 0) AS q FROM app_self_allocation_items it JOIN app_self_allocations r ON r.request_id = it.request_id
+           WHERE r.staff_id = ? AND r.alloc_date = ? AND it.product_id = ? AND it.approved_qty IS NOT NULL AND r.status IN ('verified', 'pending')`,
+          [request.staff_id, request.d, productId]
+        );
+        const covered = Math.max(0, Number(open.q) - Number(approvedAll.q));
+        if (covered > 0) {
+          alreadyAllocated.push({ product_id: productId, product_name: names.get(productId), quantity: covered });
+          if (req.body.confirm_existing === true) delta = Math.max(0, delta - covered);
+        }
+        if (delta === 0) continue;
       }
       if (delta > 0) {
         // product_id is a number from the database or was checked in cleanItems, so it is safe in the query text.
@@ -638,6 +659,20 @@ exports.verifySelfAllocation = async (req, res) => {
         if (r.allocated + delta < r.sold) tooLow.push(`${names.get(productId)} (already sold ${r.sold}, so at least ${r.sold} must stay)`);
       }
       deltas.push([productId, delta]);
+    }
+    // Ask before adding stock to a day that already has an allocation by hand, or that is already settled.
+    const [[settledDay]] = await connection.query(
+      "SELECT COUNT(*) AS n, DATE_FORMAT(MAX(settled_at), '%d-%m-%Y %H:%i') AS at FROM app_day_settlements WHERE staff_id = ? AND settle_date = ? AND invoice_count > 0",
+      [request.staff_id, request.d]
+    );
+    const addsStock = deltas.some(([, d]) => d > 0) || alreadyAllocated.length > 0;
+    if (req.body.confirm_existing !== true && addsStock && (alreadyAllocated.length > 0 || settledDay.n > 0)) {
+      await connection.rollback();
+      return res.status(409).json({
+        code: "ALLOCATION_EXISTS",
+        error: "Stock is already allocated for this salesperson and day.",
+        existing: alreadyAllocated, settled: settledDay.n > 0, settled_at: settledDay.at || null,
+      });
     }
     if (short.length) throw fail(400, `Not enough stock in the store: ${short.join("; ")}. Lower the quantity or remove the product.`);
     if (tooLow.length) throw fail(400, `The salesperson has already sold more than this: ${tooLow.join("; ")}. Raise the quantity.`);
