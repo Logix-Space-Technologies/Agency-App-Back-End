@@ -6,6 +6,7 @@ const { dayInfo } = require("./appDayController");
 const { OUTSTANDING_SQL, COLLECTED_JOIN } = require("../utils/appDues");
 const { deletedByAdmin } = require("../utils/appInvoiceStatus");
 const { CURRENT_STOCK_SQL } = require("../utils/appStock");
+const { coverWaitingRequests } = require("../utils/appCover");
 
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
 const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -372,6 +373,7 @@ exports.topUpAllocation = async (req, res) => {
       );
       added.push({ product_id: p.product_id, product_name: p.product_name, quantity: p.to_add });
     }
+    await coverWaitingRequests(connection, staffId, date, added.map((a) => ({ product_id: a.product_id, quantity: a.quantity })));
     await connection.commit();
     await logUserActivity({
       req, user_id: adminId, action: `Allocation topped up for staff ${staffId} on ${date}: ${added.map((a) => `${a.product_name} +${a.quantity}`).join(", ")}`,
