@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { getISTTimestamp, isTooOld, MAX_BACKDATE_DAYS } = require('../utils/dateUtils');
 const { logUserActivity } = require("../utils/logUserActivity");
+const { coverWaitingRequests } = require("../utils/appCover");
 
 // Every never-converted daily_stock_allocation row for one product - the
 // exact thing that gets summed into "Outstanding Staff Allocation" on the
@@ -316,6 +317,8 @@ exports.addDailyStockAllocation = async (req, res) => {
         );
       }
 
+      await coverWaitingRequests(connection, marketing_staff_id, saleDate,
+        allocations.filter((a) => !skipped.includes(a.product_id)).map((a) => ({ product_id: a.product_id, quantity: a.allocated_quantity })));
       await connection.commit();
       connection.release();
       connection = null;
