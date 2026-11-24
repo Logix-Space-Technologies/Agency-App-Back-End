@@ -732,7 +732,7 @@ const appDayCreditRows = async (staffId, startDate, endDate) => {
       id: d.settlement_id, sale_type: "app_day", name: d.staff_name, sale_tracking_Id: null,
       invoiceNumber: det.invoice_no || null,
       TotalAmount: total, UserId: d.staff_id, DateofTransaction: d.settle_date, isSettled: 0,
-      AmountPaid: r2(finalAmount - credit),
+      AmountPaid: r2(finalAmount - credit - waivedOff), waived_off: r2(waivedOff),
       FuelExpenses: Number(ex.fuel || 0), VehcileServiceExpenses: Number(ex.vehicle_service || 0), OtherExpenses: Number(ex.other || 0),
       finalAmount, credit,
       // The parts of the credit: what the salesperson handed over short, and what the day's shops have not paid.
@@ -1049,15 +1049,35 @@ GROUP BY
 
  // Mobile-app days: what the salesman still has to hand over after each settlement (short), less what he paid later.
     const appRows = await appDayCreditRows(marketing_staff_id, startDate, endDate);
+    // Waive-offs are not payments: the bill's paid figure leaves them out and shows them on their own.
+    const trackings = rows.map((r) => r.sale_tracking_Id).filter(Boolean);
+    const waivedBy = {};
+    if (trackings.length) {
+      try {
+        const [wr] = await pool.query(
+          "SELECT tracking, SUM(amount) AS amt FROM app_waive_offs WHERE kind IN ('marketing_credit','stock_charged') AND reversed = 0 AND tracking IN (?) GROUP BY tracking",
+          [trackings]
+        );
+        for (const w of wr) waivedBy[w.tracking] = Number(w.amt);
+      } catch (e) { /* no waive-offs yet */ }
+    }
+    for (const r of rows) {
+      const w = waivedBy[r.sale_tracking_Id] || 0;
+      r.waived_off = w;
+      if (w) r.AmountPaid = Number(r.AmountPaid) - w;
+    }
     const all = [...rows, ...appRows].sort((x, y) => new Date(y.DateofTransaction) - new Date(x.DateofTransaction));
     const pageRows = all.slice(offset, offset + Number(limit));
     const info = creditInfo[0]
       ? { ...creditInfo[0] }
       : { UserId: marketing_staff_id, TotalAmount: 0, TotalPaid: 0, Credit: 0 };
+    info.TotalWaived = rows.reduce((t, r) => t + (r.waived_off || 0), 0);
+    info.TotalPaid = Number(info.TotalPaid || 0) - info.TotalWaived;
     for (const r of appRows) {
       info.TotalAmount = Number(info.TotalAmount || 0) + r.TotalAmount;
       info.TotalPaid = Number(info.TotalPaid || 0) + r.AmountPaid;
       info.Credit = Number(info.Credit || 0) + r.credit;
+      info.TotalWaived += r.waived_off || 0;
     }
     const creditInfoAll = creditInfo[0] || appRows.length ? [info] : [];
     const totalRecordsAll = totalRecords + appRows.length;
