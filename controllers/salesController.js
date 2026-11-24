@@ -689,6 +689,7 @@ exports.fetchCreditCustomers = async (req, res) => {
 // so later collections count) plus any shortage in what he handed over, less what he paid afterwards from View Credit.
 // Payments are kept in the settlement record.
 const appDayCreditRows = async (staffId, startDate, endDate) => {
+  const waivedDay = await require("../utils/appWaive").waivedShortByDay(pool);
   const conds = ["d.invoice_count > 0"];
   const params = [];
   if (staffId) { conds.push("d.staff_id = ?"); params.push(staffId); } // no salesperson: every one of them
@@ -721,7 +722,8 @@ const appDayCreditRows = async (staffId, startDate, endDate) => {
     const shopUnpaid = (det.invoices || []).reduce((t, i) => t + (unpaid[i.tracking_id] || 0), 0);
     const shortage = Number(h.net_payable) - Number(h.received.total);
     const later = (det.credit_payments || []).reduce((t, p) => t + Number(p.total || 0), 0);
-    const credit = r2(shopUnpaid + shortage - later);
+    const waivedOff = waivedDay[d.settlement_id] || 0;
+    const credit = r2(shopUnpaid + shortage - later - waivedOff);
     if (Math.abs(credit) < 0.01) continue;
     const ex = h.expenses || {};
     const total = Number(det.totals.total);
@@ -734,7 +736,7 @@ const appDayCreditRows = async (staffId, startDate, endDate) => {
       FuelExpenses: Number(ex.fuel || 0), VehcileServiceExpenses: Number(ex.vehicle_service || 0), OtherExpenses: Number(ex.other || 0),
       finalAmount, credit,
       // The parts of the credit: what the salesperson handed over short, and what the day's shops have not paid.
-      shortage: r2(shortage - later), shopUnpaid: r2(shopUnpaid),
+      shortage: r2(shortage - later - waivedOff), shopUnpaid: r2(shopUnpaid), waived_off: r2(waivedOff),
     });
   }
   return out;
@@ -773,9 +775,10 @@ const appDayCreditAll = async () => {
       for (const f of fs) unpaid[f.sale_tracking_Id] = Math.max(0, Number(f.TotalAmount) - Number(f.AmountPaid));
     }
     const out = [];
+    const waivedDay = await require("../utils/appWaive").waivedShortByDay(pool);
     for (const x of parsed) {
       const shopUnpaid = (Array.isArray(x.tracking) ? x.tracking : []).reduce((t, id) => t + (unpaid[id] || 0), 0);
-      const later = (Array.isArray(x.later) ? x.later : []).reduce((t, v) => t + (Number(v) || 0), 0);
+      const later = (Array.isArray(x.later) ? x.later : []).reduce((t, v) => t + (Number(v) || 0), 0) + (waivedDay[x.d.settlement_id] || 0);
       const credit = r2(shopUnpaid + (Number(x.net) - Number(x.got)) - later);
       if (Math.abs(credit) < 0.01) continue;
       out.push({ staff_id: x.d.staff_id, name: x.d.staff_name, date: x.d.settle_date, credit, app: true, shortage: r2(Number(x.net) - Number(x.got) - later), shopUnpaid: r2(shopUnpaid) });
@@ -876,13 +879,14 @@ const appDayShortageRows = async (fromDate, toDate) => {
   );
   const r2 = (n) => Math.round(n * 100) / 100;
   const out = [];
+  const waivedDay = await require("../utils/appWaive").waivedShortByDay(pool);
   for (const d of days) {
     let det = null;
     try { det = typeof d.details === "string" ? JSON.parse(d.details) : d.details; } catch (e) { det = null; }
     if (!det || det.undone || !det.handover || !det.handover.received) continue;
     const shouldPay = Number(det.handover.net_payable) || 0;
     const received = Number(det.handover.received.total) || 0;
-    const later = (det.credit_payments || []).reduce((t, p) => t + Number(p.total || 0), 0);
+    const later = (det.credit_payments || []).reduce((t, p) => t + Number(p.total || 0), 0) + (waivedDay[d.settlement_id] || 0);
     const credit = r2(shouldPay - received - later);
     if (credit < 0.01) continue;
     out.push({
