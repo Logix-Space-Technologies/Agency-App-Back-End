@@ -12,6 +12,7 @@ const { latestForInvoice } = require("./appCorrectionController");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 
 // A sold price this far from the current marketing price is flagged for the admin.
+const LATEST_APP = require("../config/appVersion");
 const PRICE_ALERT_PCT = Number(process.env.APP_PRICE_ALERT_PCT) || 10;
 
 const APP_ROLES = ["marketing_staff", "staff"];
@@ -60,7 +61,7 @@ exports.login = async (req, res) => {
 
 exports.me = async (req, res) => {
   const { user_id, name, phone, email, role } = req.staff;
-  const body = { user: { id: user_id, name, phone, email }, priceAlertPct: PRICE_ALERT_PCT };
+  const body = { user: { id: user_id, name, phone, email }, priceAlertPct: PRICE_ALERT_PCT, latestApp: LATEST_APP };
   const ageDays = (Date.now() / 1000 - (req.tokenIssuedAt || 0)) / 86400;
   if (ageDays > RENEW_AFTER_DAYS) body.token = signToken({ user_id, role });
   res.json(body);
