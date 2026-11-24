@@ -30,11 +30,20 @@ const CREATE_SQL = `CREATE TABLE IF NOT EXISTS app_waive_offs (
   KEY idx_waive_batch (batch_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
 
+// The sidebar link, placed in the same menu group as View Credit (Reports). Added once, never twice.
+const MENU_SQL = `INSERT INTO menu_items (name, href, menu_id, parent_id, access_roles, isActive, sort_order)
+SELECT 'Credits & Waive-off', '/app-credits', p.menu_id, p.id, 'admin', 1, 99
+FROM menu_items c JOIN menu_items p ON p.id = c.parent_id
+WHERE c.href = '/view-credit'
+  AND NOT EXISTS (SELECT 1 FROM menu_items x WHERE x.href = '/app-credits')
+LIMIT 1`;
+
 // Started as soon as this file is loaded, so the table is there before the first dues query runs.
 let ready = null;
 const ensureWaiveTable = () => {
   if (!ready) ready = pool.query(CREATE_SQL)
     .then(() => pool.query("ALTER TABLE app_waive_offs ADD COLUMN tracking VARCHAR(40) DEFAULT NULL").catch((e) => { if (e.code !== "ER_DUP_FIELDNAME") throw e; }))
+    .then(() => pool.query(MENU_SQL).catch((e) => console.error("waive-off menu link:", e.message)))
     .catch((e) => { ready = null; console.error("app_waive_offs table:", e.message); throw e; });
   return ready;
 };
