@@ -9,7 +9,7 @@ const text = (v, max) => (v === undefined || v === null ? null : String(v).trim(
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const batchId = () => `W${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`.toUpperCase();
 
-const KIND_LABEL = { shop_dues: "Shop credit", cash_short: "Cash short at settlement", stock_charged: "Stock charged" };
+const KIND_LABEL = { shop_dues: "Shop credit", cash_short: "Cash short at settlement", stock_charged: "Stock charged", marketing_credit: "Marketing bill credit", pending: "Total credit pending to office" };
 
 // ---------------------------------------------------------------- what a salesperson owes
 
@@ -39,6 +39,35 @@ const shopCredit = async (db, staffId) => {
   return { total: money(shops.reduce((t, s) => t + s.owed, 0)), shops, open };
 };
 
+// Unpaid part of a marketing salesperson's settlement bills (sale less expenses, minus what was paid). The day-settlement
+// stock charge (DS-) is listed on its own as "stock charged", so it is left out here.
+const marketingCredit = async (db, staffId) => {
+  const payable = "(fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0)))";
+  const params = [];
+  let who = "";
+  if (staffId) { who = "AND fs.UserId = ?"; params.push(staffId); }
+  const [rows] = await db.query(
+    `SELECT fs.sale_tracking_Id AS tracking, fs.invoiceNumber, fs.UserId AS staff_id, DATE_FORMAT(fs.DateofTransaction, '%Y-%m-%d') AS date,
+            ${payable} AS payable, fs.AmountPaid
+     FROM final_sale fs
+     JOIN (SELECT sale_tracking_Id, MIN(sale_type) AS sale_type FROM sales GROUP BY sale_tracking_Id) s
+       ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type = 'marketing'
+     WHERE fs.isActive = 1 AND fs.invoiceNumber NOT LIKE 'DS-%' ${who} AND ${payable} - fs.AmountPaid > 0.004`,
+    params
+  );
+  if (!rows.length) return [];
+  const [w] = await db.query(
+    "SELECT tracking, SUM(amount) AS amt FROM app_waive_offs WHERE kind = 'marketing_credit' AND reversed = 0 AND tracking IN (?) GROUP BY tracking",
+    [rows.map((r) => r.tracking)]
+  );
+  const waived = {};
+  for (const r of w) waived[r.tracking] = money(r.amt);
+  return rows.map((r) => ({
+    kind: "marketing_credit", settlement_id: null, staff_id: r.staff_id, date: r.date, amount: money(r.payable), tracking: r.tracking,
+    invoice_no: r.invoiceNumber, waived: waived[r.tracking] || 0, owed: money(Number(r.payable) - Number(r.AmountPaid)), label: KIND_LABEL.marketing_credit,
+  }));
+};
+
 // What day settlements left unpaid by the salesperson: cash not handed over, and stock charged to him.
 // Read from the saved settlement (undone days do not count), less what the office waived or was paid since.
 const shortages = async (db, staffId) => {
@@ -57,36 +86,39 @@ const shortages = async (db, staffId) => {
     if (!det || det.undone || !det.handover) continue;
     const h = det.handover;
     const short = money(-Number(h.difference || 0));
-    if (short > 0.004) found.push({ kind: "cash_short", settlement_id: row.settlement_id, staff_id: row.staff_id, date: row.settle_date, amount: short, tracking: null });
+    // Money the office already took from the salesperson against this shortage in View Credit (Pay Now).
+    const paidLater = money((det.credit_payments || []).reduce((t, p) => t + Number(p.total || 0), 0));
+    if (short > 0.004) found.push({ kind: "cash_short", settlement_id: row.settlement_id, staff_id: row.staff_id, date: row.settle_date, amount: short, paid_later: paidLater, tracking: null });
     const extra = money(h.extra_charge);
     const tracking = det.undo && det.undo.ds_tracking;
     if (extra > 0.004 && tracking) found.push({ kind: "stock_charged", settlement_id: row.settlement_id, staff_id: row.staff_id, date: row.settle_date, amount: extra, tracking });
   }
-  if (!found.length) return [];
-
   const ids = [...new Set(found.map((f) => f.settlement_id))];
   const waived = {};
-  const [w] = await db.query(
-    "SELECT settlement_id, kind, SUM(amount) AS amt FROM app_waive_offs WHERE kind IN ('cash_short','stock_charged') AND reversed = 0 AND settlement_id IN (?) GROUP BY settlement_id, kind",
-    [ids]
-  );
-  for (const r of w) waived[`${r.kind}:${r.settlement_id}`] = money(r.amt);
+  if (ids.length) {
+    const [w] = await db.query(
+      "SELECT settlement_id, kind, SUM(amount) AS amt FROM app_waive_offs WHERE kind IN ('cash_short','stock_charged') AND reversed = 0 AND settlement_id IN (?) GROUP BY settlement_id, kind",
+      [ids]
+    );
+    for (const r of w) waived[`${r.kind}:${r.settlement_id}`] = money(r.amt);
+  }
   const trackings = found.filter((f) => f.tracking).map((f) => f.tracking);
   const sales = {};
   if (trackings.length) {
     const [fs] = await db.query("SELECT sale_tracking_Id, TotalAmount, AmountPaid, isActive FROM final_sale WHERE sale_tracking_Id IN (?)", [trackings]);
     for (const f of fs) sales[String(f.sale_tracking_Id)] = f;
   }
-  return found.map((f) => {
+  const items = found.map((f) => {
     const waivedAmt = waived[`${f.kind}:${f.settlement_id}`] || 0;
     let owed;
-    if (f.kind === "cash_short") owed = Math.max(0, money(f.amount - waivedAmt));
+    if (f.kind === "cash_short") owed = Math.max(0, money(f.amount - waivedAmt - f.paid_later));
     else {
       const sale = sales[String(f.tracking)];
       owed = sale && Number(sale.isActive) === 1 ? Math.max(0, money(Number(sale.TotalAmount) - Number(sale.AmountPaid))) : 0;
     }
     return { ...f, waived: waivedAmt, owed, label: KIND_LABEL[f.kind] };
   });
+  return [...items, ...(await marketingCredit(db, staffId))];
 };
 
 const staffNames = async (db, ids) => {
@@ -109,7 +141,8 @@ const historyRows = async (db, { staffId = null, kind = null, from = null, to = 
   const [rows] = await db.query(
     `SELECT w.*, DATE_FORMAT(w.created_at, '%Y-%m-%d %H:%i:%s') AS created_text, DATE_FORMAT(w.reversed_at, '%Y-%m-%d %H:%i:%s') AS reversed_text,
             u.name AS staff_name, a.name AS admin_name, ra.name AS reversed_name, sh.shop_name, i.invoice_no,
-            DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date, DATE_FORMAT(s.settle_date, '%Y-%m-%d') AS settle_date
+            DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS invoice_date, DATE_FORMAT(s.settle_date, '%Y-%m-%d') AS settle_date,
+            f.invoiceNumber AS marketing_invoice, DATE_FORMAT(f.DateofTransaction, '%Y-%m-%d') AS marketing_date
      FROM app_waive_offs w
      LEFT JOIN users u ON u.user_id = w.staff_id
      LEFT JOIN users a ON a.user_id = w.created_by
@@ -117,6 +150,7 @@ const historyRows = async (db, { staffId = null, kind = null, from = null, to = 
      LEFT JOIN app_shops sh ON sh.shop_id = w.shop_id
      LEFT JOIN app_invoices i ON i.app_invoice_id = w.invoice_id
      LEFT JOIN app_day_settlements s ON s.settlement_id = w.settlement_id
+     LEFT JOIN final_sale f ON w.tracking IS NOT NULL AND f.sale_tracking_Id = w.tracking COLLATE utf8mb4_general_ci
      WHERE ${where.join(" AND ")} ORDER BY w.waive_id DESC LIMIT 2000`,
     params
   );
@@ -132,9 +166,10 @@ const historyRows = async (db, { staffId = null, kind = null, from = null, to = 
       batches.set(r.batch_id, b);
     }
     b.amount = money(b.amount + Number(r.amount));
+    if (r.kind !== b.kind && b.kind !== "pending") { b.kind = "pending"; b.label = KIND_LABEL.pending; }
     if (!r.reversed) b.reversed = false;
     b.lines.push({
-      invoice_no: r.invoice_no || null, invoice_date: r.invoice_date || null, settlement_id: r.settlement_id || null,
+      invoice_no: r.invoice_no || r.marketing_invoice || null, invoice_date: r.invoice_date || r.marketing_date || null, settlement_id: r.settlement_id || null,
       settle_date: r.settle_date || null, amount: money(r.amount),
     });
   }
@@ -155,7 +190,7 @@ exports.myCredits = async (req, res) => {
     }));
     res.json({
       total: shortTotal,
-      short: { total: shortTotal, items: items.map((s) => ({ kind: s.kind, label: s.label, settlement_id: s.settlement_id, date: s.date, amount: s.amount, waived: s.waived, owed: s.owed })) },
+      short: { total: shortTotal, items: items.map((s) => ({ kind: s.kind, label: s.label, settlement_id: s.settlement_id, invoice_no: s.invoice_no || null, date: s.date, amount: s.amount, waived: s.waived, owed: s.owed })) },
       waived: { total: money(waivedHistory.reduce((t, h) => t + h.amount, 0)), items: waivedHistory },
     });
   } catch (error) {
@@ -172,14 +207,14 @@ exports.overview = async (req, res) => {
     const [shop, short] = await Promise.all([shopCredit(pool, null), shortages(pool, null)]);
     const rows = new Map();
     const row = (id) => {
-      if (!rows.has(id)) rows.set(id, { staff_id: id, shop_credit: 0, cash_short: 0, stock_charged: 0 });
+      if (!rows.has(id)) rows.set(id, { staff_id: id, shop_credit: 0, cash_short: 0, stock_charged: 0, marketing_credit: 0 });
       return rows.get(id);
     };
     for (const r of shop.open) row(r.staff_id).shop_credit = money(row(r.staff_id).shop_credit + Number(r.owed));
     for (const s of short) if (s.owed > 0.004) row(s.staff_id)[s.kind] = money(row(s.staff_id)[s.kind] + s.owed);
     const names = await staffNames(pool, [...rows.keys()]);
     const staff = [...rows.values()]
-      .map((r) => ({ ...r, name: names[r.staff_id] || `Staff ${r.staff_id}`, pending: money(r.cash_short + r.stock_charged), total: money(r.shop_credit + r.cash_short + r.stock_charged) }))
+      .map((r) => ({ ...r, name: names[r.staff_id] || `Staff ${r.staff_id}`, pending: money(r.cash_short + r.stock_charged + r.marketing_credit), total: money(r.shop_credit + r.cash_short + r.stock_charged + r.marketing_credit) }))
       .filter((r) => r.total > 0.004)
       .sort((a, b) => b.total - a.total);
     const [[{ n }]] = await pool.query("SELECT COUNT(DISTINCT batch_id) AS n FROM app_waive_offs WHERE reversed = 0");
@@ -187,7 +222,7 @@ exports.overview = async (req, res) => {
       staff,
       totals: {
         shop_credit: money(staff.reduce((t, r) => t + r.shop_credit, 0)), cash_short: money(staff.reduce((t, r) => t + r.cash_short, 0)),
-        stock_charged: money(staff.reduce((t, r) => t + r.stock_charged, 0)), pending: money(staff.reduce((t, r) => t + r.pending, 0)), total: money(staff.reduce((t, r) => t + r.total, 0)),
+        stock_charged: money(staff.reduce((t, r) => t + r.stock_charged, 0)), marketing_credit: money(staff.reduce((t, r) => t + r.marketing_credit, 0)), pending: money(staff.reduce((t, r) => t + r.pending, 0)), total: money(staff.reduce((t, r) => t + r.total, 0)),
       },
       waive_offs: Number(n),
     });
@@ -292,6 +327,55 @@ exports.waive = async (req, res) => {
       total = amount;
       const [[sh]] = await connection.query("SELECT shop_name FROM app_shops WHERE shop_id = ?", [shopId]);
       summary = `Rs. ${amount} of shop credit at ${sh ? sh.shop_name : shopId}`;
+    } else if (kind === "marketing_credit") {
+      const tracking = String(req.body.tracking || "");
+      if (!tracking) throw fail(400, "Choose the bill");
+      const [[fs]] = await connection.query(
+        `SELECT UserId, invoiceNumber, (TotalAmount - (COALESCE(FuelExpenses, 0) + COALESCE(VehcileServiceExpenses, 0) + COALESCE(OtherExpenses, 0))) - AmountPaid AS owed
+         FROM final_sale WHERE sale_tracking_Id = ? AND isActive = 1 FOR UPDATE`,
+        [tracking]
+      );
+      if (!fs) throw fail(404, "Bill not found");
+      const owed = money(fs.owed);
+      if (owed <= 0.004) throw fail(400, "Nothing is left to waive off here");
+      const amount = wantAll ? owed : asked;
+      if (amount > owed + 0.005) throw fail(400, `Only Rs. ${owed.toFixed(2)} is left to waive off here`);
+      await connection.query(
+        `INSERT INTO app_waive_offs (batch_id, kind, staff_id, tracking, amount, reason, created_by, created_at)
+         VALUES (?, 'marketing_credit', ?, ?, ?, ?, ?, ?)`,
+        [batch, fs.UserId, tracking, amount, reason, adminId, now]
+      );
+      await markPaid(connection, tracking, amount);
+      staffId = fs.UserId;
+      total = amount;
+      summary = `Rs. ${amount} of marketing bill ${fs.invoiceNumber}`;
+    } else if (kind === "pending") {
+      // Waive off part or all of a salesperson's total credit pending to the office: oldest day first, cash short
+      // before stock charged. Credit left with shops is separate and not touched.
+      const sid = Number(req.body.staff_id);
+      if (!sid) throw fail(400, "Choose a salesperson");
+      await connection.query("SELECT settlement_id FROM app_day_settlements WHERE staff_id = ? FOR UPDATE", [sid]);
+      const items = (await shortages(connection, sid)).filter((x) => x.owed > 0.004)
+        .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) || (a.kind === "cash_short" ? -1 : 0));
+      const owed = money(items.reduce((t, x) => t + x.owed, 0));
+      if (owed <= 0.004) throw fail(400, "Nothing is pending to the office");
+      const amount = wantAll ? owed : asked;
+      if (amount > owed + 0.005) throw fail(400, `Only Rs. ${owed.toFixed(2)} is pending`);
+      let left = amount;
+      for (const it of items) {
+        if (left <= 0.004) break;
+        const take = money(Math.min(it.owed, left));
+        left = money(left - take);
+        await connection.query(
+          `INSERT INTO app_waive_offs (batch_id, kind, staff_id, settlement_id, tracking, amount, reason, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [batch, it.kind, sid, it.settlement_id, it.kind === "marketing_credit" ? it.tracking : null, take, reason, adminId, now]
+        );
+        if (it.kind === "stock_charged" || it.kind === "marketing_credit") await markPaid(connection, it.tracking, take);
+      }
+      staffId = sid;
+      total = amount;
+      summary = `Rs. ${amount} of the total credit pending to the office`;
     } else {
       const settlementId = Number(req.body.settlement_id);
       if (!settlementId) throw fail(400, "Choose the settlement");
@@ -348,6 +432,8 @@ exports.reverse = async (req, res) => {
       if (r.kind === "shop_dues") {
         const [[inv]] = await connection.query("SELECT status, final_sale_tracking_id FROM app_invoices WHERE app_invoice_id = ?", [r.invoice_id]);
         if (inv && inv.status === "settled" && inv.final_sale_tracking_id) await markUnpaid(connection, inv.final_sale_tracking_id, Number(r.amount));
+      } else if (r.kind === "marketing_credit") {
+        if (r.tracking) await markUnpaid(connection, r.tracking, Number(r.amount));
       } else if (r.kind === "stock_charged") {
         const [[s]] = await connection.query("SELECT details FROM app_day_settlements WHERE settlement_id = ?", [r.settlement_id]);
         let det = null;

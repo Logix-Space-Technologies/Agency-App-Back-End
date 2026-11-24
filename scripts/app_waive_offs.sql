@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS app_waive_offs (
   shop_id INT DEFAULT NULL,
   invoice_id INT DEFAULT NULL,
   settlement_id INT DEFAULT NULL,
+  tracking VARCHAR(40) DEFAULT NULL,
   amount DECIMAL(12,2) NOT NULL,
   reason VARCHAR(300) NOT NULL,
   created_by INT DEFAULT NULL,
@@ -21,3 +22,5 @@ CREATE TABLE IF NOT EXISTS app_waive_offs (
   KEY idx_waive_settlement (settlement_id, kind, reversed),
   KEY idx_waive_batch (batch_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- If the table was created before the tracking column existed (the server adds it by itself on start):
+-- ALTER TABLE app_waive_offs ADD COLUMN tracking VARCHAR(40) DEFAULT NULL;

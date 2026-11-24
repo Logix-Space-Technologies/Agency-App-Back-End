@@ -5,6 +5,7 @@ const pool = require("../config/db");
 //   kind 'shop_dues'    - credit left with a shop on a bill (invoice_id). Counts as paid in the dues sums.
 //   kind 'cash_short'   - money a salesperson did not hand over at a day settlement (settlement_id).
 //   kind 'stock_charged'- stock charged to a salesperson at a day settlement, unpaid (settlement_id).
+//   kind 'marketing_credit' - unpaid part of a marketing settlement bill (tracking).
 const CREATE_SQL = `CREATE TABLE IF NOT EXISTS app_waive_offs (
   waive_id INT NOT NULL AUTO_INCREMENT,
   batch_id VARCHAR(40) NOT NULL,
@@ -13,6 +14,7 @@ const CREATE_SQL = `CREATE TABLE IF NOT EXISTS app_waive_offs (
   shop_id INT DEFAULT NULL,
   invoice_id INT DEFAULT NULL,
   settlement_id INT DEFAULT NULL,
+  tracking VARCHAR(40) DEFAULT NULL,
   amount DECIMAL(12,2) NOT NULL,
   reason VARCHAR(300) NOT NULL,
   created_by INT DEFAULT NULL,
@@ -31,9 +33,21 @@ const CREATE_SQL = `CREATE TABLE IF NOT EXISTS app_waive_offs (
 // Started as soon as this file is loaded, so the table is there before the first dues query runs.
 let ready = null;
 const ensureWaiveTable = () => {
-  if (!ready) ready = pool.query(CREATE_SQL).catch((e) => { ready = null; console.error("app_waive_offs table:", e.message); throw e; });
+  if (!ready) ready = pool.query(CREATE_SQL)
+    .then(() => pool.query("ALTER TABLE app_waive_offs ADD COLUMN tracking VARCHAR(40) DEFAULT NULL").catch((e) => { if (e.code !== "ER_DUP_FIELDNAME") throw e; }))
+    .catch((e) => { ready = null; console.error("app_waive_offs table:", e.message); throw e; });
   return ready;
 };
 ensureWaiveTable().catch(() => {});
 
-module.exports = { ensureWaiveTable, CREATE_SQL };
+// Cash short already waived off, per settlement: { settlement_id: amount }. View Credit takes it off the day's credit.
+const waivedShortByDay = async (db) => {
+  try {
+    const [rows] = await db.query("SELECT settlement_id, SUM(amount) AS amt FROM app_waive_offs WHERE kind = 'cash_short' AND reversed = 0 GROUP BY settlement_id");
+    const m = {};
+    for (const r of rows) m[r.settlement_id] = Number(r.amt);
+    return m;
+  } catch (e) { return {}; }
+};
+
+module.exports = { ensureWaiveTable, CREATE_SQL, waivedShortByDay };
