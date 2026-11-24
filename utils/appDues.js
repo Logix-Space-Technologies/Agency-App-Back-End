@@ -1,12 +1,18 @@
 const { getISTTimestamp } = require("./dateUtils");
 const { deletedByAdmin } = require("./appInvoiceStatus");
+require("./appWaive"); // makes sure the waive-off table exists: the dues sums below read it
 
 const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 // SQL for "unpaid part of an invoice": what was left on credit minus what was collected later.
 const OUTSTANDING_SQL = `GREATEST(0, i.credit_amount - COALESCE(c.collected, 0))`;
+// "collected" here is money received plus credit the office waived off, so a waived bill carries no dues.
 const COLLECTED_JOIN = `LEFT JOIN (
-    SELECT invoice_id, SUM(amount) AS collected FROM app_payment_allocations GROUP BY invoice_id
+    SELECT invoice_id, SUM(amount) AS collected FROM (
+      SELECT invoice_id, amount FROM app_payment_allocations
+      UNION ALL
+      SELECT invoice_id, amount FROM app_waive_offs WHERE kind = 'shop_dues' AND reversed = 0
+    ) cx GROUP BY invoice_id
   ) c ON c.invoice_id = i.app_invoice_id`;
 
 // Unpaid invoices of one shop, oldest first. Rejected and office-deleted invoices carry no dues.
@@ -45,11 +51,12 @@ const duesByShop = async (db, shopIds) => {
 // The "deleted by the office" check looks into final_sale once per invoice, which is slow when run over
 // every invoice in the system. So first take only the few invoices that still owe money, then ask
 // final_sale about just those.
-const openCreditInvoices = async (db, { shopIds = null, routeId = null } = {}) => {
+const openCreditInvoices = async (db, { shopIds = null, routeId = null, staffId = null } = {}) => {
   const where = [];
   const params = [];
   if (shopIds) { if (!shopIds.length) return []; where.push("i.shop_id IN (?)"); params.push(shopIds); }
   if (routeId) { where.push("i.shop_id IN (SELECT shop_id FROM app_shops WHERE route_id = ?)"); params.push(routeId); }
+  if (staffId) { where.push("i.staff_id = ?"); params.push(staffId); }
   const [rows] = await db.query(
     `SELECT i.app_invoice_id, i.shop_id, i.staff_id, i.status, i.final_sale_tracking_id,
             DATE_FORMAT(i.invoice_date, '%Y-%m') AS ym, DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS ymd, ${OUTSTANDING_SQL} AS owed
@@ -72,8 +79,9 @@ const openCreditInvoices = async (db, { shopIds = null, routeId = null } = {}) =
 const postAllocation = async (db, allocation, trackingId) => {
   const amount = Number(allocation.amount);
   await db.query(
-    `UPDATE final_sale SET AmountPaid = AmountPaid + ?,
-            isSettled = IF(AmountPaid + ? >= TotalAmount - 0.005, 1, isSettled)
+    // isSettled first: MySQL reads the assignments left to right, so it must see AmountPaid before this payment.
+    `UPDATE final_sale SET isSettled = IF(AmountPaid + ? >= TotalAmount - 0.005, 1, isSettled),
+            AmountPaid = AmountPaid + ?
      WHERE sale_tracking_Id = ? AND isActive = 1`,
     [amount, amount, trackingId]
   );

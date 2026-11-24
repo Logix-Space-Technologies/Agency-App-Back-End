@@ -118,6 +118,20 @@ const postInvoiceTx = async (connection, invoiceId, adminId, { checkAllocation =
     [invoiceId]
   );
   for (const a of waiting) await postAllocation(connection, a, tracking);
+  // Credit the office waived off before this bill was settled counts as paid in the books from the start.
+  try {
+    const [[{ waivedOff }]] = await connection.query(
+      "SELECT COALESCE(SUM(amount), 0) AS waivedOff FROM app_waive_offs WHERE invoice_id = ? AND kind = 'shop_dues' AND reversed = 0",
+      [invoiceId]
+    );
+    if (Number(waivedOff) > 0) {
+      await connection.query(
+        `UPDATE final_sale SET isSettled = IF(AmountPaid + ? >= TotalAmount - 0.005, 1, isSettled), AmountPaid = AmountPaid + ?
+         WHERE sale_tracking_Id = ? AND isActive = 1`,
+        [Number(waivedOff), Number(waivedOff), tracking]
+      );
+    }
+  } catch (e) { if (e.code !== "ER_NO_SUCH_TABLE") throw e; }
 
   return { inv, invoiceNumber, tracking };
 };

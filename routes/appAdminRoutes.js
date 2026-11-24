@@ -4,6 +4,7 @@ const c = require("../controllers/appAdminController");
 const d = require("../controllers/appSettlementController");
 const e = require("../controllers/appDayController");
 const corr = require("../controllers/appCorrectionController");
+const waive = require("../controllers/appWaiveController");
 
 router.post("/routes", c.listRoutes);
 router.post("/routes/save", c.saveRoute);
@@ -15,6 +16,11 @@ router.post("/staff/routes", c.setStaffRoutes);
 router.post("/shops", c.listShops);
 router.post("/shops/dues-report", c.duesReport);
 router.post("/shops/not-visited", c.notVisitedShops);
+router.post("/credits/overview", waive.overview);
+router.post("/credits/staff", waive.staffCredits);
+router.post("/credits/waive", waive.waive);
+router.post("/credits/reverse", waive.reverse);
+router.post("/credits/history", waive.history);
 router.post("/shops/save", c.saveShop);
 router.post("/shops/delete", c.deleteShop);
 
