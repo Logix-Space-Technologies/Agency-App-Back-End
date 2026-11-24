@@ -4,6 +4,7 @@ const { requireStaff } = require("../middleware/appAuth");
 const c = require("../controllers/appMobileController");
 const day = require("../controllers/appDayController");
 const corr = require("../controllers/appCorrectionController");
+const waive = require("../controllers/appWaiveController");
 
 router.post("/login", c.login);
 
@@ -18,6 +19,7 @@ router.get("/shops/:id/history", c.getShopHistory);
 router.get("/shops/:id/dues", c.getShopDues);
 router.post("/shops/:id/collect", c.collectShopDues);
 router.get("/dues", c.getDues);
+router.get("/credits", waive.myCredits);
 router.get("/products", c.getProducts);
 router.post("/invoices/check-duplicate", c.checkDuplicate);
 router.post("/invoices", c.createInvoice);
