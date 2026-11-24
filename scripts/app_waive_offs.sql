@@ -25,10 +25,11 @@ CREATE TABLE IF NOT EXISTS app_waive_offs (
 -- If the table was created before the tracking column existed (the server adds it by itself on start):
 -- ALTER TABLE app_waive_offs ADD COLUMN tracking VARCHAR(40) DEFAULT NULL;
 
--- Sidebar link: Credits & Waive-off, in the same group as View Credit (Reports). Safe to run again.
+-- Sidebar link: Credits & Waive-off, in the Reports group with the same roles as View Credit.
+-- The server also does this by itself on start. Safe to run again.
 INSERT INTO menu_items (name, href, menu_id, parent_id, access_roles, isActive, sort_order)
-SELECT 'Credits & Waive-off', '/app-credits', p.menu_id, p.id, 'admin', 1, 99
-FROM menu_items c JOIN menu_items p ON p.id = c.parent_id
-WHERE c.href = '/view-credit'
+SELECT 'Credits & Waive-off', '/app-credits', p.menu_id, p.id, v.access_roles, 1, 99
+FROM menu_items p JOIN menu_items v ON v.href = '/view-credit'
+WHERE p.parent_id IS NULL AND LOWER(TRIM(p.name)) = 'reports'
   AND NOT EXISTS (SELECT 1 FROM menu_items x WHERE x.href = '/app-credits')
 LIMIT 1;

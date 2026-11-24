@@ -30,20 +30,33 @@ const CREATE_SQL = `CREATE TABLE IF NOT EXISTS app_waive_offs (
   KEY idx_waive_batch (batch_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
 
-// The sidebar link, placed in the same menu group as View Credit (Reports). Added once, never twice.
-const MENU_SQL = `INSERT INTO menu_items (name, href, menu_id, parent_id, access_roles, isActive, sort_order)
-SELECT 'Credits & Waive-off', '/app-credits', p.menu_id, p.id, 'admin', 1, 99
-FROM menu_items c JOIN menu_items p ON p.id = c.parent_id
-WHERE c.href = '/view-credit'
-  AND NOT EXISTS (SELECT 1 FROM menu_items x WHERE x.href = '/app-credits')
-LIMIT 1`;
+// The sidebar link "Credits & Waive-off" goes in the Reports group, with the same roles as View Credit.
+// Added once; a link made by an earlier version in the wrong group or with admin-only roles is corrected.
+const ensureMenuLink = async () => {
+  const [viewRows] = await pool.query("SELECT parent_id, access_roles FROM menu_items WHERE href = '/view-credit' AND isActive = 1 LIMIT 1");
+  const view = viewRows[0];
+  const [reports] = await pool.query("SELECT id, menu_id FROM menu_items WHERE parent_id IS NULL AND isActive = 1 AND LOWER(TRIM(name)) = 'reports' LIMIT 1");
+  const parentId = reports.length ? reports[0].id : view ? view.parent_id : null;
+  if (!parentId) return;
+  const [[parent]] = await pool.query("SELECT menu_id FROM menu_items WHERE id = ?", [parentId]);
+  const roles = view && view.access_roles ? view.access_roles : "admin";
+  const [have] = await pool.query("SELECT id, parent_id, access_roles FROM menu_items WHERE href = '/app-credits' LIMIT 1");
+  if (!have.length) {
+    await pool.query(
+      "INSERT INTO menu_items (name, href, menu_id, parent_id, access_roles, isActive, sort_order) VALUES ('Credits & Waive-off', '/app-credits', ?, ?, ?, 1, 99)",
+      [parent.menu_id, parentId, roles]
+    );
+  } else if (have[0].parent_id !== parentId || have[0].access_roles === "admin" && roles !== "admin") {
+    await pool.query("UPDATE menu_items SET parent_id = ?, menu_id = ?, access_roles = ?, isActive = 1 WHERE id = ?", [parentId, parent.menu_id, roles, have[0].id]);
+  }
+};
 
 // Started as soon as this file is loaded, so the table is there before the first dues query runs.
 let ready = null;
 const ensureWaiveTable = () => {
   if (!ready) ready = pool.query(CREATE_SQL)
     .then(() => pool.query("ALTER TABLE app_waive_offs ADD COLUMN tracking VARCHAR(40) DEFAULT NULL").catch((e) => { if (e.code !== "ER_DUP_FIELDNAME") throw e; }))
-    .then(() => pool.query(MENU_SQL).catch((e) => console.error("waive-off menu link:", e.message)))
+    .then(() => ensureMenuLink().catch((e) => console.error("waive-off menu link:", e.message)))
     .catch((e) => { ready = null; console.error("app_waive_offs table:", e.message); throw e; });
   return ready;
 };
