@@ -369,7 +369,7 @@ exports.waive = async (req, res) => {
         await connection.query(
           `INSERT INTO app_waive_offs (batch_id, kind, staff_id, settlement_id, tracking, amount, reason, created_by, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [batch, it.kind, sid, it.settlement_id, it.kind === "marketing_credit" ? it.tracking : null, take, reason, adminId, now]
+          [batch, it.kind, sid, it.settlement_id, it.tracking || null, take, reason, adminId, now]
         );
         if (it.kind === "stock_charged" || it.kind === "marketing_credit") await markPaid(connection, it.tracking, take);
       }
@@ -387,9 +387,9 @@ exports.waive = async (req, res) => {
       const amount = wantAll ? item.owed : asked;
       if (amount > item.owed + 0.005) throw fail(400, `Only Rs. ${item.owed.toFixed(2)} is left to waive off here`);
       await connection.query(
-        `INSERT INTO app_waive_offs (batch_id, kind, staff_id, settlement_id, amount, reason, created_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [batch, kind, row.staff_id, settlementId, amount, reason, adminId, now]
+        `INSERT INTO app_waive_offs (batch_id, kind, staff_id, settlement_id, tracking, amount, reason, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [batch, kind, row.staff_id, settlementId, kind === "stock_charged" ? item.tracking : null, amount, reason, adminId, now]
       );
       if (kind === "stock_charged") await markPaid(connection, item.tracking, amount);
       staffId = row.staff_id;
