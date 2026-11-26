@@ -1,6 +1,6 @@
 const pool = require("../config/db");
 const { openCreditInvoices } = require("../utils/appDues");
-const { ensureWaiveTable } = require("../utils/appWaive");
+const { ensureWaiveTable, waivedShortByDay } = require("../utils/appWaive");
 const { logUserActivity } = require("../utils/logUserActivity");
 const { getISTTimestamp } = require("../utils/dateUtils");
 
@@ -121,6 +121,67 @@ const shortages = async (db, staffId) => {
   return [...items, ...(await marketingCredit(db, staffId))];
 };
 
+// Money paid over what was due: an app day handed over or paid more than it needed to, or a marketing bill paid above
+// its amount. View Credit adds these (negative) lines into the salesperson's total, so they have to come off what can
+// be waived off, or the total goes below zero. { staff_id: amount }
+const extraPaid = async (db, staffId) => {
+  const extra = {};
+  const add = (id, amt) => { extra[id] = money((extra[id] || 0) + amt); };
+  // Only days with money handed over in excess, or paid later in View Credit, can end up negative.
+  const where = `details IS NOT NULL AND invoice_count > 0 AND (details LIKE '%"credit_payments"%'
+    OR (details NOT LIKE '%"difference":-%' AND details NOT LIKE '%"difference":0,%' AND details NOT LIKE '%"difference":0}%'))`;
+  const [rows] = await db.query(
+    `SELECT settlement_id, staff_id, details FROM app_day_settlements WHERE ${staffId ? "staff_id = ? AND " : ""}${where}`,
+    staffId ? [staffId] : []
+  );
+  const days = [];
+  for (const row of rows) {
+    let det = null;
+    try { det = typeof row.details === "string" ? JSON.parse(row.details) : row.details; } catch (e) { det = null; }
+    if (det && !det.undone && det.handover && det.handover.received) days.push({ row, det });
+  }
+  const trackings = days.flatMap((d) => (d.det.invoices || []).map((i) => i.tracking_id)).filter(Boolean);
+  const unpaid = {};
+  for (let k = 0; k < trackings.length; k += 1000) {
+    const [fs] = await db.query("SELECT sale_tracking_Id, TotalAmount, AmountPaid FROM final_sale WHERE sale_tracking_Id IN (?) AND isActive = 1", [trackings.slice(k, k + 1000)]);
+    for (const f of fs) unpaid[f.sale_tracking_Id] = Math.max(0, Number(f.TotalAmount) - Number(f.AmountPaid));
+  }
+  const waived = await waivedShortByDay(db);
+  for (const { row, det } of days) {
+    const h = det.handover;
+    const credit = money(
+      (det.invoices || []).reduce((t, i) => t + (unpaid[i.tracking_id] || 0), 0)
+      + Number(h.net_payable) - Number(h.received.total)
+      - (det.credit_payments || []).reduce((t, p) => t + Number(p.total || 0), 0)
+      - (waived[row.settlement_id] || 0)
+    );
+    if (credit < -0.004) add(row.staff_id, -credit);
+  }
+  const credit = "((fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) - fs.AmountPaid)";
+  const [bills] = await db.query(
+    `SELECT fs.UserId AS staff_id, -SUM(${credit}) AS amt FROM final_sale fs
+     JOIN (SELECT sale_tracking_Id, MIN(sale_type) AS sale_type FROM sales GROUP BY sale_tracking_Id) s
+       ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type = 'marketing'
+     WHERE fs.isActive = 1 ${staffId ? "AND fs.UserId = ?" : ""} AND ${credit} < -0.004 GROUP BY fs.UserId`,
+    staffId ? [staffId] : []
+  );
+  for (const b of bills) add(b.staff_id, Number(b.amt));
+  return extra;
+};
+
+// What one salesperson still owes the office: the unpaid lines, less what was paid extra elsewhere.
+const officeDue = async (db, staffId) => {
+  const [all, extra] = await Promise.all([shortages(db, staffId), extraPaid(db, staffId)]);
+  const items = all.filter((x) => x.owed > 0.004);
+  const gross = money(items.reduce((t, x) => t + x.owed, 0));
+  const excess = extra[staffId] || 0;
+  return { items, gross, excess, net: Math.max(0, money(gross - excess)) };
+};
+
+const nothingLeft = (due) => fail(400, due.excess > 0
+  ? `Nothing can be waived off: the Rs. ${due.excess.toFixed(2)} paid extra on other days already covers what is unpaid`
+  : "Nothing is left to waive off here");
+
 const staffNames = async (db, ids) => {
   if (!ids.length) return {};
   const [rows] = await db.query("SELECT user_id, name FROM users WHERE user_id IN (?)", [ids]);
@@ -181,16 +242,16 @@ const historyRows = async (db, { staffId = null, kind = null, from = null, to = 
 exports.myCredits = async (req, res) => {
   try {
     const staffId = req.staff.user_id;
-    const [short, history] = await Promise.all([shortages(pool, staffId), historyRows(pool, { staffId, limit: 60 })]);
-    const items = short.filter((s) => s.owed > 0.004);
-    const shortTotal = money(items.reduce((t, s) => t + s.owed, 0));
+    const [due, history] = await Promise.all([officeDue(pool, staffId), historyRows(pool, { staffId, limit: 60 })]);
+    const items = due.items;
+    const shortTotal = due.net;
     // Shop credit is a separate thing (the dues screen); this is only what the salesperson owes the office.
     const waivedHistory = history.filter((h) => !h.reversed && h.kind !== "shop_dues").map((h) => ({
       batch_id: h.batch_id, label: h.label, shop_name: h.shop_name, amount: h.amount, reason: h.reason, created_at: h.created_at, created_by: h.created_by,
     }));
     res.json({
       total: shortTotal,
-      short: { total: shortTotal, items: items.map((s) => ({ kind: s.kind, label: s.label, settlement_id: s.settlement_id, invoice_no: s.invoice_no || null, date: s.date, amount: s.amount, waived: s.waived, owed: s.owed })) },
+      short: { total: shortTotal, gross: due.gross, excess: due.excess, items: items.map((s) => ({ kind: s.kind, label: s.label, settlement_id: s.settlement_id, invoice_no: s.invoice_no || null, date: s.date, amount: s.amount, waived: s.waived, owed: s.owed })) },
       waived: { total: money(waivedHistory.reduce((t, h) => t + h.amount, 0)), items: waivedHistory },
     });
   } catch (error) {
@@ -204,7 +265,7 @@ exports.myCredits = async (req, res) => {
 // Every salesperson who owes something.
 exports.overview = async (req, res) => {
   try {
-    const [shop, short] = await Promise.all([shopCredit(pool, null), shortages(pool, null)]);
+    const [shop, short, extra] = await Promise.all([shopCredit(pool, null), shortages(pool, null), extraPaid(pool, null)]);
     const rows = new Map();
     const row = (id) => {
       if (!rows.has(id)) rows.set(id, { staff_id: id, shop_credit: 0, cash_short: 0, stock_charged: 0, marketing_credit: 0 });
@@ -214,7 +275,11 @@ exports.overview = async (req, res) => {
     for (const s of short) if (s.owed > 0.004) row(s.staff_id)[s.kind] = money(row(s.staff_id)[s.kind] + s.owed);
     const names = await staffNames(pool, [...rows.keys()]);
     const staff = [...rows.values()]
-      .map((r) => ({ ...r, name: names[r.staff_id] || `Staff ${r.staff_id}`, pending: money(r.cash_short + r.stock_charged + r.marketing_credit), total: money(r.shop_credit + r.cash_short + r.stock_charged + r.marketing_credit) }))
+      .map((r) => {
+        const excess = extra[r.staff_id] || 0;
+        const pending = Math.max(0, money(r.cash_short + r.stock_charged + r.marketing_credit - excess));
+        return { ...r, name: names[r.staff_id] || `Staff ${r.staff_id}`, excess, pending, total: money(r.shop_credit + pending) };
+      })
       .filter((r) => r.total > 0.004)
       .sort((a, b) => b.total - a.total);
     const [[{ n }]] = await pool.query("SELECT COUNT(DISTINCT batch_id) AS n FROM app_waive_offs WHERE reversed = 0");
@@ -236,14 +301,13 @@ exports.staffCredits = async (req, res) => {
   try {
     const staffId = Number(req.body.staff_id);
     if (!staffId) return res.status(400).json({ message: "Choose a salesperson" });
-    const [shop, short, history, names] = await Promise.all([
-      shopCredit(pool, staffId), shortages(pool, staffId), historyRows(pool, { staffId, limit: 100 }), staffNames(pool, [staffId]),
+    const [shop, due, history, names] = await Promise.all([
+      shopCredit(pool, staffId), officeDue(pool, staffId), historyRows(pool, { staffId, limit: 100 }), staffNames(pool, [staffId]),
     ]);
-    const items = short.filter((s) => s.owed > 0.004);
     res.json({
       staff: { staff_id: staffId, name: names[staffId] || `Staff ${staffId}` },
       shop_credit: { total: shop.total, shops: shop.shops.map(({ staff_id, ...s }) => s) },
-      short: { total: money(items.reduce((t, s) => t + s.owed, 0)), items },
+      short: { total: due.net, gross: due.gross, excess: due.excess, items: due.items },
       history,
     });
   } catch (error) {
@@ -336,8 +400,10 @@ exports.waive = async (req, res) => {
         [tracking]
       );
       if (!fs) throw fail(404, "Bill not found");
-      const owed = money(fs.owed);
-      if (owed <= 0.004) throw fail(400, "Nothing is left to waive off here");
+      if (money(fs.owed) <= 0.004) throw fail(400, "Nothing is left to waive off here");
+      const due = await officeDue(connection, fs.UserId);
+      const owed = Math.min(money(fs.owed), due.net);
+      if (owed <= 0.004) throw nothingLeft(due);
       const amount = wantAll ? owed : asked;
       if (amount > owed + 0.005) throw fail(400, `Only Rs. ${owed.toFixed(2)} is left to waive off here`);
       await connection.query(
@@ -355,10 +421,11 @@ exports.waive = async (req, res) => {
       const sid = Number(req.body.staff_id);
       if (!sid) throw fail(400, "Choose a salesperson");
       await connection.query("SELECT settlement_id FROM app_day_settlements WHERE staff_id = ? FOR UPDATE", [sid]);
-      const items = (await shortages(connection, sid)).filter((x) => x.owed > 0.004)
+      const due = await officeDue(connection, sid);
+      const items = due.items
         .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) || (a.kind === "cash_short" ? -1 : 0));
-      const owed = money(items.reduce((t, x) => t + x.owed, 0));
-      if (owed <= 0.004) throw fail(400, "Nothing is pending to the office");
+      const owed = due.net;
+      if (owed <= 0.004) throw nothingLeft(due);
       const amount = wantAll ? owed : asked;
       if (amount > owed + 0.005) throw fail(400, `Only Rs. ${owed.toFixed(2)} is pending`);
       let left = amount;
@@ -382,10 +449,13 @@ exports.waive = async (req, res) => {
       await connection.query("SELECT settlement_id FROM app_day_settlements WHERE settlement_id = ? FOR UPDATE", [settlementId]);
       const [[row]] = await connection.query("SELECT staff_id FROM app_day_settlements WHERE settlement_id = ?", [settlementId]);
       if (!row) throw fail(404, "Settlement not found");
-      const item = (await shortages(connection, row.staff_id)).find((s) => s.settlement_id === settlementId && s.kind === kind);
-      if (!item || item.owed <= 0.004) throw fail(400, "Nothing is left to waive off here");
-      const amount = wantAll ? item.owed : asked;
-      if (amount > item.owed + 0.005) throw fail(400, `Only Rs. ${item.owed.toFixed(2)} is left to waive off here`);
+      const due = await officeDue(connection, row.staff_id);
+      const item = due.items.find((s) => s.settlement_id === settlementId && s.kind === kind);
+      if (!item) throw fail(400, "Nothing is left to waive off here");
+      const owed = Math.min(item.owed, due.net);
+      if (owed <= 0.004) throw nothingLeft(due);
+      const amount = wantAll ? owed : asked;
+      if (amount > owed + 0.005) throw fail(400, `Only Rs. ${owed.toFixed(2)} is left to waive off here`);
       await connection.query(
         `INSERT INTO app_waive_offs (batch_id, kind, staff_id, settlement_id, tracking, amount, reason, created_by, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
