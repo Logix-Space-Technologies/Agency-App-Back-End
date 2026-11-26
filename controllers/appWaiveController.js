@@ -1,6 +1,6 @@
 const pool = require("../config/db");
 const { openCreditInvoices } = require("../utils/appDues");
-const { ensureWaiveTable, waivedShortByDay } = require("../utils/appWaive");
+const { ensureWaiveTable, waivedShortByDay, officeCreditOfDay } = require("../utils/appWaive");
 const { logUserActivity } = require("../utils/logUserActivity");
 const { getISTTimestamp } = require("../utils/dateUtils");
 
@@ -39,8 +39,7 @@ const shopCredit = async (db, staffId) => {
   return { total: money(shops.reduce((t, s) => t + s.owed, 0)), shops, open };
 };
 
-// Unpaid part of a marketing salesperson's settlement bills (sale less expenses, minus what was paid). The day-settlement
-// stock charge (DS-) is listed on its own as "stock charged", so it is left out here.
+// Unpaid part of a marketing salesperson's settlement bills (sale less expenses, minus what was paid).
 const marketingCredit = async (db, staffId) => {
   const payable = "(fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0)))";
   const params = [];
@@ -52,7 +51,7 @@ const marketingCredit = async (db, staffId) => {
      FROM final_sale fs
      JOIN (SELECT sale_tracking_Id, MIN(sale_type) AS sale_type FROM sales GROUP BY sale_tracking_Id) s
        ON fs.sale_tracking_Id = s.sale_tracking_Id AND s.sale_type = 'marketing'
-     WHERE fs.isActive = 1 AND fs.invoiceNumber NOT LIKE 'DS-%' ${who} AND ${payable} - fs.AmountPaid > 0.004`,
+     WHERE fs.isActive = 1 ${who} AND ${payable} - fs.AmountPaid > 0.004`,
     params
   );
   if (!rows.length) return [];
@@ -118,7 +117,9 @@ const shortages = async (db, staffId) => {
     }
     return { ...f, waived: waivedAmt, owed, label: KIND_LABEL[f.kind] };
   });
-  return [...items, ...(await marketingCredit(db, staffId))];
+  // A day's stock charge is also a marketing bill (DS-): listed once, as "stock charged".
+  const charged = new Set(trackings.map(String));
+  return [...items, ...(await marketingCredit(db, staffId)).filter((m) => !charged.has(String(m.tracking)))];
 };
 
 // Money paid over what was due: an app day handed over or paid more than it needed to, or a marketing bill paid above
@@ -134,28 +135,13 @@ const extraPaid = async (db, staffId) => {
     `SELECT settlement_id, staff_id, details FROM app_day_settlements WHERE ${staffId ? "staff_id = ? AND " : ""}${where}`,
     staffId ? [staffId] : []
   );
-  const days = [];
+  const waived = await waivedShortByDay(db);
   for (const row of rows) {
     let det = null;
     try { det = typeof row.details === "string" ? JSON.parse(row.details) : row.details; } catch (e) { det = null; }
-    if (det && !det.undone && det.handover && det.handover.received) days.push({ row, det });
-  }
-  const trackings = days.flatMap((d) => (d.det.invoices || []).map((i) => i.tracking_id)).filter(Boolean);
-  const unpaid = {};
-  for (let k = 0; k < trackings.length; k += 1000) {
-    const [fs] = await db.query("SELECT sale_tracking_Id, TotalAmount, AmountPaid FROM final_sale WHERE sale_tracking_Id IN (?) AND isActive = 1", [trackings.slice(k, k + 1000)]);
-    for (const f of fs) unpaid[f.sale_tracking_Id] = Math.max(0, Number(f.TotalAmount) - Number(f.AmountPaid));
-  }
-  const waived = await waivedShortByDay(db);
-  for (const { row, det } of days) {
-    const h = det.handover;
-    const credit = money(
-      (det.invoices || []).reduce((t, i) => t + (unpaid[i.tracking_id] || 0), 0)
-      + Number(h.net_payable) - Number(h.received.total)
-      - (det.credit_payments || []).reduce((t, p) => t + Number(p.total || 0), 0)
-      - (waived[row.settlement_id] || 0)
-    );
-    if (credit < -0.004) add(row.staff_id, -credit);
+    if (!det || det.undone || !det.handover || !det.handover.received) continue;
+    const owed = officeCreditOfDay(det, waived[row.settlement_id] || 0);
+    if (owed < -0.004) add(row.staff_id, -owed);
   }
   const credit = "((fs.TotalAmount - (COALESCE(fs.FuelExpenses, 0) + COALESCE(fs.VehcileServiceExpenses, 0) + COALESCE(fs.OtherExpenses, 0))) - fs.AmountPaid)";
   const [bills] = await db.query(
