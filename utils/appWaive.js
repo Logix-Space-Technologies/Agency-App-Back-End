@@ -72,4 +72,25 @@ const waivedShortByDay = async (db) => {
   } catch (e) { return {}; }
 };
 
-module.exports = { ensureWaiveTable, CREATE_SQL, waivedShortByDay };
+// What a salesperson owes the office for one app day: only the money to be handed over, never what shops still owe.
+// Positive: short. Negative: handed over or paid more than due.
+//   net, received - what had to be handed over at settlement, and what was
+//   later         - taken afterwards in View Credit (Pay Now)
+//   shopGiven     - credit the day's bills left with shops; Pay Now money up to this much, beyond the shortage,
+//                   was for the shops' bills (older records), so it is not counted as paid extra
+//   waived        - cash short the office waived off
+const officeCredit = ({ net, received, later = 0, shopGiven = 0, waived = 0 }) => {
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const short = r2(Number(net) - Number(received));
+  const owed = short > 0 ? Math.max(0, r2(short - later - waived)) : short;
+  const surplus = Math.max(0, r2(later + waived - Math.max(0, short)));
+  return r2(owed - Math.max(0, r2(surplus - shopGiven)));
+};
+
+const officeCreditOfDay = (det, waived = 0) => officeCredit({
+  net: det.handover.net_payable, received: (det.handover.received || {}).total, waived,
+  later: (det.credit_payments || []).reduce((t, p) => t + Number(p.total || 0), 0),
+  shopGiven: (det.invoices || []).reduce((t, i) => t + Number(i.credit || 0), 0),
+});
+
+module.exports = { ensureWaiveTable, CREATE_SQL, waivedShortByDay, officeCredit, officeCreditOfDay };

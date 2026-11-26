@@ -684,11 +684,11 @@ exports.fetchCreditCustomers = async (req, res) => {
   }
 };
 
-// One credit line per settled mobile-app day, the same meaning as a marketing settlement: what the salesman is answerable
-// for (sale less expenses) minus what he handed over. That is the part of the day's bills still unpaid by the shops (read live,
-// so later collections count) plus any shortage in what he handed over, less what he paid afterwards from View Credit.
-// Payments are kept in the settlement record.
+// One credit line per settled mobile-app day: what the salesperson still owes the office - the shortage in what was
+// handed over, less what was paid afterwards from View Credit (kept in the settlement record) and what was waived off.
+// What shops have not paid is not the salesperson's credit; it is only shown beside it.
 const appDayCreditRows = async (staffId, startDate, endDate) => {
+  const { officeCreditOfDay } = require("../utils/appWaive");
   const waivedDay = await require("../utils/appWaive").waivedShortByDay(pool);
   const conds = ["d.invoice_count > 0"];
   const params = [];
@@ -720,37 +720,37 @@ const appDayCreditRows = async (staffId, startDate, endDate) => {
   for (const { d, det } of parsed) {
     const h = det.handover;
     const shopUnpaid = (det.invoices || []).reduce((t, i) => t + (unpaid[i.tracking_id] || 0), 0);
-    const shortage = Number(h.net_payable) - Number(h.received.total);
-    const later = (det.credit_payments || []).reduce((t, p) => t + Number(p.total || 0), 0);
     const waivedOff = waivedDay[d.settlement_id] || 0;
-    const credit = r2(shopUnpaid + shortage - later - waivedOff);
+    const credit = officeCreditOfDay(det, waivedOff);
     if (Math.abs(credit) < 0.01) continue;
     const ex = h.expenses || {};
-    const total = Number(det.totals.total);
-    const finalAmount = r2(total - Number(ex.total || 0));
+    const finalAmount = r2(Number(h.net_payable)); // what had to be handed to the office
+    const total = r2(finalAmount + Number(ex.total || 0));
     out.push({
       id: d.settlement_id, sale_type: "app_day", name: d.staff_name, sale_tracking_Id: null,
       invoiceNumber: det.invoice_no || null,
       TotalAmount: total, UserId: d.staff_id, DateofTransaction: d.settle_date, isSettled: 0,
-      AmountPaid: r2(finalAmount - credit - waivedOff), waived_off: r2(waivedOff),
+      AmountPaid: r2(finalAmount - credit - waivedOff),
       FuelExpenses: Number(ex.fuel || 0), VehcileServiceExpenses: Number(ex.vehicle_service || 0), OtherExpenses: Number(ex.other || 0),
       finalAmount, credit,
-      // The parts of the credit: what the salesperson handed over short, and what the day's shops have not paid.
-      shortage: r2(shortage - later - waivedOff), shopUnpaid: r2(shopUnpaid), waived_off: r2(waivedOff),
+      // shortage is the credit itself; shopUnpaid is information only (collected from the shops, not part of credit).
+      shortage: credit, shopUnpaid: r2(shopUnpaid), waived_off: r2(waivedOff),
     });
   }
   return out;
 };
 
-// Every mobile-app day with an open shortage, read compactly (only the few figures needed, not the whole settlement
-// record) so this stays quick as settlements pile up. Falls back to the full read if the database cannot do JSON paths.
+// Every mobile-app day where the salesperson owes the office (or paid extra), read compactly (only the few figures
+// needed, not the whole settlement record) so this stays quick as settlements pile up. Falls back to the full read if
+// the database cannot do JSON paths.
 const appDayCreditAll = async () => {
-  const r2 = (n) => Math.round(n * 100) / 100;
+  const { officeCredit, waivedShortByDay } = require("../utils/appWaive");
   const asValue = (v) => {
     if (v === null || v === undefined) return null;
     if (typeof v === "string") { try { return JSON.parse(v); } catch (e) { return null; } }
     return v;
   };
+  const sum = (list) => (Array.isArray(list) ? list : []).reduce((t, v) => t + (Number(v) || 0), 0);
   try {
     const [days] = await pool.query(
       `SELECT d.settlement_id, d.staff_id, u.name AS staff_name, DATE_FORMAT(d.settle_date, '%Y-%m-%d') AS settle_date,
@@ -758,36 +758,26 @@ const appDayCreditAll = async () => {
               JSON_EXTRACT(d.details, '$.handover.net_payable') AS net_payable,
               JSON_EXTRACT(d.details, '$.handover.received.total') AS received,
               JSON_EXTRACT(d.details, '$.credit_payments[*].total') AS later,
-              JSON_EXTRACT(d.details, '$.invoices[*].tracking_id') AS tracking
+              JSON_EXTRACT(d.details, '$.invoices[*].credit') AS shop_given
        FROM app_day_settlements d LEFT JOIN users u ON u.user_id = d.staff_id
        WHERE d.invoice_count > 0 AND d.details IS NOT NULL`
     );
-    const parsed = days
-      .map((d) => ({ d, undone: asValue(d.undone), net: asValue(d.net_payable), got: asValue(d.received), later: asValue(d.later), tracking: asValue(d.tracking) }))
-      .filter((x) => !x.undone && x.net !== null && x.got !== null);
-    const ids = [...new Set(parsed.flatMap((x) => (Array.isArray(x.tracking) ? x.tracking : [])).filter(Boolean))];
-    const unpaid = {};
-    for (let i = 0; i < ids.length; i += 1000) {
-      const [fs] = await pool.query(
-        "SELECT sale_tracking_Id, TotalAmount, AmountPaid FROM final_sale WHERE sale_tracking_Id IN (?) AND isActive = 1",
-        [ids.slice(i, i + 1000)]
-      );
-      for (const f of fs) unpaid[f.sale_tracking_Id] = Math.max(0, Number(f.TotalAmount) - Number(f.AmountPaid));
-    }
+    const waivedDay = await waivedShortByDay(pool);
     const out = [];
-    const waivedDay = await require("../utils/appWaive").waivedShortByDay(pool);
-    for (const x of parsed) {
-      const shopUnpaid = (Array.isArray(x.tracking) ? x.tracking : []).reduce((t, id) => t + (unpaid[id] || 0), 0);
-      const later = (Array.isArray(x.later) ? x.later : []).reduce((t, v) => t + (Number(v) || 0), 0) + (waivedDay[x.d.settlement_id] || 0);
-      const credit = r2(shopUnpaid + (Number(x.net) - Number(x.got)) - later);
+    for (const d of days) {
+      const net = asValue(d.net_payable), received = asValue(d.received);
+      if (asValue(d.undone) || net === null || received === null) continue;
+      const credit = officeCredit({
+        net, received, later: sum(asValue(d.later)), shopGiven: sum(asValue(d.shop_given)), waived: waivedDay[d.settlement_id] || 0,
+      });
       if (Math.abs(credit) < 0.01) continue;
-      out.push({ staff_id: x.d.staff_id, name: x.d.staff_name, date: x.d.settle_date, credit, app: true, shortage: r2(Number(x.net) - Number(x.got) - later), shopUnpaid: r2(shopUnpaid) });
+      out.push({ staff_id: d.staff_id, name: d.staff_name, date: d.settle_date, credit, app: true, shortage: credit });
     }
     return out;
   } catch (error) {
     console.warn("appDayCreditAll: reading the compact way failed, reading full records:", error.message);
     const rows = await appDayCreditRows(null);
-    return rows.map((r) => ({ staff_id: r.UserId, name: r.name, date: r.DateofTransaction, credit: r.credit, app: true, shortage: r.shortage, shopUnpaid: r.shopUnpaid }));
+    return rows.map((r) => ({ staff_id: r.UserId, name: r.name, date: r.DateofTransaction, credit: r.credit, app: true, shortage: r.shortage }));
   }
 };
 
@@ -841,15 +831,15 @@ exports.fetchCreditStaff = async (req, res) => {
 
     const byStaff = new Map();
     for (const r of inRange) {
-      if (!byStaff.has(r.staff_id)) byStaff.set(r.staff_id, { staff_id: r.staff_id, name: r.name, bills: 0, due: 0, oldest: r.date, latest: r.date, app_days: 0, app_short: 0, app_shops: 0 });
+      if (!byStaff.has(r.staff_id)) byStaff.set(r.staff_id, { staff_id: r.staff_id, name: r.name, bills: 0, due: 0, oldest: r.date, latest: r.date, app_days: 0, app_short: 0 });
       const s = byStaff.get(r.staff_id);
       s.bills += 1; s.due += r.credit;
-      if (r.app) { s.app_days += 1; s.app_short += r.shortage || 0; s.app_shops += r.shopUnpaid || 0; }
+      if (r.app) { s.app_days += 1; s.app_short += r.shortage || 0; }
       if (r.date < s.oldest) s.oldest = r.date;
       if (r.date > s.latest) s.latest = r.date;
     }
     const list = [...byStaff.values()]
-      .map((s) => ({ ...s, due: money(s.due), app_short: money(s.app_short), app_shops: money(s.app_shops) }))
+      .map((s) => ({ ...s, due: money(s.due), app_short: money(s.app_short) }))
       .sort((a, b) => (asc ? a.due - b.due : b.due - a.due) || String(a.name).localeCompare(String(b.name)));
 
     res.json({
@@ -1071,15 +1061,35 @@ GROUP BY
     const info = creditInfo[0]
       ? { ...creditInfo[0] }
       : { UserId: marketing_staff_id, TotalAmount: 0, TotalPaid: 0, Credit: 0 };
-    info.TotalWaived = rows.reduce((t, r) => t + (r.waived_off || 0), 0);
-    info.TotalPaid = Number(info.TotalPaid || 0) - info.TotalWaived;
+    info.TotalPaid = Number(info.TotalPaid || 0) - rows.reduce((t, r) => t + (r.waived_off || 0), 0);
     for (const r of appRows) {
       info.TotalAmount = Number(info.TotalAmount || 0) + r.TotalAmount;
       info.TotalPaid = Number(info.TotalPaid || 0) + r.AmountPaid;
       info.Credit = Number(info.Credit || 0) + r.credit;
-      info.TotalWaived += r.waived_off || 0;
     }
-    const creditInfoAll = creditInfo[0] || appRows.length ? [info] : [];
+    for (const k of ["TotalAmount", "TotalPaid", "Credit"]) {
+      const v = Math.round(Number(info[k] || 0) * 100) / 100;
+      info[k] = v === 0 ? 0 : v; // never "-0.00"
+    }
+    // Everything waived off for the period, also on days and bills that are cleared and no longer listed.
+    info.TotalWaived = 0;
+    info.ShopCredit = 0;
+    try {
+      const range = startDate && endDate ? [startDate, endDate] : null;
+      const [[w]] = await pool.query(
+        `SELECT COALESCE(SUM(w.amount), 0) AS amt FROM app_waive_offs w
+         LEFT JOIN app_day_settlements d ON d.settlement_id = w.settlement_id
+         LEFT JOIN final_sale f ON w.settlement_id IS NULL AND f.sale_tracking_Id = w.tracking COLLATE utf8mb4_general_ci AND f.isActive = 1
+         WHERE w.staff_id = ? AND w.reversed = 0 AND w.kind <> 'shop_dues'
+           ${range ? "AND COALESCE(d.settle_date, f.DateofTransaction) BETWEEN ? AND ?" : ""}`,
+        [marketing_staff_id, ...(range || [])]
+      );
+      info.TotalWaived = Number(w.amt);
+      // For information beside the credit: what shops still owe on this salesperson's bills (all dates).
+      info.ShopCredit = (await require("./appWaiveController").shopCredit(pool, Number(marketing_staff_id))).total;
+    } catch (e) { console.warn("view credit waive/shop figures:", e.message); }
+    // The summary is shown even when nothing is owed any more, so a cleared credit reads as zero.
+    const creditInfoAll = [info];
     const totalRecordsAll = totalRecords + appRows.length;
 
     res.json({
