@@ -24,6 +24,39 @@ const trayRow = async (db, staffId, date) => {
     throw error;
   }
 };
+// Trays in hand up to [date], for one salesperson or for everyone: Map staff_id -> { carried, taken, returned,
+// in_hand, last_date }. Whatever is not returned stays with them and is carried to the next day, where that day's
+// taken is added to it. Walked day by day, so returning more than was ever recorded ends at zero, not below.
+const trayBalances = async (db, date, staffId = null) => {
+  let rows = [];
+  try {
+    [rows] = await db.query(
+      `SELECT staff_id, DATE_FORMAT(tray_date, '%Y-%m-%d') AS d, taken, returned FROM app_day_trays
+       WHERE tray_date <= ? ${staffId ? "AND staff_id = ?" : ""} ORDER BY staff_id, tray_date`,
+      staffId ? [date, staffId] : [date]
+    );
+  } catch (error) {
+    if (error.code !== "ER_NO_SUCH_TABLE") throw error;
+  }
+  const num = (v) => (v === null || v === undefined ? null : Number(v));
+  const out = new Map();
+  for (const r of rows) {
+    const b = out.get(r.staff_id) || { carried: 0, taken: null, returned: null, in_hand: 0, last_date: null };
+    const before = b.in_hand;
+    const today = r.d === date;
+    out.set(r.staff_id, {
+      carried: today ? before : 0,
+      taken: today ? num(r.taken) : null,
+      returned: today ? num(r.returned) : null,
+      in_hand: Math.max(0, before + Number(r.taken || 0) - Number(r.returned || 0)),
+      last_date: r.d,
+    });
+  }
+  // No entry on the day itself: everything in hand was carried from earlier days.
+  for (const b of out.values()) if (b.last_date !== date) b.carried = b.in_hand;
+  return out;
+};
+exports.trayBalances = trayBalances;
 const saveTrays = async (db, staffId, date, field, value) => {
   if (!["taken", "returned"].includes(field)) throw new Error("bad tray field");
   await db.query(
@@ -55,10 +88,11 @@ const dayInfo = async (db, staffId, date) => {
   );
   const start = info.start_km === undefined || info.start_km === null ? null : Number(info.start_km);
   const end = info.end_km === undefined || info.end_km === null ? null : Number(info.end_km);
-  const trays = await trayRow(db, staffId, date);
-  const taken = trays.taken === undefined || trays.taken === null ? null : Number(trays.taken);
-  const returned = trays.returned === undefined || trays.returned === null ? null : Number(trays.returned);
+  const trays = (await trayBalances(db, date, staffId)).get(Number(staffId)) || { carried: 0, taken: null, returned: null, in_hand: 0 };
+  const { taken, returned } = trays;
   return {
+    trays_carried: trays.carried,
+    trays_in_hand: trays.in_hand,
     trays_taken: taken,
     trays_returned: returned,
     trays_not_returned: taken !== null && returned !== null ? taken - returned : null,

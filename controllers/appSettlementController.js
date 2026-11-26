@@ -2,7 +2,7 @@ const pool = require("../config/db");
 const { logUserActivity } = require("../utils/logUserActivity");
 const { getISTTimestamp, getISTDate } = require("../utils/dateUtils");
 const { postInvoiceTx, trackingId, nextNgstNumber } = require("../utils/appSettle");
-const { dayInfo } = require("./appDayController");
+const { dayInfo, trayBalances } = require("./appDayController");
 const { OUTSTANDING_SQL, COLLECTED_JOIN } = require("../utils/appDues");
 const { deletedByAdmin } = require("../utils/appInvoiceStatus");
 const { CURRENT_STOCK_SQL } = require("../utils/appStock");
@@ -611,7 +611,7 @@ exports.settleDay = async (req, res) => {
       settled_at: now, settled_by: admin ? admin.name : "Admin", notes: req.body.notes || "",
       totals: { ...day.totals, extra_sale: extraCharge, less_sale: reduction },
       handover: { ...handover, extra_charge: extraCharge, reduction },
-      vehicle: { name: vehicle.vehicle_name, reg_no: vehicle.vehicle_reg, start_km: vehicle.start_km, end_km: vehicle.end_km, km_run: vehicle.km_run, trays_taken: vehicle.trays_taken, trays_returned: vehicle.trays_returned },
+      vehicle: { name: vehicle.vehicle_name, reg_no: vehicle.vehicle_reg, start_km: vehicle.start_km, end_km: vehicle.end_km, km_run: vehicle.km_run, trays_taken: vehicle.trays_taken, trays_returned: vehicle.trays_returned, trays_carried: vehicle.trays_carried, trays_in_hand: vehicle.trays_in_hand },
       fuel_bills: openFuel.map((f) => ({ bill_no: f.bill_no, amount: f.amount })),
       items: lines.map((l) => ({
         product_id: l.product_id, product_name: l.product_name, allocated: l.allocated, sold: l.sold, free: l.free || 0,
@@ -723,21 +723,19 @@ exports.overview = async (req, res) => {
     dmg.forEach((a) => { row(a.staff_id).damaged = Number(a.damaged); });
     reqd.forEach((a) => { const r = row(a.staff_id); r.requested = true; r.requested_at = a.at; r.end_km = a.end_km === null ? null : Number(a.end_km); r.km_run = a.end_km !== null && a.start_km !== null && Number(a.end_km) >= Number(a.start_km) ? Math.round((Number(a.end_km) - Number(a.start_km)) * 10) / 10 : null; r.vehicle = a.vehicle_name ? `${a.vehicle_name} ${a.vehicle_reg}` : null; });
     done.forEach((a) => { const r = row(a.staff_id); r.settled = true; r.settlement_id = a.settlement_id; r.settled_total = money(a.total); });
-    // Trays taken and returned that day, for the staff who have them (days before the feature have none).
-    let trayRows = [];
-    try {
-      [trayRows] = await pool.query("SELECT staff_id, taken, returned FROM app_day_trays WHERE tray_date = ?", [date]);
-    } catch (e) {
-      if (e.code !== "ER_NO_SUCH_TABLE") throw e;
-    }
-    trayRows.forEach((t) => {
-      if (!byStaff.has(t.staff_id)) return;
-      const r = byStaff.get(t.staff_id);
-      r.trays_taken = t.taken === null ? null : Number(t.taken);
-      r.trays_returned = t.returned === null ? null : Number(t.returned);
+    // Trays: the day's taken and returned, and what each salesperson holds, carried forward from earlier days.
+    // Whoever holds trays is listed even when they did not work that day.
+    const trays = await trayBalances(pool, date);
+    trays.forEach((t, staffId) => {
+      if (!byStaff.has(staffId)) return;
+      const r = byStaff.get(staffId);
+      if (t.last_date === date) { r.trays_taken = t.taken; r.trays_returned = t.returned; }
+      r.trays_carried = t.carried;
+      r.trays_in_hand = t.in_hand;
     });
 
-    const ids = [...byStaff.keys()];
+    const holders = [...trays].filter(([, t]) => t.in_hand > 0);
+    const ids = [...new Set([...byStaff.keys(), ...holders.map(([id]) => id)])];
     const names = new Map();
     if (ids.length) {
       const [u] = await pool.query("SELECT user_id, name FROM users WHERE user_id IN (?)", [ids]);
@@ -753,7 +751,10 @@ exports.overview = async (req, res) => {
         status: r.invoices > 0 ? "pending" : r.settled ? "settled" : r.allocated > 0 ? "allocated" : "none",
       }))
       .sort((a, b) => a.staff_name.localeCompare(b.staff_name));
-    res.json({ date, staff });
+    const traysHeld = holders
+      .map(([id, t]) => ({ staff_id: id, staff_name: names.get(id) || `#${id}`, in_hand: t.in_hand, last_date: t.last_date }))
+      .sort((a, b) => b.in_hand - a.in_hand || a.staff_name.localeCompare(b.staff_name));
+    res.json({ date, staff, trays_held: traysHeld });
   } catch (error) {
     console.error("overview error:", error);
     res.status(500).json({ message: "Could not load the overview" });
@@ -951,6 +952,12 @@ const enrichSettlement = async (settlement, staffId, settleDate, settledAt, sett
     settlement.route_info = { ...(await routeInfo(pool, staffId, settleDate, invoiceIds)), as_of_now: true };
   }
   settlement.pending_old_dues = { ...(await pendingOldDues(pool, staffId, settleDate)), as_of_now: true };
+  // Days settled before trays were carried forward get their in-hand figures worked out from the tray entries.
+  const v = settlement.vehicle;
+  if (v && v.trays_in_hand === undefined && ((v.trays_taken ?? null) !== null || (v.trays_returned ?? null) !== null)) {
+    const t = (await trayBalances(pool, settleDate, staffId)).get(Number(staffId));
+    if (t) Object.assign(v, { trays_carried: t.carried, trays_in_hand: t.in_hand });
+  }
   return settlement;
 };
 exports.enrichSettlement = enrichSettlement;
