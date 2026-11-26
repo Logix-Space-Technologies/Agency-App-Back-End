@@ -2140,6 +2140,9 @@ const ensureDayInvoiceNo = async (settlementId) => {
   }
 };
 
+// The date in India (YYYY-MM-DD) of a stored UTC timestamp.
+const istDay = (at) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date(at));
+
 exports.searchSales = async (req, res) => {
   try {
     const { sale_date, from_date, to_date, user_type, user_id, include_shops } = req.body;
@@ -2254,10 +2257,17 @@ exports.searchSales = async (req, res) => {
           paid = Number(f.paid); settled = Number(f.settled) || 0;
         }
         const ex = (det.handover && det.handover.expenses) || {};
+        // Amount Paid is what reached the office that day: the money handed over at settlement, plus any shortage paid
+        // the same day (View Credit). What shops paid is kept apart for the pending-credit figures.
+        const received = det.handover && det.handover.received;
+        const sameDay = (det.credit_payments || [])
+          .filter((p) => p.at && istDay(p.at) === d.settle_date)
+          .reduce((t, p) => t + Number(p.total || 0), 0);
+        const toAdmin = received ? Math.round((Number(received.total || 0) + sameDay) * 100) / 100 : paid;
         combined.push({
           id: d.settlement_id, settlement_id: d.settlement_id, sale_tracking_Id: null,
           invoiceNumber: det.invoice_no || `Day Settlement ${d.settlement_id}`, TotalAmount: Number(det.totals.total), name: d.staff_name,
-          DateofTransaction: d.settle_date, isSettled: settled, AmountPaid: paid,
+          DateofTransaction: d.settle_date, isSettled: settled, AmountPaid: toAdmin, ShopPaid: paid,
           FuelExpenses: Number(ex.fuel || 0), VehcileServiceExpenses: Number(ex.vehicle_service || 0), OtherExpenses: Number(ex.other || 0),
           isGstBilling: 0, sale_type: "app_day", invoice_count: (det.invoices || []).length, sold_by: null,
         });
