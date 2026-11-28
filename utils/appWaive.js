@@ -93,4 +93,26 @@ const officeCreditOfDay = (det, waived = 0) => officeCredit({
   shopGiven: (det.invoices || []).reduce((t, i) => t + Number(i.credit || 0), 0),
 });
 
-module.exports = { ensureWaiveTable, CREATE_SQL, waivedShortByDay, officeCredit, officeCreditOfDay };
+// Everyone who has credit records (marketing bills or settled app days), also those whose credit is now zero or
+// below, so the office lists can show them. `range` = [from, to] keeps only those with records in those days.
+const creditStaffIds = async (db, range = null) => {
+  const ids = new Set();
+  const [bills] = await db.query(
+    `SELECT DISTINCT fs.UserId AS staff_id FROM final_sale fs
+     JOIN (SELECT DISTINCT sale_tracking_Id FROM sales WHERE sale_type = 'marketing') s ON fs.sale_tracking_Id = s.sale_tracking_Id
+     WHERE fs.isActive = 1 ${range ? "AND fs.DateofTransaction BETWEEN ? AND ?" : ""}`,
+    range || []
+  );
+  for (const r of bills) ids.add(r.staff_id);
+  try {
+    const [days] = await db.query(
+      `SELECT DISTINCT staff_id FROM app_day_settlements WHERE invoice_count > 0 AND details IS NOT NULL ${range ? "AND settle_date BETWEEN ? AND ?" : ""}`,
+      range || []
+    );
+    for (const r of days) ids.add(r.staff_id);
+  } catch (e) { if (e.code !== "ER_NO_SUCH_TABLE") throw e; }
+  ids.delete(null);
+  return [...ids];
+};
+
+module.exports = { ensureWaiveTable, CREATE_SQL, waivedShortByDay, officeCredit, officeCreditOfDay, creditStaffIds };

@@ -781,9 +781,10 @@ const appDayCreditAll = async () => {
   }
 };
 
-// Salespeople who still owe the office, highest dues first: unpaid marketing bills plus the open shortage of mobile-app
-// days (the same two sources as View Credit for one salesperson), with the credit of today, this week, this month and
-// this year. `q` matches the name; the date range narrows the list and the outstanding total.
+// Every salesperson's credit, highest dues first: unpaid marketing bills plus the open shortage of mobile-app days
+// (the same two sources as View Credit for one salesperson). Those at zero and those below zero (paid extra) are listed
+// too; the totals and the cards of today, this week, this month and this year count only those who owe.
+// `q` matches the name; the date range narrows the list and the outstanding total.
 exports.fetchCreditStaff = async (req, res) => {
   try {
     const q = String(req.body.q || "").trim().toLowerCase().slice(0, 100);
@@ -824,10 +825,9 @@ exports.fetchCreditStaff = async (req, res) => {
       const rows = items.filter((r) => within(r, range));
       return { amount: money(rows.reduce((t, r) => t + r.credit, 0)), bills: rows.length };
     };
-    // A date range lists who owes within that range.
-    let inRange = hasRange ? matching.filter((r) => within(r, [req.body.startDate, req.body.endDate])) : matching;
-    const owingInRange = new Set([...netOf(inRange)].filter(([, net]) => net > 0.004).map(([id]) => id));
-    inRange = inRange.filter((r) => owingInRange.has(r.staff_id));
+    // A date range lists the credit within that range.
+    const range = hasRange ? [req.body.startDate, req.body.endDate] : null;
+    const inRange = range ? matching.filter((r) => within(r, range)) : matching;
 
     const byStaff = new Map();
     for (const r of inRange) {
@@ -838,14 +838,24 @@ exports.fetchCreditStaff = async (req, res) => {
       if (r.date < s.oldest) s.oldest = r.date;
       if (r.date > s.latest) s.latest = r.date;
     }
+    // Those with nothing open any more (cleared or waived off) are listed with zero.
+    const cleared = (await require("../utils/appWaive").creditStaffIds(pool, range)).filter((id) => !byStaff.has(id));
+    if (cleared.length) {
+      const [users] = await pool.query("SELECT user_id, name FROM users WHERE user_id IN (?)", [cleared]);
+      for (const u of users) {
+        if (q && !String(u.name || "").toLowerCase().includes(q)) continue;
+        byStaff.set(u.user_id, { staff_id: u.user_id, name: u.name, bills: 0, due: 0, oldest: null, latest: null, app_days: 0, app_short: 0 });
+      }
+    }
     const list = [...byStaff.values()]
       .map((s) => ({ ...s, due: money(s.due), app_short: money(s.app_short) }))
       .sort((a, b) => (asc ? a.due - b.due : b.due - a.due) || String(a.name).localeCompare(String(b.name)));
 
+    const owingList = list.filter((s) => s.due > 0.004);
     res.json({
       success: true,
       cards: {
-        outstanding: { amount: money(inRange.reduce((t, r) => t + r.credit, 0)), bills: inRange.length, staff: byStaff.size },
+        outstanding: { amount: money(owingList.reduce((t, s) => t + s.due, 0)), bills: owingList.reduce((t, s) => t + s.bills, 0), staff: owingList.length },
         today: sumFor(per.today), week: sumFor(per.week), month: sumFor(per.month), year: sumFor(per.year),
       },
       staff: list.slice((page - 1) * limit, page * limit),
