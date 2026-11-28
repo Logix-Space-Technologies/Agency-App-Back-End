@@ -1,6 +1,6 @@
 const pool = require("../config/db");
 const { openCreditInvoices } = require("../utils/appDues");
-const { ensureWaiveTable, waivedShortByDay, officeCreditOfDay } = require("../utils/appWaive");
+const { ensureWaiveTable, waivedShortByDay, officeCreditOfDay, creditStaffIds } = require("../utils/appWaive");
 const { logUserActivity } = require("../utils/logUserActivity");
 const { getISTTimestamp } = require("../utils/dateUtils");
 
@@ -248,7 +248,7 @@ exports.myCredits = async (req, res) => {
 
 // ---------------------------------------------------------------- the office
 
-// Every salesperson who owes something.
+// Every salesperson with credit records: owing, cleared (zero) or paid extra (below zero).
 exports.overview = async (req, res) => {
   try {
     const [shop, short, extra] = await Promise.all([shopCredit(pool, null), shortages(pool, null), extraPaid(pool, null)]);
@@ -259,21 +259,21 @@ exports.overview = async (req, res) => {
     };
     for (const r of shop.open) row(r.staff_id).shop_credit = money(row(r.staff_id).shop_credit + Number(r.owed));
     for (const s of short) if (s.owed > 0.004) row(s.staff_id)[s.kind] = money(row(s.staff_id)[s.kind] + s.owed);
+    for (const id of await creditStaffIds(pool)) row(id);
     const names = await staffNames(pool, [...rows.keys()]);
     const staff = [...rows.values()]
       .map((r) => {
         const excess = extra[r.staff_id] || 0;
-        const pending = Math.max(0, money(r.cash_short + r.stock_charged + r.marketing_credit - excess));
-        return { ...r, name: names[r.staff_id] || `Staff ${r.staff_id}`, excess, pending, total: money(r.shop_credit + pending) };
+        const pending = money(r.cash_short + r.stock_charged + r.marketing_credit - excess); // below zero: paid extra
+        return { ...r, name: names[r.staff_id] || `Staff ${r.staff_id}`, excess, pending, total: money(r.shop_credit + Math.max(0, pending)) };
       })
-      .filter((r) => r.total > 0.004)
-      .sort((a, b) => b.total - a.total);
+      .sort((a, b) => b.total - a.total || b.pending - a.pending);
     const [[{ n }]] = await pool.query("SELECT COUNT(DISTINCT batch_id) AS n FROM app_waive_offs WHERE reversed = 0");
     res.json({
       staff,
       totals: {
         shop_credit: money(staff.reduce((t, r) => t + r.shop_credit, 0)), cash_short: money(staff.reduce((t, r) => t + r.cash_short, 0)),
-        stock_charged: money(staff.reduce((t, r) => t + r.stock_charged, 0)), marketing_credit: money(staff.reduce((t, r) => t + r.marketing_credit, 0)), pending: money(staff.reduce((t, r) => t + r.pending, 0)), total: money(staff.reduce((t, r) => t + r.total, 0)),
+        stock_charged: money(staff.reduce((t, r) => t + r.stock_charged, 0)), marketing_credit: money(staff.reduce((t, r) => t + r.marketing_credit, 0)), pending: money(staff.reduce((t, r) => t + Math.max(0, r.pending), 0)), total: money(staff.reduce((t, r) => t + r.total, 0)),
       },
       waive_offs: Number(n),
     });
@@ -293,7 +293,7 @@ exports.staffCredits = async (req, res) => {
     res.json({
       staff: { staff_id: staffId, name: names[staffId] || `Staff ${staffId}` },
       shop_credit: { total: shop.total, shops: shop.shops.map(({ staff_id, ...s }) => s) },
-      short: { total: due.net, gross: due.gross, excess: due.excess, items: due.items },
+      short: { total: due.net, balance: money(due.gross - due.excess), gross: due.gross, excess: due.excess, items: due.items },
       history,
     });
   } catch (error) {
