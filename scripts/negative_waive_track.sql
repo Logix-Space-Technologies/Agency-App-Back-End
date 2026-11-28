@@ -73,7 +73,7 @@ ORDER BY u.name, w.waive_id;
 SET @look = '%GOKUL%KRISHNAN%';
 
 SELECT u.name, u.user_id, (SELECT SUM(amount) FROM tmp_balance b WHERE b.staff_id = u.user_id) AS credit_now
-FROM users u WHERE u.name LIKE @look;
+FROM users u WHERE u.name LIKE CONVERT(@look USING utf8mb4) COLLATE utf8mb4_general_ci;
 
 -- App days. day_credit: above zero owes, below zero paid extra.
 SELECT d.settlement_id, s.settle_date, d.short_amt, d.later_amt AS paid_later, d.waived_amt AS waived, d.shop_amt AS left_with_shops,
@@ -82,7 +82,7 @@ SELECT d.settlement_id, s.settle_date, d.short_amt, d.later_amt AS paid_later, d
 FROM tmp_day d
 JOIN app_day_settlements s ON s.settlement_id = d.settlement_id
 JOIN users u ON u.user_id = d.staff_id
-WHERE u.name LIKE @look ORDER BY s.settle_date;
+WHERE u.name LIKE CONVERT(@look USING utf8mb4) COLLATE utf8mb4_general_ci ORDER BY s.settle_date;
 
 -- Marketing bills that are not at zero.
 SELECT f.invoiceNumber, f.DateofTransaction, f.TotalAmount, f.AmountPaid,
@@ -90,10 +90,10 @@ SELECT f.invoiceNumber, f.DateofTransaction, f.TotalAmount, f.AmountPaid,
 FROM final_sale f
 JOIN (SELECT DISTINCT sale_tracking_Id FROM sales WHERE sale_type = 'marketing') m ON f.sale_tracking_Id = m.sale_tracking_Id
 JOIN users u ON u.user_id = f.UserId
-WHERE u.name LIKE @look AND f.isActive = 1
+WHERE u.name LIKE CONVERT(@look USING utf8mb4) COLLATE utf8mb4_general_ci AND f.isActive = 1
   AND ABS(f.TotalAmount - (COALESCE(f.FuelExpenses, 0) + COALESCE(f.VehcileServiceExpenses, 0) + COALESCE(f.OtherExpenses, 0)) - f.AmountPaid) > 0.004
 ORDER BY f.DateofTransaction;
 
 -- Every waive-off ever made for this salesperson, also shop credit and reversed ones.
 SELECT w.waive_id, w.batch_id, w.kind, w.amount, w.settlement_id, w.tracking, w.reversed, w.reason, w.created_at
-FROM app_waive_offs w JOIN users u ON u.user_id = w.staff_id WHERE u.name LIKE @look ORDER BY w.waive_id;
+FROM app_waive_offs w JOIN users u ON u.user_id = w.staff_id WHERE u.name LIKE CONVERT(@look USING utf8mb4) COLLATE utf8mb4_general_ci ORDER BY w.waive_id;

@@ -63,7 +63,7 @@ JOIN (SELECT staff_id, SUM(amount) AS waived FROM tmp_waive GROUP BY staff_id) w
 WHERE b.balance < -0.004;
 
 DELETE FROM tmp_neg WHERE @only_name IS NOT NULL
-  AND staff_id NOT IN (SELECT user_id FROM users WHERE name LIKE @only_name);
+  AND staff_id NOT IN (SELECT user_id FROM users WHERE name LIKE CONVERT(@only_name USING utf8mb4) COLLATE utf8mb4_general_ci);
 
 CREATE TEMPORARY TABLE tmp_waive2 AS SELECT waive_id, staff_id, amount FROM tmp_waive;
 CREATE TEMPORARY TABLE tmp_cut AS
